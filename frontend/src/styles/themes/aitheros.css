@@ -1,0 +1,195 @@
+/* ═══════════════════════════════════════════════════════════════
+   AitherOS "Electric Cozy" Theme
+   ─────────────────────────────────────────────────────────────
+   Palette:
+     Bunker BG:      #0A0D11  (extremely dark blue-gray)
+     Panel/Card:     #1C1F26  (slightly lighter gray)
+     Text:           #EAEAEA  (off-white, not glossy)
+     Lexus Green:    #56D090  (mint/sage – operational/positive)
+     Aither Purple:  #9A66FF  (vibrant lilac – brand/orchestration)
+     Alert Yellow:   #FFBF47  (soft amber – attention/HITL)
+     Argos Cyan:     #14FFF7  (electric cyan – tools/MCP)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Base (dark-first; light is same as dark for AitherOS) ── */
+[data-theme='aitheros'] {
+  /* Deep violet-navy backgrounds — the starship cockpit core */
+  --background: oklch(0.12 0.025 268);
+  --foreground: oklch(0.92 0.006 265);
+  --card: oklch(0.165 0.022 270);
+  --card-foreground: oklch(0.92 0.006 265);
+  --popover: oklch(0.165 0.022 270);
+  --popover-foreground: oklch(0.92 0.006 265);
+  --primary: oklch(0.62 0.22 290);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.20 0.025 272);
+  --secondary-foreground: oklch(0.90 0.005 265);
+  --muted: oklch(0.22 0.020 270);
+  --muted-foreground: oklch(0.60 0.015 268);
+  --accent: oklch(0.20 0.030 280);
+  --accent-foreground: oklch(0.92 0.006 265);
+  --destructive: oklch(0.63 0.19 23);
+  --destructive-foreground: oklch(1 0 0);
+  /* Luminous violet-edged borders */
+  --border: oklch(0.25 0.030 275);
+  --input: oklch(0.20 0.022 270);
+  --ring: oklch(0.62 0.22 290);
+  /* Chart colors — richer, glowier */
+  --chart-1: oklch(0.73 0.17 160);
+  --chart-2: oklch(0.62 0.22 290);
+  --chart-3: oklch(0.82 0.16 85);
+  --chart-4: oklch(0.85 0.17 185);
+  --chart-5: oklch(0.65 0.08 30);
+  /* Sidebar — deeper than content area, more saturated */
+  --sidebar: oklch(0.09 0.032 268);
+  --sidebar-foreground: oklch(0.90 0.008 268);
+  --sidebar-primary: oklch(0.62 0.22 290);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.17 0.035 282);
+  --sidebar-accent-foreground: oklch(0.92 0.006 265);
+  --sidebar-border: oklch(0.20 0.028 272);
+  --sidebar-ring: oklch(0.62 0.22 290);
+  --font-sans: 'Inter', sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: 'Fira Code', 'JetBrains Mono', monospace;
+  --radius: 0.5rem;
+  --shadow-x: 0px;
+  --shadow-y: 2px;
+  --shadow-blur: 8px;
+  --shadow-spread: 0px;
+  --shadow-opacity: 0.5;
+  /* Purple-tinted shadows for depth */
+  --shadow-color: hsl(268 60% 4%);
+  --shadow-2xs: 0px 1px 3px 0px hsl(268 60% 4% / 0.18);
+  --shadow-xs:  0px 1px 3px 0px hsl(268 60% 4% / 0.18);
+  --shadow-sm:  0px 1px 3px 0px hsl(268 60% 4% / 0.35),
+    0px 1px 4px -1px hsl(268 60% 4% / 0.35);
+  --shadow:     0px 2px 5px 0px hsl(268 60% 4% / 0.35),
+    0px 2px 3px -1px hsl(268 60% 4% / 0.30);
+  --shadow-md:  0px 4px 8px 0px hsl(268 60% 4% / 0.40),
+    0px 2px 6px -1px hsl(268 60% 4% / 0.35);
+  --shadow-lg:  0px 6px 12px 0px hsl(268 60% 4% / 0.45),
+    0px 4px 10px -1px hsl(268 60% 4% / 0.40);
+  --shadow-xl:  0px 10px 20px 0px hsl(268 60% 4% / 0.50),
+    0px 8px 14px -1px hsl(268 60% 4% / 0.40);
+  --shadow-2xl: 0px 16px 32px 0px hsl(268 60% 4% / 0.65);
+  --tracking-normal: 0em;
+  --spacing: 0.25rem;
+}
+
+/* ── Dark mode — identical (AitherOS is always dark) ── */
+[data-theme='aitheros'].dark {
+  --background: oklch(0.12 0.025 268);
+  --foreground: oklch(0.92 0.006 265);
+  --card: oklch(0.165 0.022 270);
+  --card-foreground: oklch(0.92 0.006 265);
+  --popover: oklch(0.165 0.022 270);
+  --popover-foreground: oklch(0.92 0.006 265);
+  --primary: oklch(0.62 0.22 290);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.20 0.025 272);
+  --secondary-foreground: oklch(0.90 0.005 265);
+  --muted: oklch(0.22 0.020 270);
+  --muted-foreground: oklch(0.60 0.015 268);
+  --accent: oklch(0.20 0.030 280);
+  --accent-foreground: oklch(0.92 0.006 265);
+  --destructive: oklch(0.63 0.19 23);
+  --destructive-foreground: oklch(1 0 0);
+  --border: oklch(0.25 0.030 275);
+  --input: oklch(0.20 0.022 270);
+  --ring: oklch(0.62 0.22 290);
+  --chart-1: oklch(0.73 0.17 160);
+  --chart-2: oklch(0.62 0.22 290);
+  --chart-3: oklch(0.82 0.16 85);
+  --chart-4: oklch(0.85 0.17 185);
+  --chart-5: oklch(0.65 0.08 30);
+  --sidebar: oklch(0.09 0.032 268);
+  --sidebar-foreground: oklch(0.90 0.008 268);
+  --sidebar-primary: oklch(0.62 0.22 290);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.17 0.035 282);
+  --sidebar-accent-foreground: oklch(0.92 0.006 265);
+  --sidebar-border: oklch(0.20 0.028 272);
+  --sidebar-ring: oklch(0.62 0.22 290);
+  --font-sans: 'Inter', sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: 'Fira Code', 'JetBrains Mono', monospace;
+  --radius: 0.5rem;
+  --shadow-x: 0px;
+  --shadow-y: 2px;
+  --shadow-blur: 8px;
+  --shadow-spread: 0px;
+  --shadow-opacity: 0.5;
+  --shadow-color: hsl(268 60% 4%);
+  --shadow-2xs: 0px 1px 3px 0px hsl(268 60% 4% / 0.18);
+  --shadow-xs:  0px 1px 3px 0px hsl(268 60% 4% / 0.18);
+  --shadow-sm:  0px 1px 3px 0px hsl(268 60% 4% / 0.35),
+    0px 1px 4px -1px hsl(268 60% 4% / 0.35);
+  --shadow:     0px 2px 5px 0px hsl(268 60% 4% / 0.35),
+    0px 2px 3px -1px hsl(268 60% 4% / 0.30);
+  --shadow-md:  0px 4px 8px 0px hsl(268 60% 4% / 0.40),
+    0px 2px 6px -1px hsl(268 60% 4% / 0.35);
+  --shadow-lg:  0px 6px 12px 0px hsl(268 60% 4% / 0.45),
+    0px 4px 10px -1px hsl(268 60% 4% / 0.40);
+  --shadow-xl:  0px 10px 20px 0px hsl(268 60% 4% / 0.50),
+    0px 8px 14px -1px hsl(268 60% 4% / 0.40);
+  --shadow-2xl: 0px 16px 32px 0px hsl(268 60% 4% / 0.65);
+}
+
+/* ── @theme inline block — maps CSS vars to Tailwind tokens ── */
+[data-theme='aitheros'] {
+  @theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+    --color-sidebar: var(--sidebar);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-ring: var(--sidebar-ring);
+    /* AitherOS semantic colors */
+    --color-lexus: oklch(0.73 0.17 160);
+    --color-aither: oklch(0.60 0.22 290);
+    --color-alert: oklch(0.82 0.14 85);
+    --color-argos: oklch(0.85 0.15 185);
+    --font-sans: var(--font-sans);
+    --font-mono: var(--font-mono);
+    --font-serif: var(--font-serif);
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+    --shadow-2xs: var(--shadow-2xs);
+    --shadow-xs: var(--shadow-xs);
+    --shadow-sm: var(--shadow-sm);
+    --shadow: var(--shadow);
+    --shadow-md: var(--shadow-md);
+    --shadow-lg: var(--shadow-lg);
+    --shadow-xl: var(--shadow-xl);
+    --shadow-2xl: var(--shadow-2xl);
+  }
+}

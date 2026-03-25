@@ -1,0 +1,40 @@
+# ── Secrets & credentials ─────────────────────────────
+.env
+.env.local
+.env.*.local
+*.env.local
+
+# ── Build artifacts ───────────────────────────────────
+*.exe
+*.dll
+*.so
+*.dylib
+backend/bin/
+tmp/
+dist/
+coverage/
+*.test
+*.out
+
+# ── Dependencies ──────────────────────────────────────
+vendor/
+node_modules/
+
+# ── Next.js ───────────────────────────────────────────
+.next/
+.vercel/
+
+# ── Runtime / generated ───────────────────────────────
+uploads/
+logs/
+*.log
+
+# ── OS ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
