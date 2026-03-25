@@ -448,3 +448,135 @@ All backend communication goes through `src/lib/api.ts` — a single typed clien
 - **Events** are published via `eventBus.Publish()` (per-execution) or `eventBus.PublishSystem()` (system-level messages)
 - **Frontend state** — pages are `'use client'` components that fetch data in `useEffect` with `session.accessToken`; no server components in the dashboard
 - **Prompt interpolation** — `{{variable_name}}` syntax, resolved in `internal/engine/template.go`
+
+---
+
+## Environment Variables Reference
+
+### Backend (`.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SERVER_HOST` | No | Bind address (default `0.0.0.0`) |
+| `SERVER_PORT` | No | HTTP port (default `8080`) |
+| `ENVIRONMENT` | No | `development` or `production` |
+| `DATABASE_URL` | Yes | Full PostgreSQL DSN |
+| `POSTGRES_HOST` | Yes | DB host (used if DATABASE_URL not set) |
+| `POSTGRES_PORT` | No | DB port (default `5432`) |
+| `POSTGRES_USER` | Yes | DB username |
+| `POSTGRES_PASSWORD` | Yes | DB password |
+| `POSTGRES_DB` | Yes | DB name |
+| `REDIS_URL` | Yes | Full Redis URL (e.g. `redis://127.0.0.1:6379/0`) |
+| `JWT_SECRET` | Yes | HS256 signing key — generate with `openssl rand -hex 32` |
+| `JWT_EXPIRY` | No | Token lifetime (default `24h`) |
+| `LLM_API_BASE` | Yes | LiteLLM (or OpenAI-compatible) base URL, e.g. `http://127.0.0.1:4000/v1` |
+| `LLM_API_KEY` | Yes | API key for the LLM proxy |
+| `LLM_MODEL` | Yes | Default model name if an agent has no provider set (e.g. `gpt-4o-mini`) |
+| `PICOCLAW_URL` | No | PicoClaw agent engine URL (if using PicoClaw adapter) |
+| `PICOCLAW_TIMEOUT` | No | Request timeout to PicoClaw (default `120s`) |
+| `CORS_ORIGINS` | Yes | Comma-separated allowed origins, e.g. `http://localhost:3000,https://your-domain.com` |
+| `ENCRYPTION_KEY` | Yes | AES key for encrypting sensitive provider credentials — generate with `openssl rand -base64 32` |
+
+### Frontend (`frontend/.env.local`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `NEXTAUTH_URL` | Yes | Full URL of the frontend (e.g. `https://oficina.aither.systems`) |
+| `NEXTAUTH_SECRET` | Yes | NextAuth signing secret — generate with `openssl rand -base64 32` |
+| `NEXT_PUBLIC_API_URL` | Yes | Backend public URL visible to the browser (e.g. `https://backoffice.aither.systems`) |
+
+---
+
+## LiteLLM Setup
+
+AitherOS uses LiteLLM as a unified LLM proxy. All agent requests go through it, which means you can route to OpenAI, Anthropic, Ollama, Groq, or any OpenAI-compatible provider without changing the orchestrator.
+
+### Minimal `litellm_config.yaml`
+
+```yaml
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: sk-your-openai-key
+
+  - model_name: claude-3-5-haiku
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-20241022
+      api_key: sk-ant-your-anthropic-key
+
+  - model_name: llama3
+    litellm_params:
+      model: ollama/llama3
+      api_base: http://localhost:11434
+
+general_settings:
+  master_key: dummy_token   # matches LLM_API_KEY in .env
+```
+
+### Start LiteLLM
+
+```bash
+pip install litellm
+litellm --config litellm_config.yaml --port 4000
+```
+
+Once running, set in `.env`:
+```
+LLM_API_BASE=http://127.0.0.1:4000/v1
+LLM_API_KEY=dummy_token
+LLM_MODEL=gpt-4o-mini
+```
+
+Any model name you define in `litellm_config.yaml` can then be set on an individual agent via `model` field or as the system default via `LLM_MODEL`.
+
+---
+
+## Troubleshooting
+
+### Execution stays in `planning` forever
+- Check backend logs: `tail -f logs/backend-error.log`
+- The planning phase calls the LLM — verify `LLM_API_BASE` is reachable and `LLM_API_KEY` is valid
+- Check if the workforce has at least one active agent with a working provider
+
+### Execution stays in `running` / step never completes
+- The agent may be looping — check its `max_iterations` is not too high
+- Look at the message stream in the execution detail page for the agent's last output
+- An agent stuck in `needs_help` requires a human intervention message via the chat input
+- Check for `blocked` subtasks — a subtask enters `blocked` if its `depends_on` subtask never completed
+
+### WebSocket not connecting
+- Ensure the `CORS_ORIGINS` env var includes your frontend URL
+- The WS endpoint requires a `?token=<jwt>` query param — check the browser console for 401 errors
+- Redis must be running for the EventBus to function
+
+### Profile photo not saving
+- Uploads are stored in `uploads/` relative to the working directory (i.e. `/opt/AitherOS/uploads/`)
+- The backend serves them at `/uploads/*` — check that the backend's file server is running
+- Ensure the uploaded file is a valid JPEG, PNG, WebP, or GIF (SVG is rejected for security)
+
+### Agent not using MCP tools
+- Verify the MCP server is attached to the workforce (Workforce detail → MCP Tools section)
+- Verify the agent has been granted access (Grant All or specific tools)
+- Click **Discover Tools** on the MCP server page to refresh the cached tool list
+- Check backend logs for MCP connection errors when the execution starts
+
+### Frontend build fails
+- Run `cd frontend && npm install` to ensure all dependencies are installed
+- Ensure `frontend/.env.local` exists with all required variables
+- TypeScript errors are treated as build errors — fix any type issues before building
+
+### Tests failing
+- Unit tests: `make test-unit` — no external deps needed
+- Integration tests: `make test-integration` — requires a running PostgreSQL and Redis instance
+- Run `make setup-test-db` first to create the test database schema
+
+---
+
+## Contributing
+
+1. **Backend changes** — always run `make test-unit` before committing; add tests for new orchestrator logic in `backend/tests/unit/`
+2. **DB changes** — always add a numbered migration script in `scripts/` (e.g. `005_your_feature.sql`); never modify existing migration files
+3. **API changes** — update `frontend/src/lib/api.ts` with new interface types and methods to keep the typed client in sync
+4. **New events** — add the event type constant to `backend/internal/models/event.go` and the corresponding UI config to the execution page's `eventTypeConfig` map
+5. **Frontend pages** — follow the existing pattern: `'use client'`, load data in `useEffect` with `session.accessToken`, use `api.*` methods, never call `fetch()` directly

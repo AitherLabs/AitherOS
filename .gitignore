@@ -10,6 +10,7 @@
 *.so
 *.dylib
 backend/bin/
+aitherd
 tmp/
 dist/
 coverage/
