@@ -91,6 +91,8 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.HandleFunc("GET /api/v1/workforces/{id}/preflight", executions.Preflight)
 	mux.HandleFunc("GET /api/v1/executions/{execID}/discussion", executions.DiscussionMessages)
 	mux.HandleFunc("GET /api/v1/executions/{execID}/review", executions.ReviewMessages)
+	mux.HandleFunc("POST /api/v1/executions/{execID}/qa", executions.AskQA)
+	mux.HandleFunc("GET /api/v1/executions/{execID}/qa", executions.ListQA)
 
 	// File uploads
 	mux.HandleFunc("POST /api/v1/upload", upload.Upload)

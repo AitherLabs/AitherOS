@@ -15,6 +15,7 @@ import {
   IconChevronRight,
   IconHandStop,
   IconLoader2,
+  IconMessageQuestion,
   IconPencil,
   IconPlayerPlay,
   IconRefresh,
@@ -23,7 +24,7 @@ import {
   IconTool,
   IconX
 } from '@tabler/icons-react';
-import api, { Agent, Execution, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
+import api, { Agent, Execution, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { Input } from '@/components/ui/input';
@@ -986,6 +987,11 @@ export default function ExecutionDetailPage() {
   const [interveneStatus, setInterveneStatus] = useState<'idle' | 'ok' | 'err'>('idle');
   const [interveneErrMsg, setInterveneErrMsg] = useState('');
 
+  // Q&A
+  const [qaItems, setQaItems] = useState<ExecutionQA[]>([]);
+  const [qaQuestion, setQaQuestion] = useState('');
+  const [qaLoading, setQaLoading] = useState(false);
+
   // Metadata editing
   const [metaEditOpen, setMetaEditOpen] = useState(false);
   const [metaTitle, setMetaTitle] = useState('');
@@ -1036,6 +1042,12 @@ export default function ExecutionDetailPage() {
         const revRes = await api.getReviewMessages(execId);
         setReviewMessages(revRes.data || []);
       } catch { /* no review yet */ }
+
+      // Load Q&A history (only relevant once completed)
+      try {
+        const qaRes = await api.listExecutionQA(execId);
+        setQaItems(qaRes.data || []);
+      } catch { /* table may not exist yet on older deployments */ }
 
       // Load agents for avatars
       const agRes = await api.listAgents();
@@ -1280,6 +1292,22 @@ export default function ExecutionDetailPage() {
 
   const isRunning = execution.status === 'running' || execution.status === 'planning';
   const hasNeedsHelp = execution.plan?.some(s => s.status === 'needs_help');
+
+  async function handleAskQA() {
+    if (!qaQuestion.trim() || qaLoading) return;
+    setQaLoading(true);
+    try {
+      const res = await api.askExecutionQA(execId, qaQuestion.trim());
+      if (res.data) {
+        setQaItems(prev => [...prev, res.data]);
+        setQaQuestion('');
+      }
+    } catch (err) {
+      console.error('QA failed:', err);
+    } finally {
+      setQaLoading(false);
+    }
+  }
 
   async function handleSaveMeta() {
     setMetaSaving(true);
@@ -1687,6 +1715,59 @@ export default function ExecutionDetailPage() {
                 messages={reviewMessages}
                 leaderAgentId={workforce?.leader_agent_id}
               />
+            )}
+
+            {/* Post-execution Q&A — ask anything about what happened */}
+            {execution.status === 'completed' && (
+              <div className='rounded-xl border border-[#14FFF7]/20 bg-[#14FFF7]/5 overflow-hidden'>
+                <div className='flex items-center gap-2 border-b border-border/30 px-4 py-2.5'>
+                  <IconMessageQuestion className='h-3.5 w-3.5 text-[#14FFF7]' />
+                  <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Ask about this execution</span>
+                  {qaItems.length > 0 && (
+                    <span className='ml-auto text-[10px] text-muted-foreground/40'>{qaItems.length} question{qaItems.length !== 1 ? 's' : ''}</span>
+                  )}
+                </div>
+
+                {/* Existing Q&A pairs */}
+                {qaItems.length > 0 && (
+                  <div className='divide-y divide-border/20'>
+                    {qaItems.map((qa) => (
+                      <div key={qa.id} className='px-4 py-3 space-y-2'>
+                        <div className='flex items-start gap-2'>
+                          <span className='mt-0.5 text-[10px] font-semibold text-[#FFBF47] shrink-0'>Q</span>
+                          <p className='text-xs text-foreground/80 leading-relaxed'>{qa.question}</p>
+                        </div>
+                        <div className='flex items-start gap-2'>
+                          <span className='mt-0.5 text-[10px] font-semibold text-[#14FFF7] shrink-0'>A</span>
+                          <p className='whitespace-pre-wrap text-xs text-foreground/70 leading-relaxed'>{qa.answer}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Input */}
+                <div className='p-3 flex gap-2'>
+                  <Textarea
+                    value={qaQuestion}
+                    onChange={(e) => setQaQuestion(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAskQA(); } }}
+                    placeholder='Ask anything about what happened in this execution…'
+                    className='min-h-[60px] resize-none text-xs bg-background/40 border-border/40 focus:border-[#14FFF7]/40'
+                    disabled={qaLoading}
+                  />
+                  <button
+                    onClick={handleAskQA}
+                    disabled={qaLoading || !qaQuestion.trim()}
+                    className='shrink-0 flex items-center justify-center h-9 w-9 self-end rounded-lg border border-[#14FFF7]/30 bg-[#14FFF7]/10 text-[#14FFF7] hover:bg-[#14FFF7]/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors'
+                  >
+                    {qaLoading
+                      ? <IconLoader2 className='h-3.5 w-3.5 animate-spin' />
+                      : <IconSend className='h-3.5 w-3.5' />
+                    }
+                  </button>
+                </div>
+              </div>
             )}
 
             <div ref={messagesEndRef} />

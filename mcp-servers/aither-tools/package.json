@@ -1,0 +1,31 @@
+{
+  "name": "@aitherlabs/aither-tools",
+  "version": "1.0.0",
+  "description": "Aither-Tools: The official AitherOS MCP server — filesystem, shell, web, system, git and network capabilities for AI agent workforces.",
+  "author": "AitherLabs <labs@aitheros.io>",
+  "license": "MIT",
+  "homepage": "https://aitheros.io",
+  "keywords": ["mcp", "aitheros", "aitherlabs", "agents", "tools", "ai-workforce"],
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "aither-tools": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "cheerio": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

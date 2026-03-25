@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0D0F14"/>
+      <stop offset="100%" style="stop-color:#1A1D26"/>
+    </linearGradient>
+    <linearGradient id="hex" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#9A66FF"/>
+      <stop offset="100%" style="stop-color:#14FFF7"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFFFFF"/>
+      <stop offset="100%" style="stop-color:#E0D0FF"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="256" fill="url(#bg)"/>
+
+  <!-- Outer hex ring (glow) -->
+  <polygon
+    points="256,52 416,152 416,352 256,452 96,352 96,152"
+    fill="none"
+    stroke="url(#hex)"
+    stroke-width="3"
+    opacity="0.35"
+    filter="url(#glow)"
+  />
+
+  <!-- Inner hex -->
+  <polygon
+    points="256,80 400,162 400,330 256,412 112,330 112,162"
+    fill="none"
+    stroke="url(#hex)"
+    stroke-width="2"
+    opacity="0.6"
+  />
+
+  <!-- Filled hex body -->
+  <polygon
+    points="256,108 376,174 376,310 256,376 136,310 136,174"
+    fill="url(#hex)"
+    opacity="0.12"
+  />
+
+  <!-- Lightning bolt — Aither symbol -->
+  <path
+    d="M278 148 L218 268 L252 268 L234 372 L302 240 L266 240 Z"
+    fill="url(#bolt)"
+    filter="url(#glow)"
+  />
+
+  <!-- Corner accent dots -->
+  <circle cx="256" cy="68" r="5" fill="#9A66FF" opacity="0.8"/>
+  <circle cx="410" cy="155" r="5" fill="#9A66FF" opacity="0.8"/>
+  <circle cx="410" cy="355" r="5" fill="#9A66FF" opacity="0.8"/>
+  <circle cx="256" cy="442" r="5" fill="#9A66FF" opacity="0.8"/>
+  <circle cx="102" cy="355" r="5" fill="#9A66FF" opacity="0.8"/>
+  <circle cx="102" cy="155" r="5" fill="#9A66FF" opacity="0.8"/>
+</svg>

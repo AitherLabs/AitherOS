@@ -219,6 +219,17 @@ class ApiClient {
     return this.request<Message[]>(`/api/v1/executions/${execId}/review`);
   }
 
+  async listExecutionQA(execId: string) {
+    return this.request<ExecutionQA[]>(`/api/v1/executions/${execId}/qa`);
+  }
+
+  async askExecutionQA(execId: string, question: string) {
+    return this.request<ExecutionQA>(`/api/v1/executions/${execId}/qa`, {
+      method: 'POST',
+      body: JSON.stringify({ question })
+    });
+  }
+
   async preflightWorkforce(wfId: string) {
     return this.request<{ ok: boolean; checks: { name: string; ok: boolean; detail: string }[] }>(
       `/api/v1/workforces/${wfId}/preflight`
@@ -750,6 +761,14 @@ export interface ActivityEvent {
   resource_id: string;
   summary: string;
   metadata: Record<string, any>;
+  created_at: string;
+}
+
+export interface ExecutionQA {
+  id: string;
+  execution_id: string;
+  question: string;
+  answer: string;
   created_at: string;
 }
 

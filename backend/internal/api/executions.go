@@ -299,6 +299,57 @@ func (h *ExecutionHandler) Resume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed"})
 }
 
+// AskQA submits a question about a finished execution and returns an LLM answer.
+func (h *ExecutionHandler) AskQA(w http.ResponseWriter, r *http.Request) {
+	execID, err := uuid.Parse(r.PathValue("execID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+
+	var body struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Question) == "" {
+		writeError(w, http.StatusBadRequest, "question is required")
+		return
+	}
+
+	answer, err := h.orchestrator.AnswerQuestion(r.Context(), execID, body.Question)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "qa failed: "+err.Error())
+		return
+	}
+
+	qa, err := h.store.CreateExecutionQA(r.Context(), execID, body.Question, answer)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save qa: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, qa)
+}
+
+// ListQA returns all Q&A pairs for an execution.
+func (h *ExecutionHandler) ListQA(w http.ResponseWriter, r *http.Request) {
+	execID, err := uuid.Parse(r.PathValue("execID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+
+	items, err := h.store.ListExecutionQA(r.Context(), execID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list qa: "+err.Error())
+		return
+	}
+	if items == nil {
+		items = []*store.ExecutionQA{}
+	}
+
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (h *ExecutionHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	execID, err := uuid.Parse(r.PathValue("execID"))
 	if err != nil {
