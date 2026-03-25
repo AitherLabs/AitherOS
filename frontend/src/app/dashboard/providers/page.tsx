@@ -346,14 +346,14 @@ export default function ProvidersPage() {
 
       {/* Create Provider Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className='max-w-lg'>
-          <DialogHeader>
+        <DialogContent className='max-w-lg max-h-[90vh] flex flex-col'>
+          <DialogHeader className='shrink-0'>
             <DialogTitle>Add Provider</DialogTitle>
             <DialogDescription>
               Connect a new LLM backend to power your agents.
             </DialogDescription>
           </DialogHeader>
-          <div className='space-y-4 py-2'>
+          <div className='overflow-y-auto flex-1 min-h-0 space-y-4 py-2'>
             <div className='space-y-2'>
               <Label>Name</Label>
               <Input
@@ -415,7 +415,7 @@ export default function ProvidersPage() {
               <Label>Set as default provider</Label>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className='shrink-0'>
             <Button variant='outline' onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
@@ -435,15 +435,15 @@ export default function ProvidersPage() {
         open={!!editProvider}
         onOpenChange={(o) => !o && setEditProvider(null)}
       >
-        <DialogContent className='max-w-lg'>
-          <DialogHeader>
+        <DialogContent className='max-w-lg max-h-[90vh] flex flex-col'>
+          <DialogHeader className='shrink-0'>
             <DialogTitle>Edit Provider</DialogTitle>
             <DialogDescription>
               Update provider configuration. Leave API key blank to keep
               existing.
             </DialogDescription>
           </DialogHeader>
-          <div className='space-y-4 py-2'>
+          <div className='overflow-y-auto flex-1 min-h-0 space-y-4 py-2'>
             <div className='space-y-2'>
               <Label>Name</Label>
               <Input
@@ -494,7 +494,7 @@ export default function ProvidersPage() {
               </div>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className='shrink-0'>
             <Button
               variant='outline'
               onClick={() => setEditProvider(null)}

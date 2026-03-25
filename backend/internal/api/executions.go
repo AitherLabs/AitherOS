@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/aitheros/backend/internal/models"
 	"github.com/aitheros/backend/internal/orchestrator"
@@ -232,4 +233,93 @@ func (h *ExecutionHandler) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONList(w, http.StatusOK, msgs, total)
+}
+
+// Preflight validates a workforce before launching an execution (no side effects).
+func (h *ExecutionHandler) Preflight(w http.ResponseWriter, r *http.Request) {
+	wfID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workforce id")
+		return
+	}
+	result := h.orchestrator.Preflight(r.Context(), wfID)
+	writeJSON(w, http.StatusOK, result)
+}
+
+// DiscussionMessages returns only the pre-execution discussion messages for an execution.
+func (h *ExecutionHandler) DiscussionMessages(w http.ResponseWriter, r *http.Request) {
+	execID, err := uuid.Parse(r.PathValue("execID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+
+	msgs, err := h.store.ListMessagesByPhase(r.Context(), execID, models.MessagePhaseDiscussion)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list discussion messages: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, msgs)
+}
+
+// ReviewMessages returns the post-execution review messages for an execution.
+func (h *ExecutionHandler) ReviewMessages(w http.ResponseWriter, r *http.Request) {
+	execID, err := uuid.Parse(r.PathValue("execID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+
+	msgs, err := h.store.ListMessagesByPhase(r.Context(), execID, models.MessagePhaseReview)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list review messages: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, msgs)
+}
+
+func (h *ExecutionHandler) Resume(w http.ResponseWriter, r *http.Request) {
+	execID, err := uuid.Parse(r.PathValue("execID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+
+	if err := h.orchestrator.ResumeExecution(r.Context(), execID); err != nil {
+		if strings.Contains(err.Error(), "not halted") {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to resume execution: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed"})
+}
+
+func (h *ExecutionHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	execID, err := uuid.Parse(r.PathValue("execID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+
+	exec, err := h.store.GetExecution(r.Context(), execID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "execution not found")
+		return
+	}
+	if exec.Status == models.ExecutionStatusRunning || exec.Status == models.ExecutionStatusPlanning {
+		writeError(w, http.StatusConflict, "cannot delete a running execution — halt it first")
+		return
+	}
+
+	if err := h.store.DeleteExecution(r.Context(), execID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete execution: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": execID.String()})
 }

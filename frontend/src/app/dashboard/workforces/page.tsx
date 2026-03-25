@@ -482,9 +482,9 @@ export default function WorkforcesPage() {
 
       {/* ── Create Workforce Dialog (Multi-Step) ── */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className='max-w-2xl gap-0 p-0'>
+        <DialogContent className='max-w-2xl gap-0 p-0 max-h-[90vh] flex flex-col'>
           {/* Step Indicator */}
-          <div className='flex items-center gap-2 border-b px-6 py-4'>
+          <div className='shrink-0 flex items-center gap-2 border-b px-6 py-4'>
             {['Identity', 'Team', 'Mission'].map((label, i) => (
               <div key={label} className='flex items-center gap-2'>
                 <button
@@ -508,7 +508,7 @@ export default function WorkforcesPage() {
             ))}
           </div>
 
-          <div className='px-6 py-6'>
+          <div className='overflow-y-auto flex-1 min-h-0 px-6 py-6'>
             {/* Step 0: Identity */}
             {createStep === 0 && (
               <div className='space-y-6'>
@@ -703,7 +703,7 @@ export default function WorkforcesPage() {
           </div>
 
           {/* Footer */}
-          <div className='flex items-center justify-between border-t px-6 py-4'>
+          <div className='shrink-0 flex items-center justify-between border-t px-6 py-4'>
             <div>
               {createStep > 0 && (
                 <Button variant='ghost' onClick={() => setCreateStep(createStep - 1)}>

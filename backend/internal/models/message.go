@@ -17,6 +17,14 @@ const (
 	MessageRoleTool      MessageRole = "tool"
 )
 
+// MessagePhase identifies which execution phase a message belongs to.
+const (
+	MessagePhaseDiscussion        = "discussion"        // pre-execution team discussion
+	MessagePhaseExecution         = "execution"         // main subtask execution
+	MessagePhasePeerConsultation  = "peer_consultation" // mid-execution agent-to-agent consultation (P2)
+	MessagePhaseReview            = "review"            // post-execution review (P3)
+)
+
 // Message stores a single LLM call (prompt + response) for full observability.
 type Message struct {
 	ID          uuid.UUID      `json:"id" db:"id"`
@@ -24,6 +32,7 @@ type Message struct {
 	AgentID     *uuid.UUID     `json:"agent_id,omitempty" db:"agent_id"`
 	AgentName   string         `json:"agent_name" db:"agent_name"`
 	Iteration   int            `json:"iteration" db:"iteration"`
+	Phase       string         `json:"phase" db:"phase"`
 	Role        MessageRole    `json:"role" db:"role"`
 	Content     string         `json:"content" db:"content"`
 	TokensIn    int64          `json:"tokens_input" db:"tokens_input"`

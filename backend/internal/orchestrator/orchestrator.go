@@ -21,9 +21,11 @@ import (
 
 // completionSignal is the structured JSON that agents return to signal their state.
 type completionSignal struct {
-	Status  string `json:"status"`  // "complete", "needs_help", "blocked", or omit to continue
-	Summary string `json:"summary"` // Final summary (when status=="complete")
-	Reason  string `json:"reason"`  // Explanation for needs_help or blocked
+	Status    string `json:"status"`    // "complete", "needs_help", "blocked", "ask_peer", or omit to continue
+	Summary   string `json:"summary"`   // Final summary (when status=="complete")
+	Reason    string `json:"reason"`    // Explanation for needs_help or blocked
+	PeerAgent string `json:"peer"`      // Peer agent name to consult (when status=="ask_peer")
+	Question  string `json:"question"`  // Question to ask the peer (when status=="ask_peer")
 }
 
 // maxConversationMemory is the number of recent messages to include as context.
@@ -185,128 +187,33 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 		return
 	}
 
-	// Ask each agent to contribute to the strategy
-	var strategyParts []string
-	for _, agent := range agents {
-		eng, modelName, err := o.resolveConnector(ctx, agent)
-		if err != nil {
-			o.eventBus.PublishSystem(ctx, exec.ID, fmt.Sprintf("No engine available for agent '%s': %v, skipping", agent.Name, err))
-			continue
+	var strategy string
+	var structuredPlan []models.ExecutionSubtask
+
+	if len(agents) > 1 {
+		// ── Multi-agent: run collaborative discussion phase ──
+		leaderAgent := findLeaderAgent(agents, wf.LeaderAgentID)
+		if leaderAgent == nil {
+			o.failExecution(ctx, exec.ID, wf.ID, "no agents available")
+			return
 		}
-
-		agentID := agent.ID
-		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &agentID, agent.Name, models.EventTypeAgentThinking,
-			fmt.Sprintf("%s is analyzing the objective and formulating a strategy...", agent.Name), nil))
-
-		// Interpolate variables into system prompt (use empty inputs for planning)
-		systemPrompt, _ := engine.InterpolatePrompt(agent.SystemPrompt, agent.Variables, nil)
-		instructions, _ := engine.InterpolatePrompt(agent.Instructions, agent.Variables, nil)
-
-		// Build teammate context: who else is on this team and what do they do
-		var teammateLines []string
-		for _, teammate := range agents {
-			if teammate.ID == agent.ID {
-				continue
-			}
-			brief, _ := engine.InterpolatePrompt(teammate.Instructions, teammate.Variables, nil)
-			if idx := strings.Index(brief, "\n"); idx > 0 {
-				brief = brief[:idx]
-			}
-			if len(brief) > 120 {
-				brief = brief[:120] + "..."
-			}
-			toolNote := ""
-			if len(teammate.Tools) > 0 {
-				toolNote = fmt.Sprintf(" [tools: %s]", strings.Join(teammate.Tools, ", "))
-			}
-			teammateLines = append(teammateLines, fmt.Sprintf("  • %s%s — %s", teammate.Name, toolNote, brief))
-		}
-		teamSection := ""
-		if len(teammateLines) > 0 {
-			teamSection = "YOUR TEAMMATES:\n" + strings.Join(teammateLines, "\n") + "\n\n"
-		}
-
-		// Tool context for this agent
-		toolSection := "YOUR TOOLS: none assigned for this workforce (work through reasoning and coordination)\n\n"
-		if len(agent.Tools) > 0 {
-			toolSection = fmt.Sprintf("YOUR TOOLS: %s\n\n", strings.Join(agent.Tools, ", "))
-		}
-
-		// Share what previous teammates already proposed (incremental coordination)
-		prevSection := ""
-		if len(strategyParts) > 0 {
-			prevSection = "WHAT YOUR TEAMMATES HAVE ALREADY PROPOSED:\n"
-			for _, part := range strategyParts {
-				prevSection += part + "\n---\n"
-			}
-			prevSection += "\nBuild on their proposals — coordinate, don't duplicate.\n\n"
-		}
-
-		planPrompt := fmt.Sprintf(
-			"You are %s, a specialist agent in a collaborative multi-agent workforce.\n\n"+
-				"== MISSION OBJECTIVE ==\n%s\n\n"+
-				"== YOUR ROLE & INSTRUCTIONS ==\n%s\n\n"+
-				"%s"+ // toolSection
-				"%s"+ // teamSection
-				"%s"+ // prevSection
-				"Now propose YOUR specific contribution to the team strategy:\n"+
-				"- Be concise and direct\n"+
-				"- Acknowledge what your teammates will handle — don't overlap\n"+
-				"- Focus on what YOU uniquely bring to this mission\n"+
-				"- List only the information you still need from the human operator to begin",
-			agent.Name, exec.Objective, instructions, toolSection, teamSection, prevSection,
-		)
-
-		resp, err := eng.Submit(ctx, engine.TaskRequest{
-			AgentID:      agent.ID,
-			AgentName:    agent.Name,
-			SystemPrompt: systemPrompt,
-			Instructions: instructions,
-			Message:      planPrompt,
-			Model:        modelName,
-			Tools:        agent.Tools,
-		})
-		if err != nil {
-			o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
-				fmt.Sprintf("%s failed during planning: %s", agent.Name, err.Error()), nil))
-			continue
-		}
-
-		// Log planning messages for observability
-		promptMsg := &models.Message{
-			ID: uuid.New(), ExecutionID: exec.ID, AgentID: &agentID, AgentName: agent.Name,
-			Iteration: 0, Role: models.MessageRoleUser, Content: planPrompt,
-			Model: modelName, CreatedAt: time.Now(),
-		}
-		o.store.CreateMessage(ctx, promptMsg)
-
-		responseMsg := &models.Message{
-			ID: uuid.New(), ExecutionID: exec.ID, AgentID: &agentID, AgentName: agent.Name,
-			Iteration: 0, Role: models.MessageRoleAssistant, Content: resp.Content,
-			TokensIn: resp.TokensIn, TokensOut: resp.TokensOut, Model: resp.Model,
-			LatencyMs: resp.LatencyMs, CreatedAt: time.Now(),
-		}
-		o.store.CreateMessage(ctx, responseMsg)
-
-		strategyParts = append(strategyParts, fmt.Sprintf("## %s\n%s", agent.Name, resp.Content))
-
-		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &agentID, agent.Name, models.EventTypeAgentCompleted,
-			fmt.Sprintf("%s has proposed their strategy.", agent.Name), map[string]any{"content": resp.Content}))
-	}
-
-	strategy := ""
-	for _, part := range strategyParts {
-		strategy += part + "\n\n"
+		structuredPlan, strategy = o.runDiscussion(ctx, exec, wf, agents, leaderAgent)
+	} else if len(agents) == 1 {
+		// ── Single agent: skip discussion, build simple plan directly ──
+		agent := agents[0]
+		singleID := agent.ID
+		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &singleID, agent.Name, models.EventTypeAgentThinking,
+			fmt.Sprintf("%s is analyzing the objective...", agent.Name), nil))
+		structuredPlan = buildSimplePlan(agents, exec.Objective)
+		strategy = fmt.Sprintf("## %s\nSole executor — working on objective directly.\n", agent.Name)
+	} else {
+		o.failExecution(ctx, exec.ID, wf.ID, "no agents in workforce")
+		return
 	}
 
 	if err := o.store.UpdateExecutionStrategy(ctx, exec.ID, strategy); err != nil {
 		log.Printf("orchestrator: update strategy: %v", err)
 	}
-
-	// ── Structured Plan Generation ──
-	// Use the first available agent's engine to produce a JSON execution plan
-	// with subtasks, agent assignments, and dependency graph.
-	structuredPlan := o.generateStructuredPlan(ctx, exec, wf, agents, strategy)
 	if len(structuredPlan) > 0 {
 		if err := o.store.UpdateExecutionPlan(ctx, exec.ID, structuredPlan); err != nil {
 			log.Printf("orchestrator: update plan: %v", err)
@@ -485,12 +392,12 @@ func (o *Orchestrator) ApproveExecution(ctx context.Context, executionID uuid.UU
 	}
 
 	// Start the execution loop
-	go o.runExecutionLoop(exec)
+	go o.runExecutionLoop(exec, false)
 
 	return nil
 }
 
-func (o *Orchestrator) runExecutionLoop(exec *models.Execution) {
+func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	execCtx := &executionContext{cancel: cancel}
 	o.activeExecs.Store(exec.ID, execCtx)
@@ -554,16 +461,47 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution) {
 			log.Printf("orchestrator: store simple plan: %v", err)
 		}
 	}
-	// Reset all subtasks to pending at start of execution
-	for i := range plan {
-		plan[i].Status = models.SubtaskPending
-		plan[i].Output = ""
+
+	if resume {
+		// Resume: preserve completed subtasks, reset interrupted ones back to pending
+		for i := range plan {
+			if plan[i].Status != models.SubtaskDone {
+				plan[i].Status = models.SubtaskPending
+			}
+		}
+		// Inject a resume context message so agents know where they left off
+		resumeMsg := &models.Message{
+			ID: uuid.New(), ExecutionID: exec.ID,
+			Iteration: 0, Role: models.MessageRoleUser,
+			AgentName: "system",
+			Content:   "[RESUME] Execution resumed by operator. Review the conversation history above to understand what has already been done and continue from where the team left off.",
+			CreatedAt: time.Now(),
+		}
+		o.store.CreateMessage(ctx, resumeMsg)
+	} else {
+		// Fresh start: reset all subtasks
+		for i := range plan {
+			plan[i].Status = models.SubtaskPending
+			plan[i].Output = ""
+		}
 	}
 	o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
 
+	doneCount := 0
+	for _, st := range plan {
+		if st.Status == models.SubtaskDone {
+			doneCount++
+		}
+	}
+	pendingCount := len(plan) - doneCount
+
+	eventMsg := fmt.Sprintf("Pipeline execution started — %d subtasks queued.", len(plan))
+	if resume {
+		eventMsg = fmt.Sprintf("Execution resumed — %d subtasks remaining (%d already completed).", pendingCount, doneCount)
+	}
 	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypeExecutionStarted,
-		fmt.Sprintf("Pipeline execution started — %d subtasks queued.", len(plan)),
-		map[string]any{"plan": plan}))
+		eventMsg,
+		map[string]any{"plan": plan, "resume": resume}))
 
 	stepCount := 0
 	var pendingIntervention string
@@ -670,6 +608,7 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution) {
 				exec:            exec,
 				wf:              wf,
 				agent:           agent,
+				allAgents:       agents,
 				iteration:       stepCount + 1,
 				subtask:         subtask,
 				handoffCtx:      handoffCtx,
@@ -684,12 +623,6 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution) {
 
 			if res.Err != nil {
 				subtask.Status = models.SubtaskBlocked
-			} else if res.Complete {
-				subtask.Status = models.SubtaskDone
-				subtask.Output = res.Content
-				o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
-				o.completeExecution(ctx, exec.ID, wf.ID, res.Summary, execCtx.tokensUsed.Load(), stepCount+1)
-				return
 			} else if res.NeedsHelp {
 				subtask.Status = models.SubtaskNeedsHelp
 				o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &subtask.AgentID, subtask.AgentName,
@@ -698,7 +631,12 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution) {
 					map[string]any{"reason": res.NeedsHelpReason, "subtask_id": subtask.ID}))
 			} else {
 				subtask.Status = models.SubtaskDone
-				subtask.Output = res.Content
+				// Prefer summary from completion signal when available
+				if res.Summary != "" {
+					subtask.Output = res.Summary + "\n\n" + res.Content
+				} else {
+					subtask.Output = res.Content
+				}
 
 				o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &subtask.AgentID, subtask.AgentName,
 					models.EventTypeSubtaskDone,
@@ -735,6 +673,13 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution) {
 			outputs = append(outputs, fmt.Sprintf("[%s - %s]:\n%s", st.ID, st.AgentName, st.Output))
 		}
 	}
+
+	// P3: Post-execution quality review by leader (multi-agent only, advisory)
+	leaderAgent := findLeaderAgent(agents, wf.LeaderAgentID)
+	if leaderAgent != nil && len(agents) > 1 {
+		o.runReview(ctx, exec, wf, agents, leaderAgent, plan)
+	}
+
 	o.completeExecution(ctx, exec.ID, wf.ID, joinResults(outputs), execCtx.tokensUsed.Load(), stepCount)
 }
 
@@ -743,6 +688,7 @@ type runAgentParams struct {
 	exec            *models.Execution
 	wf              *models.WorkForce
 	agent           *models.Agent
+	allAgents       []*models.Agent          // all agents in the workforce — needed for ask_peer (P2)
 	iteration       int
 	subtask         *models.ExecutionSubtask // current pipeline step
 	handoffCtx      string                   // outputs from completed depends_on subtasks
@@ -809,15 +755,32 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		taskParts = append(taskParts, fmt.Sprintf("## Human Operator Instruction\n%s", p.interventionMsg))
 	}
 
+	// Build the peer agent list for ask_peer instructions
+	peerList := ""
+	if len(p.allAgents) > 1 {
+		var peerNames []string
+		for _, a := range p.allAgents {
+			if a.ID != agent.ID {
+				peerNames = append(peerNames, a.Name)
+			}
+		}
+		if len(peerNames) > 0 {
+			peerList = "\n\nIf you need a quick answer from a teammate before continuing, you may consult them once:\n" +
+				"```json\n{\"status\": \"ask_peer\", \"peer\": \"<exact agent name>\", \"question\": \"<concise question>\"}\n```\n" +
+				"Available peers: " + strings.Join(peerNames, ", ") + "\nUse this sparingly — only for critical blockers."
+		}
+	}
+
 	taskParts = append(taskParts, "---\n"+
 		"Execute your subtask now. Produce your output directly.\n\n"+
-		"When your subtask is FULLY complete, include this JSON block:\n"+
-		"```json\n{\"status\": \"complete\", \"summary\": \"<one-sentence summary>\"}\n```\n\n"+
+		"When your subtask is FULLY complete, you MUST end your response with this JSON block:\n"+
+		"```json\n{\"status\": \"complete\", \"summary\": \"<one-sentence summary of what you did>\"}\n```\n"+
+		"Note: other agents may have additional subtasks — your completion signal only marks YOUR subtask done, not the whole pipeline.\n\n"+
 		"If you need human input to continue, include:\n"+
 		"```json\n{\"status\": \"needs_help\", \"reason\": \"<what you need>\"}\n```\n\n"+
 		"If you are blocked by a dependency or error, include:\n"+
-		"```json\n{\"status\": \"blocked\", \"reason\": \"<what is blocking you>\"}\n```\n\n"+
-		"If your subtask is done but the overall objective requires more work by other agents, do NOT include any JSON signal — just provide your output.")
+		"```json\n{\"status\": \"blocked\", \"reason\": \"<what is blocking you>\"}\n```"+
+		peerList)
 
 	taskMsg := strings.Join(taskParts, "\n\n")
 
@@ -860,7 +823,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	}
 
 	// ── Tool call feedback loop ──
-	const maxToolRounds = 10
+	const maxToolRounds = 25
 	var allToolCalls []engine.ToolCallInfo
 	var totalTokensIn, totalTokensOut, totalLatency int64
 
@@ -923,6 +886,57 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				fmt.Sprintf("%s tool loop error (round %d): %s", agent.Name, toolRound+1, err.Error()), nil))
 			break
 		}
+	}
+
+	// Guard: if the tool loop broke due to a Submit error, resp could be nil.
+	if resp == nil {
+		log.Printf("orchestrator: %s tool loop produced nil response, returning error", agent.Name)
+		return agentResult{AgentID: agentID, AgentName: agent.Name, Err: fmt.Errorf("nil LLM response after tool loop")}
+	}
+
+	// ── Peer consultation loop (P2) ──
+	// An agent may pause and ask a peer a question before completing its subtask.
+	const maxPeerConsults = 3
+	for peerRound := 0; peerRound < maxPeerConsults; peerRound++ {
+		sig := extractCompletionSignal(resp.Content)
+		if sig == nil || sig.Status != "ask_peer" || sig.PeerAgent == "" || sig.Question == "" {
+			break
+		}
+		// Consume tokens for the response that contained the ask_peer signal
+		totalTokensIn += resp.TokensIn
+		totalTokensOut += resp.TokensOut
+		totalLatency += resp.LatencyMs
+
+		peerAnswer := o.runPeerConsultation(ctx, p.exec, agent, p.allAgents, sig.PeerAgent, sig.Question)
+
+		// Build updated history: current response + peer answer injected as user message
+		history = append(history,
+			engine.ChatMessage{Role: "assistant", Content: resp.Content},
+			engine.ChatMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("[Peer consultation — %s answered]: %s\n\nContinue with your subtask now.", sig.PeerAgent, peerAnswer),
+			},
+		)
+
+		resp, err = eng.Submit(ctx, engine.TaskRequest{
+			AgentID:   agent.ID,
+			AgentName: agent.Name,
+			Model:     modelName,
+			Tools:     agent.Tools,
+			ToolDefs:  toolDefs,
+			History:   history,
+		})
+		if err != nil {
+			o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
+				fmt.Sprintf("%s peer consultation re-submit error: %s", agent.Name, err.Error()), nil))
+			break
+		}
+	}
+
+	// Guard: if the peer loop broke due to a Submit error, resp could be nil.
+	if resp == nil {
+		log.Printf("orchestrator: %s peer loop produced nil response, returning error", agent.Name)
+		return agentResult{AgentID: agentID, AgentName: agent.Name, Err: fmt.Errorf("nil LLM response after peer loop")}
 	}
 
 	// Accumulate final response tokens
@@ -1086,6 +1100,38 @@ func extractCompletionSummary(content string) string {
 		return sig.Summary
 	}
 	return ""
+}
+
+// ResumeExecution resumes a halted execution from where it left off.
+// Completed subtasks are preserved; interrupted ones are reset to pending.
+func (o *Orchestrator) ResumeExecution(ctx context.Context, executionID uuid.UUID) error {
+	exec, err := o.store.GetExecution(ctx, executionID)
+	if err != nil {
+		return fmt.Errorf("execution not found: %w", err)
+	}
+
+	if exec.Status != models.ExecutionStatusHalted {
+		return fmt.Errorf("execution %s is not halted (status: %s)", executionID, exec.Status)
+	}
+
+	o.recordActivity(ctx, &models.ActivityEvent{
+		WorkforceID:  &exec.WorkForceID,
+		ExecutionID:  &exec.ID,
+		ActorType:    models.ActorTypeUser,
+		ActorName:    "operator",
+		Action:       "execution.resumed",
+		ResourceType: "execution",
+		ResourceID:   exec.ID.String(),
+		Summary:      "Execution resumed by operator",
+	})
+
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypeExecutionStarted,
+		"Execution resumed by operator. Continuing from previous state.",
+		map[string]any{"execution_id": executionID}))
+
+	go o.runExecutionLoop(exec, true)
+
+	return nil
 }
 
 // HaltExecution manually stops a running execution.
@@ -1450,6 +1496,549 @@ func resolveModel(agentModel, defaultModel string) string {
 		return agentModel
 	}
 	return defaultModel
+}
+
+// findLeaderAgent returns the designated leader agent, falling back to the first agent.
+func findLeaderAgent(agents []*models.Agent, leaderID *uuid.UUID) *models.Agent {
+	if leaderID != nil {
+		for _, a := range agents {
+			if a.ID == *leaderID {
+				return a
+			}
+		}
+	}
+	if len(agents) > 0 {
+		return agents[0]
+	}
+	return nil
+}
+
+// runDiscussion runs the pre-execution collaborative discussion phase.
+// Each non-leader agent contributes their perspective (1 turn), then the leader
+// synthesizes into an execution plan. Returns the agreed plan and discussion summary.
+// Safety: capped at maxDiscussionTurns total agent turns.
+func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution, wf *models.WorkForce, agents []*models.Agent, leaderAgent *models.Agent) ([]models.ExecutionSubtask, string) {
+	const maxDiscussionTurns = 6
+
+	leaderID := leaderAgent.ID
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &leaderID, leaderAgent.Name,
+		models.EventTypeDiscussionStarted,
+		fmt.Sprintf("%s is calling the team together for a strategy discussion.", leaderAgent.Name),
+		map[string]any{"agents": len(agents), "leader": leaderAgent.Name}))
+
+	// Build team roster string for prompts
+	var rosterLines []string
+	for _, a := range agents {
+		brief := a.Instructions
+		if idx := strings.Index(brief, "\n"); idx > 0 {
+			brief = brief[:idx]
+		}
+		if len(brief) > 100 {
+			brief = brief[:100]
+		}
+		toolNote := ""
+		if len(a.Tools) > 0 {
+			toolNote = fmt.Sprintf(" [tools: %s]", strings.Join(a.Tools, ", "))
+		}
+		leaderMark := ""
+		if a.ID == leaderAgent.ID {
+			leaderMark = " ★ LEADER"
+		}
+		rosterLines = append(rosterLines, fmt.Sprintf("  • %s (ID: %s)%s%s — %s", a.Name, a.ID, leaderMark, toolNote, brief))
+	}
+	teamRoster := strings.Join(rosterLines, "\n")
+
+	// ── Phase 1: Collect contributions from non-leader agents ──
+	var contributions []string
+	turnCount := 0
+
+	for _, agent := range agents {
+		if agent.ID == leaderAgent.ID {
+			continue
+		}
+		if turnCount >= maxDiscussionTurns-1 {
+			break
+		}
+		// Respect cancellation between turns (e.g. HaltExecution during planning)
+		select {
+		case <-ctx.Done():
+			log.Printf("orchestrator: discussion cancelled after %d turns", turnCount)
+			return buildSimplePlan(agents, exec.Objective), "Discussion cancelled"
+		default:
+		}
+
+		eng, modelName, err := o.resolveConnector(ctx, agent)
+		if err != nil {
+			log.Printf("orchestrator: discussion: no engine for %s: %v", agent.Name, err)
+			continue
+		}
+
+		agentID := agent.ID
+		systemPrompt, _ := engine.InterpolatePrompt(agent.SystemPrompt, agent.Variables, nil)
+
+		priorCtx := ""
+		if len(contributions) > 0 {
+			priorCtx = "\n\nYour teammates have already said:\n"
+			for _, c := range contributions {
+				priorCtx += c + "\n---\n"
+			}
+		}
+
+		contributionPrompt := fmt.Sprintf(
+			"## Team Strategy Discussion\n\n"+
+				"**Objective:** %s\n\n"+
+				"**Team:**\n%s%s\n\n"+
+				"You are **%s**. In 2-3 sentences:\n"+
+				"1. State what YOU can contribute to this objective (be specific about your role)\n"+
+				"2. Name who should be the primary executor (the agent whose role best fits the bulk of the work)\n"+
+				"3. If you are NOT the primary executor, describe the specific help you can offer if asked\n\n"+
+				"Be concise and direct. No lengthy explanations.\n\n"+
+				"End with:\n```json\n{\"status\": \"contribute\", \"primary_executor\": \"<AgentName>\", \"my_role\": \"<one sentence>\"}\n```",
+			exec.Objective, teamRoster, priorCtx, agent.Name,
+		)
+
+		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &agentID, agent.Name,
+			models.EventTypeDiscussionTurn,
+			fmt.Sprintf("%s is sharing their perspective on the task...", agent.Name), nil))
+
+		promptMsg := &models.Message{
+			ID: uuid.New(), ExecutionID: exec.ID, AgentID: &agentID, AgentName: agent.Name,
+			Iteration: 0, Phase: models.MessagePhaseDiscussion, Role: models.MessageRoleUser,
+			Content: contributionPrompt, Model: modelName, CreatedAt: time.Now(),
+		}
+		o.store.CreateMessage(ctx, promptMsg)
+
+		resp, err := eng.Submit(ctx, engine.TaskRequest{
+			AgentID:      agent.ID,
+			AgentName:    agent.Name,
+			SystemPrompt: systemPrompt,
+			Message:      contributionPrompt,
+			Model:        modelName,
+		})
+		if err != nil {
+			log.Printf("orchestrator: discussion contribution from %s: %v", agent.Name, err)
+			continue
+		}
+
+		respMsg := &models.Message{
+			ID: uuid.New(), ExecutionID: exec.ID, AgentID: &agentID, AgentName: agent.Name,
+			Iteration: 0, Phase: models.MessagePhaseDiscussion, Role: models.MessageRoleAssistant,
+			Content: resp.Content, TokensIn: resp.TokensIn, TokensOut: resp.TokensOut,
+			Model: resp.Model, LatencyMs: resp.LatencyMs, CreatedAt: time.Now(),
+		}
+		o.store.CreateMessage(ctx, respMsg)
+
+		contributions = append(contributions, fmt.Sprintf("[%s]: %s", agent.Name, resp.Content))
+
+		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &agentID, agent.Name,
+			models.EventTypeDiscussionTurn,
+			fmt.Sprintf("%s has shared their perspective.", agent.Name),
+			map[string]any{"content": truncateStr(resp.Content, 200)}))
+
+		turnCount++
+	}
+
+	// ── Phase 2: Leader synthesizes and produces the execution plan ──
+	leaderEng, leaderModel, err := o.resolveConnector(ctx, leaderAgent)
+	if err != nil {
+		log.Printf("orchestrator: discussion: no engine for leader %s: %v", leaderAgent.Name, err)
+		return buildSimplePlan(agents, exec.Objective), "Fallback plan (leader engine unavailable)"
+	}
+
+	leaderSystemPrompt, _ := engine.InterpolatePrompt(leaderAgent.SystemPrompt, leaderAgent.Variables, nil)
+
+	contributionsText := "(no contributions — you are the sole agent)"
+	if len(contributions) > 0 {
+		contributionsText = strings.Join(contributions, "\n\n")
+	}
+
+	synthPrompt := fmt.Sprintf(
+		"## Leadership Synthesis\n\n"+
+			"You are **%s**, the team leader. Your team has discussed the following objective:\n\n"+
+			"**Objective:** %s\n\n"+
+			"**Team roster:**\n%s\n\n"+
+			"**Team contributions:**\n%s\n\n"+
+			"Based on this discussion, produce the final execution plan. Rules:\n"+
+			"- Assign work to the MOST appropriate agent(s) for their expertise\n"+
+			"- If one agent can handle everything efficiently, assign ALL subtasks to them (minimize token waste)\n"+
+			"- Only include an agent if they add unique value the primary executor cannot provide\n"+
+			"- Each subtask must be a concrete, actionable deliverable — not vague\n"+
+			"- Keep the plan minimal: fewer steps = faster, cheaper execution\n\n"+
+			"Respond with ONLY this JSON (no other text, no markdown fence):\n"+
+			`{"plan":[{"id":"1","agent_id":"<uuid>","agent_name":"<name>","subtask":"<concrete description>","depends_on":[]},`+
+			`{"id":"2","agent_id":"<uuid>","agent_name":"<name>","subtask":"<concrete description>","depends_on":["1"]}]}`,
+		leaderAgent.Name, exec.Objective, teamRoster, contributionsText,
+	)
+
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &leaderID, leaderAgent.Name,
+		models.EventTypeDiscussionTurn,
+		fmt.Sprintf("%s is synthesizing the discussion and finalizing the execution plan...", leaderAgent.Name), nil))
+
+	synthPromptMsg := &models.Message{
+		ID: uuid.New(), ExecutionID: exec.ID, AgentID: &leaderID, AgentName: leaderAgent.Name,
+		Iteration: 0, Phase: models.MessagePhaseDiscussion, Role: models.MessageRoleUser,
+		Content: synthPrompt, Model: leaderModel, CreatedAt: time.Now(),
+	}
+	o.store.CreateMessage(ctx, synthPromptMsg)
+
+	synthResp, err := leaderEng.Submit(ctx, engine.TaskRequest{
+		AgentID:      leaderAgent.ID,
+		AgentName:    leaderAgent.Name,
+		SystemPrompt: leaderSystemPrompt,
+		Message:      synthPrompt,
+		Model:        leaderModel,
+	})
+	if err != nil {
+		log.Printf("orchestrator: discussion: leader synthesis failed: %v", err)
+		return buildSimplePlan(agents, exec.Objective), "Fallback plan (leader synthesis failed)"
+	}
+
+	synthRespMsg := &models.Message{
+		ID: uuid.New(), ExecutionID: exec.ID, AgentID: &leaderID, AgentName: leaderAgent.Name,
+		Iteration: 0, Phase: models.MessagePhaseDiscussion, Role: models.MessageRoleAssistant,
+		Content: synthResp.Content, TokensIn: synthResp.TokensIn, TokensOut: synthResp.TokensOut,
+		Model: synthResp.Model, LatencyMs: synthResp.LatencyMs, CreatedAt: time.Now(),
+	}
+	o.store.CreateMessage(ctx, synthRespMsg)
+
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &leaderID, leaderAgent.Name,
+		models.EventTypeDiscussionConsensus,
+		fmt.Sprintf("%s has finalized the execution plan.", leaderAgent.Name),
+		map[string]any{"agents_in_discussion": len(agents)}))
+
+	// Parse JSON plan from leader's synthesis — extract first { ... last } robustly
+	content := synthResp.Content
+	startIdx := strings.Index(content, "{")
+	endIdx := strings.LastIndex(content, "}")
+	if startIdx >= 0 && endIdx > startIdx {
+		content = content[startIdx : endIdx+1]
+	} else {
+		content = strings.TrimSpace(content)
+	}
+
+	var planResp struct {
+		Plan []models.ExecutionSubtask `json:"plan"`
+	}
+	if err := json.Unmarshal([]byte(content), &planResp); err != nil {
+		log.Printf("orchestrator: discussion: parse plan JSON: %v (content: %.300s)", err, content)
+		return buildSimplePlan(agents, exec.Objective), "Fallback plan (JSON parse failed)"
+	}
+	if len(planResp.Plan) == 0 {
+		return buildSimplePlan(agents, exec.Objective), "Fallback plan (empty plan from leader)"
+	}
+
+	for i := range planResp.Plan {
+		planResp.Plan[i].Status = models.SubtaskPending
+	}
+
+	// Build human-readable discussion summary for the strategy view
+	var summaryParts []string
+	for _, c := range contributions {
+		summaryParts = append(summaryParts, c)
+	}
+	summaryParts = append(summaryParts, fmt.Sprintf("[%s (Leader)]: %s", leaderAgent.Name, synthResp.Content))
+	discussionSummary := strings.Join(summaryParts, "\n\n---\n\n")
+
+	return planResp.Plan, discussionSummary
+}
+
+// runPeerConsultation runs a single LLM call to a peer agent and stores both messages
+// with phase='peer_consultation'. Returns the peer's answer.
+func (o *Orchestrator) runPeerConsultation(
+	ctx context.Context,
+	exec *models.Execution,
+	callerAgent *models.Agent,
+	allAgents []*models.Agent,
+	peerName string,
+	question string,
+) string {
+	// Find the peer agent by name (case-insensitive)
+	var peer *models.Agent
+	for _, a := range allAgents {
+		if strings.EqualFold(a.Name, peerName) && a.ID != callerAgent.ID {
+			peer = a
+			break
+		}
+	}
+	if peer == nil {
+		return fmt.Sprintf("(peer '%s' not found in this workforce)", peerName)
+	}
+
+	peerID := peer.ID
+	callerID := callerAgent.ID
+
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &callerID, callerAgent.Name,
+		models.EventTypePeerConsultation,
+		fmt.Sprintf("%s is consulting %s: %s", callerAgent.Name, peer.Name, question),
+		map[string]any{"caller": callerAgent.Name, "peer": peer.Name, "question": question}))
+
+	eng, modelName, err := o.resolveConnector(ctx, peer)
+	if err != nil {
+		return fmt.Sprintf("(could not reach peer %s: %v)", peer.Name, err)
+	}
+
+	peerSystemPrompt, _ := engine.InterpolatePrompt(peer.SystemPrompt, peer.Variables, exec.Inputs)
+	consultMsg := fmt.Sprintf(
+		"Your teammate %s is mid-task and needs a quick answer from you.\n\n"+
+			"Objective context: %s\n\n"+
+			"Question: %s\n\n"+
+			"Reply concisely in 1-3 sentences. No JSON signal needed — just answer the question.",
+		callerAgent.Name, exec.Objective, question,
+	)
+
+	// Store the consultation prompt
+	o.store.CreateMessage(ctx, &models.Message{
+		ID: uuid.New(), ExecutionID: exec.ID,
+		AgentID: &peerID, AgentName: peer.Name,
+		Iteration: 0, Phase: models.MessagePhasePeerConsultation,
+		Role:    models.MessageRoleUser,
+		Content: fmt.Sprintf("[from %s]: %s", callerAgent.Name, question),
+		Model:   modelName, CreatedAt: time.Now(),
+	})
+
+	resp, err := eng.Submit(ctx, engine.TaskRequest{
+		AgentID:      peer.ID,
+		AgentName:    peer.Name,
+		SystemPrompt: peerSystemPrompt,
+		Message:      consultMsg,
+		Model:        modelName,
+	})
+	if err != nil {
+		log.Printf("orchestrator: peer consultation (%s→%s): %v", callerAgent.Name, peer.Name, err)
+		return fmt.Sprintf("(peer %s is unavailable: %v)", peer.Name, err)
+	}
+
+	// Store the peer's response
+	o.store.CreateMessage(ctx, &models.Message{
+		ID: uuid.New(), ExecutionID: exec.ID,
+		AgentID: &peerID, AgentName: peer.Name,
+		Iteration: 0, Phase: models.MessagePhasePeerConsultation,
+		Role:      models.MessageRoleAssistant,
+		Content:   resp.Content,
+		TokensIn:  resp.TokensIn, TokensOut: resp.TokensOut,
+		Model:     resp.Model, LatencyMs: resp.LatencyMs, CreatedAt: time.Now(),
+	})
+
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &peerID, peer.Name,
+		models.EventTypePeerConsultation,
+		fmt.Sprintf("%s replied to %s's consultation.", peer.Name, callerAgent.Name),
+		map[string]any{"caller": callerAgent.Name, "peer": peer.Name, "answer_length": len(resp.Content)}))
+
+	return resp.Content
+}
+
+// reviewSignal is the structured JSON the leader returns after reviewing the team's output.
+type reviewSignal struct {
+	Status     string   `json:"status"`     // "review_passed" or "review_needs_revision"
+	Summary    string   `json:"summary"`    // Quality assessment (1-2 sentences)
+	Highlights []string `json:"highlights"` // What was done well
+	Issues     []string `json:"issues"`     // Critical gaps (if review_needs_revision)
+}
+
+// runReview runs the post-execution quality review by the leader agent.
+// This is advisory — execution always completes regardless of verdict.
+// Returns the raw review content to append to the execution result.
+func (o *Orchestrator) runReview(
+	ctx context.Context,
+	exec *models.Execution,
+	wf *models.WorkForce,
+	agents []*models.Agent,
+	leaderAgent *models.Agent,
+	plan []models.ExecutionSubtask,
+) string {
+	leaderID := leaderAgent.ID
+
+	// Respect cancellation before starting
+	select {
+	case <-ctx.Done():
+		return ""
+	default:
+	}
+
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &leaderID, leaderAgent.Name,
+		models.EventTypeReviewStarted,
+		fmt.Sprintf("%s is conducting the post-execution quality review...", leaderAgent.Name),
+		map[string]any{"subtasks": len(plan), "leader": leaderAgent.Name}))
+
+	// Build outputs summary for the review prompt
+	var outputParts []string
+	for _, st := range plan {
+		if st.Output != "" {
+			summary := st.Output
+			if len(summary) > 800 {
+				summary = summary[:800] + "...(truncated)"
+			}
+			outputParts = append(outputParts, fmt.Sprintf("### Subtask %s [%s]\n%s", st.ID, st.AgentName, summary))
+		}
+	}
+	outputsText := strings.Join(outputParts, "\n\n")
+	if outputsText == "" {
+		outputsText = "(no agent outputs recorded)"
+	}
+
+	eng, modelName, err := o.resolveConnector(ctx, leaderAgent)
+	if err != nil {
+		log.Printf("orchestrator: review: no engine for leader %s: %v", leaderAgent.Name, err)
+		return ""
+	}
+
+	leaderSystemPrompt, _ := engine.InterpolatePrompt(leaderAgent.SystemPrompt, leaderAgent.Variables, exec.Inputs)
+
+	reviewPrompt := fmt.Sprintf(
+		"## Post-Execution Quality Review\n\n"+
+			"You are **%s**, the team leader. Your team has just completed the following objective:\n\n"+
+			"**Objective:** %s\n\n"+
+			"**Team outputs (one section per subtask):**\n%s\n\n"+
+			"Review the combined output against the objective. Be lenient — partial completion, minor imperfections, "+
+			"and rough formatting are acceptable. Only flag serious failures where the core objective was not addressed.\n\n"+
+			"Respond with ONLY this JSON (no other text):\n"+
+			`{"status":"review_passed","summary":"<2-3 sentences>","highlights":["<what was done well>"]}`+"\n\n"+
+			"OR if there are critical gaps:\n"+
+			`{"status":"review_needs_revision","summary":"<what was done>","issues":["<critical gap>"]}`,
+		leaderAgent.Name, exec.Objective, outputsText,
+	)
+
+	// Store the review prompt
+	o.store.CreateMessage(ctx, &models.Message{
+		ID: uuid.New(), ExecutionID: exec.ID,
+		AgentID: &leaderID, AgentName: leaderAgent.Name,
+		Iteration: 0, Phase: models.MessagePhaseReview,
+		Role:    models.MessageRoleUser,
+		Content: reviewPrompt, Model: modelName, CreatedAt: time.Now(),
+	})
+
+	resp, err := eng.Submit(ctx, engine.TaskRequest{
+		AgentID:      leaderAgent.ID,
+		AgentName:    leaderAgent.Name,
+		SystemPrompt: leaderSystemPrompt,
+		Message:      reviewPrompt,
+		Model:        modelName,
+	})
+	if err != nil {
+		log.Printf("orchestrator: review: leader LLM call failed: %v", err)
+		return ""
+	}
+
+	// Store the leader's review response
+	o.store.CreateMessage(ctx, &models.Message{
+		ID: uuid.New(), ExecutionID: exec.ID,
+		AgentID: &leaderID, AgentName: leaderAgent.Name,
+		Iteration: 0, Phase: models.MessagePhaseReview,
+		Role:      models.MessageRoleAssistant,
+		Content:   resp.Content,
+		TokensIn:  resp.TokensIn, TokensOut: resp.TokensOut,
+		Model:     resp.Model, LatencyMs: resp.LatencyMs, CreatedAt: time.Now(),
+	})
+
+	// Parse review signal for event metadata
+	content := resp.Content
+	startIdx := strings.Index(content, "{")
+	endIdx := strings.LastIndex(content, "}")
+	passed := true
+	summary := ""
+	if startIdx >= 0 && endIdx > startIdx {
+		var sig reviewSignal
+		if err := json.Unmarshal([]byte(content[startIdx:endIdx+1]), &sig); err == nil {
+			passed = sig.Status != "review_needs_revision"
+			summary = sig.Summary
+		}
+	}
+	if summary == "" {
+		summary = truncateStr(resp.Content, 200)
+	}
+
+	verdict := "passed"
+	if !passed {
+		verdict = "needs_revision"
+	}
+
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &leaderID, leaderAgent.Name,
+		models.EventTypeReviewComplete,
+		fmt.Sprintf("%s review complete: %s — %s", leaderAgent.Name, verdict, truncateStr(summary, 120)),
+		map[string]any{"passed": passed, "verdict": verdict, "summary": summary}))
+
+	return resp.Content
+}
+
+// PreflightCheck is a single validation item returned by Preflight.
+type PreflightCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+// PreflightResult is the full response from Preflight.
+type PreflightResult struct {
+	OK     bool             `json:"ok"`
+	Checks []PreflightCheck `json:"checks"`
+}
+
+// Preflight validates a workforce configuration before execution without starting anything.
+func (o *Orchestrator) Preflight(ctx context.Context, wfID uuid.UUID) PreflightResult {
+	checks := []PreflightCheck{}
+	allOK := true
+
+	add := func(name string, ok bool, detail string) {
+		checks = append(checks, PreflightCheck{Name: name, OK: ok, Detail: detail})
+		if !ok {
+			allOK = false
+		}
+	}
+
+	// 1. Load workforce
+	wf, err := o.store.GetWorkForce(ctx, wfID)
+	if err != nil {
+		add("Workforce", false, "Could not load workforce: "+err.Error())
+		return PreflightResult{OK: false, Checks: checks}
+	}
+	add("Workforce", true, fmt.Sprintf("'%s' loaded", wf.Name))
+
+	// 2. Load agents via the same path used during execution
+	agents, err := o.loadWorkForceAgents(ctx, wf)
+	if err != nil || len(agents) == 0 {
+		add("Agents", false, "No agents configured in this workforce")
+		return PreflightResult{OK: false, Checks: checks}
+	}
+	add("Agents", true, fmt.Sprintf("%d agent(s) found", len(agents)))
+
+	// 3. Leader agent (required for multi-agent discussion + review)
+	if len(agents) > 1 {
+		leader := findLeaderAgent(agents, wf.LeaderAgentID)
+		if leader == nil {
+			add("Leader agent", false, "No leader set — required for multi-agent discussion and review")
+		} else {
+			add("Leader agent", true, fmt.Sprintf("'%s' is the team leader", leader.Name))
+		}
+	} else {
+		add("Leader agent", true, "Single-agent mode — no leader required")
+	}
+
+	// 4. Provider / model resolution per agent
+	failedAgents := []string{}
+	for _, a := range agents {
+		if _, _, err := o.resolveConnector(ctx, a); err != nil {
+			failedAgents = append(failedAgents, a.Name)
+		}
+	}
+	if len(failedAgents) > 0 {
+		add("Agent models", false, fmt.Sprintf("No provider configured for: %s", strings.Join(failedAgents, ", ")))
+	} else {
+		add("Agent models", true, "All agents have a valid LLM provider")
+	}
+
+	// 5. No active execution already running for this workforce
+	execs, _, listErr := o.store.ListExecutions(ctx, wfID, 20, 0)
+	if listErr == nil {
+		for _, ex := range execs {
+			if ex.Status == models.ExecutionStatusRunning || ex.Status == models.ExecutionStatusPlanning {
+				add("Active execution", false, fmt.Sprintf("Execution '%s' is already %s", ex.ID, ex.Status))
+				return PreflightResult{OK: false, Checks: checks}
+			}
+		}
+	}
+	add("Active execution", true, "Workforce is idle — ready to launch")
+
+	return PreflightResult{OK: allOK, Checks: checks}
 }
 
 func joinResults(results []string) string {

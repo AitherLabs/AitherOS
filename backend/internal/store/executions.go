@@ -255,3 +255,14 @@ func (s *Store) UpdateExecutionMeta(ctx context.Context, id uuid.UUID, req model
 	}
 	return nil
 }
+
+func (s *Store) DeleteExecution(ctx context.Context, id uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM executions WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete execution: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("execution not found")
+	}
+	return nil
+}

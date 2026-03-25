@@ -284,14 +284,14 @@ export default function MCPServersPage() {
               Add Server
             </Button>
           </DialogTrigger>
-          <DialogContent className='max-w-lg'>
-            <DialogHeader>
+          <DialogContent className='max-w-lg max-h-[90vh] flex flex-col'>
+            <DialogHeader className='shrink-0'>
               <DialogTitle>Add MCP Server</DialogTitle>
               <DialogDescription>
                 Configure a new MCP server to provide tools for your agents.
               </DialogDescription>
             </DialogHeader>
-            <div className='space-y-4'>
+            <div className='overflow-y-auto flex-1 min-h-0 space-y-4 py-1'>
               <div className='space-y-2'>
                 <Label>Name</Label>
                 <Input
@@ -388,7 +388,7 @@ export default function MCPServersPage() {
                 />
               </div>
             </div>
-            <DialogFooter>
+            <DialogFooter className='shrink-0'>
               <Button
                 variant='outline'
                 onClick={() => setCreateOpen(false)}
@@ -629,14 +629,14 @@ export default function MCPServersPage() {
         open={!!editTarget}
         onOpenChange={(open) => !open && setEditTarget(null)}
       >
-        <DialogContent className='max-w-lg'>
-          <DialogHeader>
+        <DialogContent className='max-w-lg max-h-[90vh] flex flex-col'>
+          <DialogHeader className='shrink-0'>
             <DialogTitle>Edit MCP Server</DialogTitle>
             <DialogDescription>
               Update the configuration for {editTarget?.name}.
             </DialogDescription>
           </DialogHeader>
-          <div className='space-y-4'>
+          <div className='overflow-y-auto flex-1 min-h-0 space-y-4 py-1'>
             <div className='space-y-2'>
               <Label>Name</Label>
               <Input
@@ -730,7 +730,7 @@ export default function MCPServersPage() {
               />
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className='shrink-0'>
             <Button variant='outline' onClick={() => setEditTarget(null)}>
               Cancel
             </Button>

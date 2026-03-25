@@ -25,7 +25,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	kb := NewKnowledgeHandler(s, km)
 	approvals := NewApprovalHandler(s)
 	activity := NewActivityHandler(s)
-	agentChat := NewAgentChatHandler(s)
+	agentChat := NewAgentChatHandler(s, km)
 	upload := NewUploadHandler()
 
 	// Health (public)
@@ -83,9 +83,14 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.HandleFunc("GET /api/v1/executions/{execID}", executions.GetDirect)
 	mux.HandleFunc("POST /api/v1/executions/{execID}/approve", executions.Approve)
 	mux.HandleFunc("POST /api/v1/executions/{execID}/halt", executions.Halt)
+	mux.HandleFunc("POST /api/v1/executions/{execID}/resume", executions.Resume)
 	mux.HandleFunc("POST /api/v1/executions/{execID}/intervene", executions.Intervene)
 	mux.HandleFunc("PATCH /api/v1/executions/{execID}/meta", executions.UpdateMeta)
+	mux.HandleFunc("DELETE /api/v1/executions/{execID}", executions.Delete)
 	mux.HandleFunc("GET /api/v1/executions/{execID}/messages", executions.Messages)
+	mux.HandleFunc("GET /api/v1/workforces/{id}/preflight", executions.Preflight)
+	mux.HandleFunc("GET /api/v1/executions/{execID}/discussion", executions.DiscussionMessages)
+	mux.HandleFunc("GET /api/v1/executions/{execID}/review", executions.ReviewMessages)
 
 	// File uploads
 	mux.HandleFunc("POST /api/v1/upload", upload.Upload)

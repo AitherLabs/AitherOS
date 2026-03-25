@@ -5,17 +5,19 @@ import (
 	"net/http"
 
 	"github.com/aitheros/backend/internal/auth"
+	"github.com/aitheros/backend/internal/knowledge"
 	"github.com/aitheros/backend/internal/models"
 	"github.com/aitheros/backend/internal/store"
 	"github.com/google/uuid"
 )
 
 type AgentChatHandler struct {
-	store *store.Store
+	store    *store.Store
+	knowledge *knowledge.Manager
 }
 
-func NewAgentChatHandler(s *store.Store) *AgentChatHandler {
-	return &AgentChatHandler{store: s}
+func NewAgentChatHandler(s *store.Store, km *knowledge.Manager) *AgentChatHandler {
+	return &AgentChatHandler{store: s, knowledge: km}
 }
 
 // List returns all chat messages for an agent.
@@ -66,6 +68,16 @@ func (h *AgentChatHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Ingest substantial assistant responses into the agent's KB (async, best-effort)
+	if h.knowledge != nil && req.Role == "assistant" && len(req.Content) >= 100 {
+		wfIDs, _ := h.store.ListAgentWorkforceIDs(r.Context(), agentID)
+		if len(wfIDs) > 0 {
+			h.knowledge.IngestSingleMessage(r.Context(), wfIDs[0], uuid.Nil, &agentID,
+				chat.AgentID.String(), 0, req.Content, "")
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"data": chat})
 }
 

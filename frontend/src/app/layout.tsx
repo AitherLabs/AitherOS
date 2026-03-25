@@ -18,7 +18,12 @@ const META_THEME_COLORS = {
 export const metadata: Metadata = {
   title: 'AitherOS — Autonomous AI Workforce',
   description:
-    'Orchestrate autonomous AI agent teams. Plan, execute, and observe multi-agent workflows in real time.'
+    'Orchestrate autonomous AI agent teams. Plan, execute, and observe multi-agent workflows in real time.',
+  icons: {
+    icon: [{ url: '/assets/favicon.png', type: 'image/png' }],
+    shortcut: '/assets/favicon.png',
+    apple: '/assets/favicon.png'
+  }
 };
 
 export const viewport: Viewport = {

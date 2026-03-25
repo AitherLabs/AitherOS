@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Badge } from '@/components/ui/badge';
@@ -16,7 +16,9 @@ import {
   IconHandStop,
   IconLoader2,
   IconPencil,
+  IconPlayerPlay,
   IconRefresh,
+  IconTrash,
   IconSend,
   IconTool,
   IconX
@@ -57,8 +59,14 @@ const eventTypeConfig: Record<string, { dot: string; label: string }> = {
   execution_started: { dot: '#9A66FF', label: 'Start' },
   execution_done:    { dot: '#56D090', label: 'Done' },
   execution_halted:  { dot: '#FFBF47', label: 'Halt' },
-  plan_proposed:     { dot: '#14FFF7', label: 'Plan' },
-  plan_approved:     { dot: '#56D090', label: 'Approved' },
+  plan_proposed:        { dot: '#14FFF7', label: 'Plan' },
+  plan_approved:        { dot: '#56D090', label: 'Approved' },
+  discussion_started:   { dot: '#9A66FF', label: 'Discussion' },
+  discussion_turn:      { dot: '#B794F4', label: 'Discussion' },
+  discussion_consensus: { dot: '#56D090', label: 'Consensus' },
+  peer_consultation:    { dot: '#14FFF7', label: 'Peer Ask' },
+  review_started:       { dot: '#F59E0B', label: 'Review' },
+  review_complete:      { dot: '#56D090', label: 'Review' },
 };
 
 function PipelinePlanPanel({ plan, agentsMap }: { plan: ExecutionSubtask[]; agentsMap: Record<string, Agent> }) {
@@ -110,8 +118,408 @@ function PipelinePlanPanel({ plan, agentsMap }: { plan: ExecutionSubtask[]; agen
   );
 }
 
+function DiscussionPanel({ agents, discussionMessages, isPlanning, leaderAgentId }: {
+  agents: Agent[];
+  discussionMessages: Message[];
+  isPlanning: boolean;
+  leaderAgentId?: string;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const chatMsgs = discussionMessages.filter(m => m.role === 'assistant');
+  return (
+    <div className='rounded-xl border border-[#9A66FF]/30 bg-background/30 overflow-hidden'>
+      <button
+        className='w-full flex items-center gap-2 px-4 py-2.5 border-b border-border/30 hover:bg-muted/5 transition-colors'
+        onClick={() => setExpanded(v => !v)}
+      >
+        <span className='text-sm'>💬</span>
+        <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Team Discussion</span>
+        {isPlanning && (
+          <div className='ml-auto flex items-center gap-1.5 text-[11px] text-[#9A66FF]'>
+            <span className='h-1.5 w-1.5 rounded-full bg-[#9A66FF] animate-pulse' />
+            Discussing…
+          </div>
+        )}
+        {!isPlanning && chatMsgs.length > 0 && (
+          <span className='ml-auto text-[10px] text-[#56D090]'>✓ consensus reached</span>
+        )}
+        {!isPlanning && (
+          <IconChevronDown className={`h-3 w-3 text-muted-foreground/40 transition-transform duration-200 ${expanded ? '' : '-rotate-90'}`} />
+        )}
+      </button>
+
+      {expanded && (
+        <>
+          {/* Participant badges */}
+          {agents.length > 0 && (
+            <div className='flex flex-wrap gap-2 p-3 border-b border-border/20 bg-muted/5'>
+              {agents.map(agent => {
+                const isLeader = agent.id === leaderAgentId;
+                const hasSpoken = chatMsgs.some(m => m.agent_id === agent.id);
+                return (
+                  <div key={agent.id}
+                    className='flex flex-col items-center gap-1 rounded-xl border bg-background/50 px-3 py-2 min-w-[68px] flex-1 max-w-[120px] transition-all'
+                    style={{ borderColor: (agent.color || '#9A66FF') + (hasSpoken ? '60' : '20') }}>
+                    <div className='relative'>
+                      <EntityAvatar icon={agent.icon} color={agent.color} avatarUrl={agent.avatar_url} size='xs' />
+                      {isLeader && <span className='absolute -top-1.5 -right-1 text-[10px]'>★</span>}
+                    </div>
+                    <span className='text-[10px] font-semibold text-center truncate w-full' style={{ color: agent.color || '#9A66FF' }}>
+                      {agent.name}
+                    </span>
+                    <span className='text-[9px] text-muted-foreground/45'>
+                      {isLeader ? (hasSpoken ? 'decided' : 'leading') : hasSpoken ? 'contributed' : 'pending'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* Chat bubbles */}
+          <div className='divide-y divide-border/10 max-h-96 overflow-y-auto'>
+            {chatMsgs.length === 0 ? (
+              <div className='flex items-center justify-center gap-2.5 py-8 text-xs text-muted-foreground/40'>
+                <ThinkingDots color='#9A66FF' />
+                <span>Team is discussing the approach…</span>
+              </div>
+            ) : (
+              chatMsgs.map((msg, idx) => {
+                const agent = agents.find(a => a.id === msg.agent_id);
+                const isLeader = msg.agent_id === leaderAgentId;
+                const isSynthesis = isLeader && idx === chatMsgs.length - 1 && !isPlanning;
+                const cleanContent = msg.content
+                  .replace(/```json\n[\s\S]*?\n```/g, '')
+                  .replace(/```[\s\S]*?```/g, '[plan]')
+                  .trim();
+                return (
+                  <div key={msg.id} className='flex items-start gap-3 px-4 py-3'>
+                    <div className='shrink-0 mt-0.5'>
+                      <EntityAvatar icon={agent?.icon || '🤖'} color={agent?.color || '#9A66FF'} avatarUrl={agent?.avatar_url} size='xs' />
+                    </div>
+                    <div className='flex-1 min-w-0'>
+                      <div className='flex items-baseline gap-2 mb-1.5'>
+                        <span className='text-xs font-semibold' style={{ color: agent?.color || '#9A66FF' }}>
+                          {msg.agent_name || agent?.name}{isLeader ? ' ★' : ''}
+                        </span>
+                        {isSynthesis && (
+                          <span className='rounded-full border border-[#56D090]/40 bg-[#56D090]/10 px-1.5 py-0.5 text-[9px] text-[#56D090]'>plan decided</span>
+                        )}
+                        <span className='ml-auto font-mono text-[10px] text-muted-foreground/25'>
+                          {msg.tokens_output > 0 ? `${formatTokens(msg.tokens_output)} tok` : ''}
+                        </span>
+                      </div>
+                      <div className='rounded-lg bg-muted/10 px-3 py-2 text-xs leading-relaxed text-[#EAEAEA]/80 whitespace-pre-wrap border-l-2'
+                        style={{ borderLeftColor: (agent?.color || '#9A66FF') + (isLeader ? 'A0' : '50') }}>
+                        {cleanContent || '(synthesizing plan…)'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            {isPlanning && chatMsgs.length > 0 && (
+              <div className='flex items-center gap-3 px-4 py-3'>
+                <ThinkingDots color='#9A66FF' />
+                <span className='text-xs text-muted-foreground/40'>Discussion continuing…</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ReviewPanel({ agents, messages, leaderAgentId }: { agents: Agent[]; messages: Message[]; leaderAgentId?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const reviewMsgs = messages.filter(m => m.phase === 'review');
+  const leaderResponse = reviewMsgs.find(m => m.role === 'assistant');
+  if (!leaderResponse) return null;
+
+  const leaderAgent = agents.find(a => a.id === leaderAgentId) || agents.find(a => a.id === leaderResponse.agent_id);
+
+  // Parse structured signal from leader response
+  let verdict: 'passed' | 'revision' | 'unknown' = 'unknown';
+  let summary = '';
+  let highlights: string[] = [];
+  let issues: string[] = [];
+  try {
+    const content = leaderResponse.content;
+    const start = content.indexOf('{');
+    const end = content.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      const sig = JSON.parse(content.slice(start, end + 1));
+      verdict = sig.status === 'review_passed' ? 'passed' : sig.status === 'review_needs_revision' ? 'revision' : 'unknown';
+      summary = sig.summary || '';
+      highlights = Array.isArray(sig.highlights) ? sig.highlights : [];
+      issues = Array.isArray(sig.issues) ? sig.issues : [];
+    }
+  } catch { /* show raw content */ }
+
+  const verdictColor = verdict === 'passed' ? '#56D090' : verdict === 'revision' ? '#FFBF47' : '#9A66FF';
+  const verdictLabel = verdict === 'passed' ? '✓ Passed' : verdict === 'revision' ? '⚠ Needs Revision' : 'Reviewed';
+
+  return (
+    <div className='rounded-xl border overflow-hidden' style={{ borderColor: verdictColor + '30' }}>
+      <button
+        className='w-full flex items-center gap-2 px-4 py-2.5 border-b border-border/30 hover:bg-muted/5 transition-colors'
+        style={{ borderBottomColor: verdictColor + '20' }}
+        onClick={() => setExpanded(v => !v)}
+      >
+        <span className='text-sm'>🔎</span>
+        <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Leader Review</span>
+        {leaderAgent && (
+          <span className='text-[10px] font-medium' style={{ color: leaderAgent.color || verdictColor }}>
+            {leaderAgent.name}
+          </span>
+        )}
+        <span className='ml-auto rounded-full px-2 py-0.5 text-[9px] font-bold border'
+          style={{ color: verdictColor, borderColor: verdictColor + '40', backgroundColor: verdictColor + '15' }}>
+          {verdictLabel}
+        </span>
+        <IconChevronDown className={`h-3 w-3 text-muted-foreground/40 transition-transform duration-200 ${expanded ? '' : '-rotate-90'}`} />
+      </button>
+      {expanded && (
+        <div className='p-4 space-y-3'>
+          {summary && (
+            <p className='text-[12px] leading-relaxed text-[#EAEAEA]/80'>{summary}</p>
+          )}
+          {highlights.length > 0 && (
+            <div className='space-y-1'>
+              <p className='text-[10px] font-semibold text-[#56D090]/70 uppercase tracking-wider'>Strengths</p>
+              {highlights.map((h, i) => (
+                <div key={i} className='flex items-start gap-2 text-[11px] text-[#EAEAEA]/65'>
+                  <span className='mt-0.5 text-[#56D090]'>+</span>{h}
+                </div>
+              ))}
+            </div>
+          )}
+          {issues.length > 0 && (
+            <div className='space-y-1'>
+              <p className='text-[10px] font-semibold text-[#FFBF47]/70 uppercase tracking-wider'>Issues</p>
+              {issues.map((issue, i) => (
+                <div key={i} className='flex items-start gap-2 text-[11px] text-[#EAEAEA]/65'>
+                  <span className='mt-0.5 text-[#FFBF47]'>!</span>{issue}
+                </div>
+              ))}
+            </div>
+          )}
+          {!summary && !highlights.length && !issues.length && (
+            <p className='text-[11px] text-muted-foreground/50 whitespace-pre-wrap'>{leaderResponse.content}</p>
+          )}
+          <p className='text-[10px] text-muted-foreground/30'>{new Date(leaderResponse.created_at).toLocaleString()}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const PHASE_META: Record<string, { label: string; shortLabel: string; color: string; icon: string }> = {
+  discussion:       { label: 'Pre-Exec · Team Discussion', shortLabel: 'Discussion', color: '#9A66FF', icon: '💬' },
+  peer_consultation:{ label: 'Mid-Exec · Peer Asks',       shortLabel: 'Peer Asks',  color: '#14FFF7', icon: '🔄' },
+  review:           { label: 'Post-Exec · Leader Review',  shortLabel: 'Review',     color: '#F59E0B', icon: '🔎' },
+};
+
+function InteractionsPanel({
+  agents,
+  discussionMessages,
+  allMessages,
+  reviewMessages,
+  leaderAgentId,
+}: {
+  agents: Agent[];
+  discussionMessages: Message[];
+  allMessages: Message[];
+  reviewMessages: Message[];
+  leaderAgentId?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [expandedMsg, setExpandedMsg] = useState<string | null>(null);
+
+  const agentMap = useMemo(() => Object.fromEntries(agents.map(a => [a.id, a])), [agents]);
+
+  const peerMsgs = allMessages.filter(m => m.phase === 'peer_consultation');
+
+  const sections = useMemo(() => [
+    { phase: 'discussion',        msgs: discussionMessages.filter(m => m.role === 'assistant') },
+    { phase: 'peer_consultation', msgs: peerMsgs },
+    { phase: 'review',            msgs: reviewMessages.filter(m => m.role === 'assistant') },
+  ].filter(s => s.msgs.length > 0), [discussionMessages, peerMsgs, reviewMessages]);
+
+  const totalCount = sections.reduce((s, sec) => s + sec.msgs.length, 0);
+
+  return (
+    <div className='border-b border-border/50 shrink-0'>
+      <button
+        onClick={() => setOpen(v => !v)}
+        className='w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/5 transition-colors'
+      >
+        <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1 text-left'>
+          Agent Interactions
+        </span>
+        {totalCount > 0 ? (
+          <span className='rounded-full bg-[#9A66FF]/15 px-1.5 py-0.5 text-[9px] font-bold text-[#9A66FF]'>
+            {totalCount}
+          </span>
+        ) : (
+          <span className='text-[9px] text-muted-foreground/30'>none yet</span>
+        )}
+        <IconChevronDown className={`h-3 w-3 text-muted-foreground/40 transition-transform duration-200 ${open ? '' : '-rotate-90'}`} />
+      </button>
+
+      {open && (
+        <div className='max-h-64 overflow-y-auto divide-y divide-border/20'>
+          {sections.length === 0 && (
+            <p className='px-3 py-3 text-[10px] text-muted-foreground/40'>
+              Interactions will appear here once agents begin discussing, consulting peers, or reviewing results.
+            </p>
+          )}
+          {sections.map(section => {
+            const meta = PHASE_META[section.phase];
+            return (
+              <div key={section.phase}>
+                {/* Phase header */}
+                <div className='flex items-center gap-1.5 px-3 py-1 bg-background/60 sticky top-0 backdrop-blur-sm z-10'>
+                  <span className='text-[9px]'>{meta.icon}</span>
+                  <span className='text-[9px] font-semibold uppercase tracking-wider' style={{ color: meta.color }}>
+                    {meta.shortLabel}
+                  </span>
+                  <span className='ml-auto text-[8px] text-muted-foreground/30'>{section.msgs.length}</span>
+                </div>
+
+                {/* Messages */}
+                {section.msgs.map(msg => {
+                  const agent = agentMap[msg.agent_id || ''];
+                  const isLeader = msg.agent_id === leaderAgentId;
+                  const color = agent?.color || meta.color;
+                  const avatarSrc = agent?.avatar_url;
+                  const icon = agent?.icon || '🤖';
+                  const name = msg.agent_name || agent?.name || 'Agent';
+                  const isExpanded = expandedMsg === msg.id;
+
+                  const cleanContent = msg.content
+                    .replace(/```[\s\S]*?```/g, '[code block]')
+                    .replace(/\{[\s\S]{0,200}\}/g, '[json]')
+                    .replace(/\n+/g, ' ')
+                    .trim();
+
+                  const isPeerQuestion = msg.phase === 'peer_consultation' && msg.role === 'user';
+                  const roleLabel = isPeerQuestion ? 'asked' : section.phase === 'review' ? 'review' : 'said';
+
+                  return (
+                    <button
+                      key={msg.id}
+                      onClick={() => setExpandedMsg(isExpanded ? null : msg.id)}
+                      className='w-full flex items-start gap-2 px-2.5 py-2 hover:bg-muted/10 transition-colors text-left'
+                    >
+                      {/* Avatar */}
+                      <div
+                        className='mt-0.5 h-[22px] w-[22px] shrink-0 rounded-full flex items-center justify-center overflow-hidden text-[11px]'
+                        style={{ backgroundColor: color + '22', border: `1.5px solid ${color}50` }}
+                      >
+                        {avatarSrc ? (
+                          <img src={avatarSrc} alt={name} className='h-full w-full object-cover' />
+                        ) : (
+                          <span>{icon}</span>
+                        )}
+                      </div>
+
+                      {/* Content */}
+                      <div className='min-w-0 flex-1'>
+                        <div className='flex items-center gap-1 mb-0.5'>
+                          <span className='text-[9px] font-semibold truncate max-w-[80px]' style={{ color }}>
+                            {name}{isLeader ? ' ★' : ''}
+                          </span>
+                          <span className='text-[8px] text-muted-foreground/35 shrink-0'>{roleLabel}</span>
+                          <span className='ml-auto shrink-0 text-[8px] text-muted-foreground/30'>
+                            {timeAgo(msg.created_at)}
+                          </span>
+                        </div>
+                        <p className={`text-[10px] leading-relaxed text-muted-foreground/60 break-words ${isExpanded ? '' : 'line-clamp-2'}`}>
+                          {cleanContent || msg.content.slice(0, 200)}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PeerExchangesPanel({ agents, messages }: { agents: Agent[]; messages: Message[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const peerMsgs = messages.filter(m => m.phase === 'peer_consultation');
+  if (peerMsgs.length === 0) return null;
+
+  // Group into Q&A pairs: 'user' role = question, next 'assistant' = answer
+  const pairs: { question: Message; answer?: Message; peerAgent?: Agent; callerName: string }[] = [];
+  for (let i = 0; i < peerMsgs.length; i++) {
+    const m = peerMsgs[i];
+    if (m.role !== 'user') continue;
+    const callerMatch = m.content.match(/^\[from (.+?)\]:/);
+    const callerName = callerMatch ? callerMatch[1] : 'Agent';
+    const answer = peerMsgs[i + 1]?.role === 'assistant' ? peerMsgs[i + 1] : undefined;
+    const peerAgent = agents.find(a => a.id === m.agent_id);
+    pairs.push({ question: m, answer, peerAgent, callerName });
+    if (answer) i++;
+  }
+
+  return (
+    <div className='rounded-xl border border-[#14FFF7]/20 bg-background/30 overflow-hidden'>
+      <button
+        className='w-full flex items-center gap-2 px-4 py-2.5 border-b border-border/30 hover:bg-muted/5 transition-colors'
+        onClick={() => setExpanded(v => !v)}
+      >
+        <span className='text-sm'>🔗</span>
+        <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Peer Exchanges</span>
+        <span className='ml-auto text-[10px] text-[#14FFF7]/70'>{pairs.length} consultation{pairs.length !== 1 ? 's' : ''}</span>
+        <IconChevronDown className={`h-3 w-3 text-muted-foreground/40 transition-transform duration-200 ${expanded ? '' : '-rotate-90'}`} />
+      </button>
+      {expanded && (
+        <div className='divide-y divide-border/10 max-h-80 overflow-y-auto'>
+          {pairs.map((pair) => (
+            <div key={pair.question.id} className='p-3 space-y-2'>
+              {/* Question */}
+              <div className='flex items-start gap-2'>
+                <span className='mt-0.5 shrink-0 rounded-full border border-[#14FFF7]/30 bg-[#14FFF7]/10 px-1.5 py-0.5 text-[9px] font-semibold text-[#14FFF7]'>
+                  asked
+                </span>
+                <div className='flex-1 min-w-0'>
+                  <span className='text-[10px] font-semibold text-muted-foreground/60'>{pair.callerName} → {pair.peerAgent?.name || 'peer'}</span>
+                  <p className='text-[11px] leading-relaxed text-[#EAEAEA]/70 mt-0.5'>
+                    {pair.question.content.replace(/^\[from .+?\]:\s*/, '')}
+                  </p>
+                </div>
+              </div>
+              {/* Answer */}
+              {pair.answer && (
+                <div className='flex items-start gap-2 pl-2'>
+                  <span className='mt-0.5 shrink-0 rounded-full border border-[#56D090]/30 bg-[#56D090]/10 px-1.5 py-0.5 text-[9px] font-semibold text-[#56D090]'>
+                    replied
+                  </span>
+                  <div className='flex-1 min-w-0'>
+                    <span className='text-[10px] font-semibold' style={{ color: pair.peerAgent?.color || '#56D090' }}>
+                      {pair.peerAgent?.name || 'peer'}
+                    </span>
+                    <p className='text-[11px] leading-relaxed text-[#EAEAEA]/70 mt-0.5'>{pair.answer.content}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlanningRoomPanel({ agents, messages, isPlanning }: { agents: Agent[]; messages: Message[]; isPlanning: boolean }) {
-  const planMsgs = messages.filter(m => m.iteration === 0 && m.role === 'assistant');
+  const planMsgs = messages.filter(m => m.iteration === 0 && m.role === 'assistant' && m.phase !== 'discussion');
   return (
     <div className='rounded-xl border border-[#9A66FF]/20 bg-background/30 overflow-hidden'>
       {/* Header */}
@@ -178,8 +586,8 @@ function PlanningRoomPanel({ agents, messages, isPlanning }: { agents: Agent[]; 
                       {msg.agent_name || agent?.name}
                     </span>
                     <span className='text-[10px] text-muted-foreground/35'>{timeAgo(msg.created_at)}</span>
-                    {msg.tokens_out > 0 && (
-                      <span className='ml-auto font-mono text-[10px] text-muted-foreground/25'>{formatTokens(msg.tokens_out)} tok</span>
+                    {msg.tokens_output > 0 && (
+                      <span className='ml-auto font-mono text-[10px] text-muted-foreground/25'>{formatTokens(msg.tokens_output)} tok</span>
                     )}
                   </div>
                   <div className='rounded-lg bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-[#EAEAEA]/80 whitespace-pre-wrap border-l-2'
@@ -235,6 +643,7 @@ interface LiveEvent {
   agent_name?: string;
   content: string;
   timestamp: Date;
+  isNew?: boolean;
 }
 
 function ToolCallBlock({ calls }: { calls: ToolCallRecord[] }) {
@@ -305,9 +714,10 @@ interface AgentCallGridProps {
   isRunning: boolean;
   expandedAgents: Set<string>;
   onToggleAgent: (id: string) => void;
+  speechBubbles?: Record<string, string>;
 }
 
-function AgentCallGrid({ agents, plan, messages, isRunning, expandedAgents, onToggleAgent }: AgentCallGridProps) {
+function AgentCallGrid({ agents, plan, messages, isRunning, expandedAgents, onToggleAgent, speechBubbles }: AgentCallGridProps) {
   const doneCount = plan.filter(s => s.status === 'done').length;
   const totalCount = plan.length;
 
@@ -399,6 +809,18 @@ function AgentCallGrid({ agents, plan, messages, isRunning, expandedAgents, onTo
                   )}
                 </div>
               </div>
+              {/* Speech bubble snippet */}
+              {speechBubbles?.[agent.id] && (
+                <div
+                  key={speechBubbles[agent.id]}
+                  className='w-full mt-0.5 rounded-md px-1.5 py-1 bg-background/70 border border-border/30'
+                  style={{ borderLeftColor: c + '50', borderLeftWidth: 2 }}
+                >
+                  <p className='text-[9px] leading-snug text-muted-foreground/65 line-clamp-2 italic'>
+                    {speechBubbles[agent.id]}
+                  </p>
+                </div>
+              )}
             </button>
           );
         })}
@@ -418,9 +840,13 @@ interface AgentThreadProps {
 
 const AgentThread = React.forwardRef<HTMLDivElement, AgentThreadProps>(
 function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle }, ref) {
+  const [showOlderMsgs, setShowOlderMsgs] = useState(false);
+  useEffect(() => { if (!isExpanded) setShowOlderMsgs(false); }, [isExpanded]);
+
   const agentMsgs = messages.filter(m => m.agent_id === agent.id && m.role === 'assistant' && m.iteration > 0);
   const lastMsg = agentMsgs[agentMsgs.length - 1];
-  const totalTok = agentMsgs.reduce((s, m) => s + (m.tokens_out || 0), 0);
+  const olderMsgs = agentMsgs.slice(0, -1);
+  const totalTok = agentMsgs.reduce((s, m) => s + (m.tokens_output || 0), 0);
   const statusColor =
     subtask?.status === 'done' ? '#56D090' :
     subtask?.status === 'running' ? '#9A66FF' :
@@ -474,21 +900,56 @@ function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle 
             </div>
           ) : (
             <div className='divide-y divide-border/20'>
-              {agentMsgs.map((msg, i) => (
-                <div key={msg.id || i} className='px-4 py-3'>
+              {/* Older messages toggle */}
+              {olderMsgs.length > 0 && (
+                <div className='flex items-center gap-1.5 bg-muted/10 px-4 py-1.5'>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setShowOlderMsgs(v => !v); }}
+                    className='flex items-center gap-1.5 text-[10px] text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors'
+                  >
+                    <IconChevronDown className={`h-3 w-3 transition-transform duration-200 ${showOlderMsgs ? '' : '-rotate-90'}`} />
+                    {showOlderMsgs ? 'Hide' : 'Show'} {olderMsgs.length} older {olderMsgs.length === 1 ? 'message' : 'messages'}
+                  </button>
+                </div>
+              )}
+              {/* Older messages (collapsed by default) */}
+              {showOlderMsgs && olderMsgs.map((msg, i) => (
+                <div key={msg.id || i} className='px-4 py-3 opacity-55'>
                   <div className='flex flex-wrap items-center gap-2 mb-2 font-mono text-[10px] text-muted-foreground/45'>
                     <span>iter {msg.iteration}</span>
-                    {msg.model && <><span>·</span><span>{msg.model}</span></>}
-                    {msg.tokens_out > 0 && <><span>·</span><span>{formatTokens(msg.tokens_out)} tok</span></>}
+                    {msg.tokens_output > 0 && <><span>·</span><span>{formatTokens(msg.tokens_output)} tok</span></>}
                     {msg.latency_ms > 0 && <><span>·</span><span>{msg.latency_ms < 1000 ? `${msg.latency_ms}ms` : `${(msg.latency_ms / 1000).toFixed(1)}s`}</span></>}
                     <span className='ml-auto'>{timeAgo(msg.created_at)}</span>
                   </div>
-                  <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/82'>
+                  <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/60'>
                     {msg.content}
                   </div>
                   {(msg.tool_calls?.length ?? 0) > 0 && <ToolCallBlock calls={msg.tool_calls!} />}
                 </div>
               ))}
+              {/* Latest message — always shown, highlighted */}
+              {lastMsg && (
+                <div key={lastMsg.id} className='px-4 py-3'>
+                  {olderMsgs.length > 0 && (
+                    <div className='mb-2 flex items-center gap-1.5'>
+                      <span className='h-1.5 w-1.5 rounded-full' style={{ backgroundColor: agent.color || '#9A66FF' }} />
+                      <span className='text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50'>Latest</span>
+                      <span className='ml-auto font-mono text-[9px] text-muted-foreground/35'>{timeAgo(lastMsg.created_at)}</span>
+                    </div>
+                  )}
+                  <div className='flex flex-wrap items-center gap-2 mb-2 font-mono text-[10px] text-muted-foreground/45'>
+                    <span>iter {lastMsg.iteration}</span>
+                    {lastMsg.model && <><span>·</span><span>{lastMsg.model}</span></>}
+                    {lastMsg.tokens_output > 0 && <><span>·</span><span>{formatTokens(lastMsg.tokens_output)} tok</span></>}
+                    {lastMsg.latency_ms > 0 && <><span>·</span><span>{lastMsg.latency_ms < 1000 ? `${lastMsg.latency_ms}ms` : `${(lastMsg.latency_ms / 1000).toFixed(1)}s`}</span></>}
+                    {olderMsgs.length === 0 && <span className='ml-auto'>{timeAgo(lastMsg.created_at)}</span>}
+                  </div>
+                  <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/88'>
+                    {lastMsg.content}
+                  </div>
+                  {(lastMsg.tool_calls?.length ?? 0) > 0 && <ToolCallBlock calls={lastMsg.tool_calls!} />}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -507,6 +968,8 @@ export default function ExecutionDetailPage() {
   const [execution, setExecution] = useState<Execution | null>(null);
   const [workforce, setWorkforce] = useState<Workforce | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [discussionMessages, setDiscussionMessages] = useState<Message[]>([]);
+  const [reviewMessages, setReviewMessages] = useState<Message[]>([]);
   const [agentsMap, setAgentsMap] = useState<Record<string, Agent>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -531,9 +994,11 @@ export default function ExecutionDetailPage() {
   const [metaSaving, setMetaSaving] = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [objOpen, setObjOpen] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const msgContainerRef = useRef<HTMLDivElement>(null);
+  const eventsEndRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
   const agentThreadRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -559,6 +1024,18 @@ export default function ExecutionDetailPage() {
       // Load messages
       const msgRes = await api.getMessages(execId);
       setMessages(msgRes.data || []);
+
+      // Load discussion messages (pre-execution team discussion)
+      try {
+        const discRes = await api.getDiscussionMessages(execId);
+        setDiscussionMessages(discRes.data || []);
+      } catch { /* no discussion yet */ }
+
+      // Load review messages (post-execution quality review)
+      try {
+        const revRes = await api.getReviewMessages(execId);
+        setReviewMessages(revRes.data || []);
+      } catch { /* no review yet */ }
 
       // Load agents for avatars
       const agRes = await api.listAgents();
@@ -592,6 +1069,14 @@ export default function ExecutionDetailPage() {
             setExecution(exRes.data);
             const msgRes = await api.getMessages(execId);
             setMessages(msgRes.data || []);
+            try {
+              const discRes = await api.getDiscussionMessages(execId);
+              setDiscussionMessages(discRes.data || []);
+            } catch { /* */ }
+            try {
+              const revRes = await api.getReviewMessages(execId);
+              setReviewMessages(revRes.data || []);
+            } catch { /* */ }
           }
         } catch { /* */ }
       }, 3000);
@@ -620,14 +1105,27 @@ export default function ExecutionDetailPage() {
             type: data.type || 'event',
             agent_name: data.agent_name,
             content: data.content || data.message || JSON.stringify(data),
-            timestamp: new Date()
+            timestamp: new Date(),
+            isNew: true
           };
-          setLiveEvents((prev) => [evt, ...prev].slice(0, 50));
+          setLiveEvents((prev) => [...prev, evt].slice(-60));
         } catch { /* */ }
       };
       return () => { ws.close(); };
     } catch { /* */ }
   }, [execId]);
+
+  // Speech bubbles: latest assistant message snippet per agent
+  const speechBubbles = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const msg of messages) {
+      if (msg.agent_id && msg.role === 'assistant' && msg.iteration > 0) {
+        const text = msg.content.replace(/```[\s\S]*?```/g, '[code]').replace(/\n+/g, ' ').trim();
+        map[msg.agent_id] = text.slice(0, 90) + (text.length > 90 ? '…' : '');
+      }
+    }
+    return map;
+  }, [messages]);
 
   // Smart auto-scroll: only follow bottom when user hasn't manually scrolled up
   useEffect(() => {
@@ -635,6 +1133,11 @@ export default function ExecutionDetailPage() {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
+
+  // Auto-scroll flow events to newest
+  useEffect(() => {
+    eventsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [liveEvents]);
 
   // Reset scroll tracking when execution status changes
   useEffect(() => {
@@ -702,6 +1205,16 @@ export default function ExecutionDetailPage() {
       await loadData();
     } catch (err) {
       console.error('Halt failed:', err);
+    }
+  }
+
+  async function handleResume() {
+    if (!execution) return;
+    try {
+      await api.resumeExecution(execution.id);
+      await loadData();
+    } catch (err) {
+      console.error('Resume failed:', err);
     }
   }
 
@@ -869,7 +1382,7 @@ export default function ExecutionDetailPage() {
           </Badge>
           <div className='flex items-center gap-1.5 text-xs text-muted-foreground'>
             {(() => {
-              const mt = messages.reduce((s, m) => s + (m.tokens_in || 0) + (m.tokens_out || 0), 0);
+              const mt = messages.reduce((s, m) => s + (m.tokens_input || 0) + (m.tokens_output || 0), 0);
               const dt = execution.tokens_used > 0 ? execution.tokens_used : mt;
               const mi = messages.length > 0 ? Math.max(...messages.map(m => m.iteration || 0)) : 0;
               const di = execution.iterations > 0 ? execution.iterations : mi;
@@ -887,6 +1400,24 @@ export default function ExecutionDetailPage() {
             <Button variant='outline' size='sm' className='border-[#FFBF47]/30 text-[#FFBF47] hover:bg-[#FFBF47]/10' onClick={handleHalt}>
               <IconHandStop className='mr-1 h-3.5 w-3.5' />
               Halt
+            </Button>
+          )}
+          {execution?.status === 'halted' && (
+            <Button variant='outline' size='sm' className='border-[#56D090]/30 text-[#56D090] hover:bg-[#56D090]/10' onClick={handleResume}>
+              <IconPlayerPlay className='mr-1 h-3.5 w-3.5' />
+              Resume
+            </Button>
+          )}
+          {!isRunning && execution.status !== 'planning' && (
+            <Button
+              variant='ghost' size='icon'
+              className='h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10'
+              onClick={() => {
+                if (!confirm('Delete this execution? This cannot be undone.')) return;
+                api.deleteExecution(execution.id).then(() => router.push('/dashboard/executions'));
+              }}
+            >
+              <IconTrash className='h-4 w-4' />
             </Button>
           )}
         </div>
@@ -907,12 +1438,13 @@ export default function ExecutionDetailPage() {
               isRunning={isRunning}
               expandedAgents={expandedAgents}
               onToggleAgent={toggleAgent}
+              speechBubbles={speechBubbles}
             />
           </div>
 
           {/* Mission Stats */}
           {(() => {
-            const msgTokens = messages.reduce((s, m) => s + (m.tokens_in || 0) + (m.tokens_out || 0), 0);
+            const msgTokens = messages.reduce((s, m) => s + (m.tokens_input || 0) + (m.tokens_output || 0), 0);
             const dispTokens = execution.tokens_used > 0 ? execution.tokens_used : msgTokens;
             const msgIters = messages.length > 0 ? Math.max(...messages.map(m => m.iteration || 0)) : 0;
             const dispIters = execution.iterations > 0 ? execution.iterations : msgIters;
@@ -941,8 +1473,17 @@ export default function ExecutionDetailPage() {
             );
           })()}
 
-          {/* Flow Events (capped height) */}
-          <div className='flex max-h-52 flex-col border-t border-border/50'>
+          {/* Agent Interactions (P1+P2+P3) — collapsible, above Flow Events */}
+          <InteractionsPanel
+            agents={orderedAgents}
+            discussionMessages={discussionMessages}
+            allMessages={messages}
+            reviewMessages={reviewMessages}
+            leaderAgentId={workforce?.leader_agent_id}
+          />
+
+          {/* Flow Events — live, newest at bottom, animated */}
+          <div className='flex max-h-56 flex-col border-t border-border/50'>
             <div className='flex items-center justify-between border-b border-border/50 px-3 py-2 shrink-0'>
               <p className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground'>Flow Events</p>
               {wsConnected && (
@@ -952,7 +1493,7 @@ export default function ExecutionDetailPage() {
                 </span>
               )}
             </div>
-            <ScrollArea className='min-h-0 flex-1'>
+            <div className='min-h-0 flex-1 overflow-y-auto'>
               <div className='space-y-1 p-2'>
                 {liveEvents.length === 0 ? (
                   <p className='p-1 text-[11px] text-muted-foreground/50'>
@@ -964,24 +1505,28 @@ export default function ExecutionDetailPage() {
                     const dot = evCfg?.dot || '#6B7280';
                     const label = evCfg?.label || ev.type.replace(/_/g, ' ');
                     return (
-                      <div key={ev.id}
-                        className='rounded-md border border-border/20 bg-background/30 p-2'
-                        style={{ borderLeftColor: dot + '60', borderLeftWidth: 2 }}>
+                      <div
+                        key={ev.id}
+                        className='flow-event-enter rounded-md border border-border/20 bg-background/30 p-2'
+                        style={{ borderLeftColor: dot + '60', borderLeftWidth: 2 }}
+                      >
                         <div className='flex items-center gap-1.5 mb-0.5'>
                           <span className='h-1.5 w-1.5 rounded-full shrink-0' style={{ backgroundColor: dot }} />
-                          <span className='text-[10px] font-semibold truncate' style={{ color: dot }}>{label}</span>
+                          <span className='text-[10px] font-semibold truncate' style={{ color: dot }}>
+                            {ev.agent_name ? `${ev.agent_name} · ` : ''}{label}
+                          </span>
                           <span className='ml-auto shrink-0 text-[9px] text-muted-foreground/35'>
                             {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                           </span>
                         </div>
-                        {ev.agent_name && <p className='text-[9px] text-muted-foreground/50 mb-0.5'>{ev.agent_name}</p>}
-                        <p className='break-words text-[10px] leading-relaxed text-muted-foreground/60 line-clamp-2'>{ev.content}</p>
+                        <p className='break-words text-[10px] leading-relaxed text-muted-foreground/65 line-clamp-3'>{ev.content}</p>
                       </div>
                     );
                   })
                 )}
+                <div ref={eventsEndRef} />
               </div>
-            </ScrollArea>
+            </div>
           </div>
         </div>
 
@@ -989,13 +1534,24 @@ export default function ExecutionDetailPage() {
         <div className='flex min-h-0 flex-1 flex-col overflow-hidden'>
           <div className='flex-1 overflow-y-auto space-y-2.5 px-4 py-4'>
 
-            {/* Objective */}
-            <div className='rounded-xl border border-[#9A66FF]/20 bg-[#9A66FF]/5 p-4'>
-              <div className='mb-1.5 flex items-center gap-2'>
-                <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground'>Mission Objective</span>
-                <span className='ml-auto text-[10px] text-muted-foreground/60'>{timeAgo(execution.created_at)}</span>
-              </div>
-              <p className='whitespace-pre-wrap text-sm leading-relaxed text-[#EAEAEA]/88'>{execution.objective}</p>
+            {/* Objective — collapsible */}
+            <div className='rounded-xl border border-[#9A66FF]/20 bg-[#9A66FF]/5 overflow-hidden'>
+              <button
+                className='w-full flex items-center gap-2 px-4 py-2.5 hover:bg-[#9A66FF]/5 transition-colors text-left'
+                onClick={() => setObjOpen(v => !v)}
+              >
+                <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex-1'>Mission Objective</span>
+                <span className='text-[10px] text-muted-foreground/50'>{timeAgo(execution.created_at)}</span>
+                <IconChevronDown className={`ml-1 h-3 w-3 shrink-0 text-muted-foreground/40 transition-transform duration-200 ${objOpen ? '' : '-rotate-90'}`} />
+              </button>
+              {!objOpen && (
+                <p className='px-4 pb-2.5 text-xs text-muted-foreground/55 truncate'>
+                  {execution.objective.slice(0, 100)}{execution.objective.length > 100 ? '…' : ''}
+                </p>
+              )}
+              {objOpen && (
+                <p className='px-4 pb-3 pt-0 whitespace-pre-wrap text-sm leading-relaxed text-[#EAEAEA]/88'>{execution.objective}</p>
+              )}
             </div>
 
             {/* Final result */}
@@ -1020,15 +1576,29 @@ export default function ExecutionDetailPage() {
               </div>
             )}
 
-            {/* Planning Room */}
-            {(execution.status === 'planning' || execution.status === 'awaiting_approval' ||
-              messages.some(m => m.iteration === 0 && m.role === 'assistant')) && (
+            {/* Team Discussion (P1) — shown when discussion messages exist or planning in progress */}
+            {(discussionMessages.length > 0 || execution.status === 'planning') && (
+              <DiscussionPanel
+                agents={orderedAgents}
+                discussionMessages={discussionMessages}
+                isPlanning={execution.status === 'planning'}
+                leaderAgentId={workforce?.leader_agent_id}
+              />
+            )}
+
+            {/* Strategy Session (legacy — old executions without discussion phase) */}
+            {discussionMessages.length === 0 &&
+              execution.status !== 'planning' &&
+              messages.some(m => m.iteration === 0 && m.role === 'assistant' && m.phase !== 'discussion') && (
               <PlanningRoomPanel
                 agents={orderedAgents}
                 messages={messages}
-                isPlanning={execution.status === 'planning'}
+                isPlanning={false}
               />
             )}
+
+            {/* Peer Exchanges (P2) — shown when agents have consulted each other */}
+            <PeerExchangesPanel agents={orderedAgents} messages={messages} />
 
             {/* Interleaved: operator messages + per-agent threads, sorted by time */}
             {(() => {
@@ -1108,6 +1678,15 @@ export default function ExecutionDetailPage() {
                 Agents are working…
                 <ThinkingDots color='#9A66FF' />
               </div>
+            )}
+
+            {/* Leader Review (P3) — shown after execution completes */}
+            {execution.status === 'completed' && (
+              <ReviewPanel
+                agents={orderedAgents}
+                messages={reviewMessages}
+                leaderAgentId={workforce?.leader_agent_id}
+              />
             )}
 
             <div ref={messagesEndRef} />
@@ -1285,6 +1864,12 @@ export default function ExecutionDetailPage() {
                 <Button variant='outline' size='sm' className='w-full border-[#FFBF47]/30 text-[#FFBF47] hover:bg-[#FFBF47]/10' onClick={handleHalt}>
                   <IconHandStop className='mr-1.5 h-3.5 w-3.5' />
                   Halt Execution
+                </Button>
+              )}
+              {execution?.status === 'halted' && (
+                <Button variant='outline' size='sm' className='w-full border-[#56D090]/30 text-[#56D090] hover:bg-[#56D090]/10' onClick={handleResume}>
+                  <IconPlayerPlay className='mr-1.5 h-3.5 w-3.5' />
+                  Resume Execution
                 </Button>
               )}
               <Button variant='ghost' size='sm' className='w-full text-muted-foreground/50 hover:text-foreground'

@@ -29,6 +29,18 @@ const (
 	EventTypeSubtaskDone      EventType = "subtask_done"
 	EventTypeAgentHandoff     EventType = "agent_handoff"
 	EventTypeSystem           EventType = "system"
+
+	// Discussion phase events (P1)
+	EventTypeDiscussionStarted   EventType = "discussion_started"
+	EventTypeDiscussionTurn      EventType = "discussion_turn"
+	EventTypeDiscussionConsensus EventType = "discussion_consensus"
+
+	// Peer consultation events (P2)
+	EventTypePeerConsultation EventType = "peer_consultation"
+
+	// Review phase events (P3)
+	EventTypeReviewStarted  EventType = "review_started"
+	EventTypeReviewComplete EventType = "review_complete"
 )
 
 type Event struct {

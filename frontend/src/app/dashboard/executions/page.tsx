@@ -4,8 +4,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import { IconTrash } from '@tabler/icons-react';
 import api, { Agent, Workforce, Execution } from '@/lib/api';
 import { EntityAvatarStack } from '@/components/entity-avatar';
 
@@ -178,17 +180,35 @@ export default function ExecutionsPage() {
                       <h3 className='text-sm font-medium leading-snug line-clamp-1'>
                         {exec.title || exec.objective.slice(0, 120)}
                       </h3>
-                      <Badge
-                        variant='outline'
-                        className='shrink-0 text-[10px]'
-                        style={{
-                          backgroundColor: statusConf.bg,
-                          borderColor: statusConf.border,
-                          color: statusConf.color
-                        }}
-                      >
-                        {statusConf.label}
-                      </Badge>
+                      <div className='flex items-center gap-2 shrink-0'>
+                        <Badge
+                          variant='outline'
+                          className='text-[10px]'
+                          style={{
+                            backgroundColor: statusConf.bg,
+                            borderColor: statusConf.border,
+                            color: statusConf.color
+                          }}
+                        >
+                          {statusConf.label}
+                        </Badge>
+                        {exec.status !== 'running' && exec.status !== 'planning' && (
+                          <Button
+                            variant='ghost'
+                            size='icon'
+                            className='h-6 w-6 text-muted-foreground hover:text-destructive hover:bg-destructive/10'
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (!confirm('Delete this execution? This cannot be undone.')) return;
+                              api.deleteExecution(exec.id).then(() => {
+                                setExecutions((prev) => prev.filter((x) => x.id !== exec.id));
+                              });
+                            }}
+                          >
+                            <IconTrash className='h-3.5 w-3.5' />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                     <p className='mt-0.5 text-xs text-muted-foreground'>
                       {exec.workforce_name}

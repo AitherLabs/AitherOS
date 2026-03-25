@@ -1,10 +1,56 @@
 # AitherOS — Autonomous AI Workforce Platform
 
-> Orchestrate multi-agent AI teams with real-time collaboration, human-in-the-loop control, and MCP tool integration.
+> Orchestrate multi-agent AI teams with real-time collaboration, vector knowledge bases, human-in-the-loop control, and MCP tool integration.
 
 AitherOS is a **self-hosted AI workforce management platform**. It lets you compose teams of AI agents (a "Workforce"), assign each agent a role, a system prompt, and tool access, then run multi-step missions (an "Execution") against a shared objective. The platform handles planning, agent coordination, token budgets, human oversight, and result synthesis — all in real-time via WebSocket.
 
 Think of it as an AI operating system for organizations: agents are employees, workforces are teams, executions are projects.
+
+---
+
+## What's New
+
+### Multi-Agent Collaboration Phases (P1 / P2 / P3)
+
+Every execution now goes through three distinct collaboration phases before, during, and after the work itself:
+
+| Phase | When | What happens |
+|-------|------|--------------|
+| **P1 — Team Discussion** | Before execution starts | All agents discuss the objective, each contributing their perspective. The leader synthesizes their input into a structured execution plan. |
+| **P2 — Peer Consultation** | Mid-execution, per-subtask | Any agent can pause and ask another agent a question (`ask_peer` signal). The consulted agent responds in real time. Up to 3 rounds per subtask. |
+| **P3 — Post-Execution Review** | After all subtasks complete | The leader agent reviews all subtask outputs, produces a verdict (`review_passed` / `review_needs_revision`), with highlights and issues. Advisory only — execution always completes. |
+
+All three phase types are displayed in the **Agent Interactions Panel** on the execution page (collapsible, left column, always visible).
+
+### Knowledge Base with Vector RAG
+
+Each workforce has a persistent vector knowledge base backed by PostgreSQL + `pgvector`. It is embedded using the same OpenAI-compatible API as the LLM (configurable via `EMBEDDING_MODEL` env var, default `text-embedding-3-small`).
+
+**Auto-ingestion:**
+- Mid-execution: every substantial agent response is embedded in real time (`IngestSingleMessage` — async goroutine, zero latency)
+- Post-execution: the final result and all significant agent messages are embedded in a background goroutine
+- Agent chat: every assistant reply ≥ 100 chars is embedded into the agent's home workforce KB
+
+**RAG in agent prompts:**
+- Before each subtask, `RetrieveRelevantForAgent` fetches the top-3 most relevant past memories for that specific agent across all executions. These are injected as `## Your Long-Term Memory` in the agent's context.
+- Similarity threshold: 0.3 (cosine). Results formatted as `[Title | XX% match] content`.
+
+**Manual entries:**
+- Users can add, browse, search, and delete KB entries via `/dashboard/workforces/[id]/knowledge`
+
+### Pre-flight Check System
+
+Before launching an execution, the system validates the workforce configuration without side effects:
+
+| Check | What is validated |
+|-------|------------------|
+| Workforce | Can be loaded from DB |
+| Agents | At least one agent is configured |
+| Leader agent | Set if workforce has >1 agent (required for discussion + review) |
+| Agent models | Every agent resolves a valid LLM provider/model |
+| Active execution | No execution currently running for this workforce |
+
+The Launch Execution dialog auto-runs preflight when opened. A "Re-run" button allows re-validation after making changes. The Launch button is disabled if any check fails.
 
 ---
 
@@ -105,6 +151,7 @@ AitherOS/
 
 ## API Reference
 
+### Auth
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
@@ -112,25 +159,78 @@ AitherOS/
 | `POST` | `/api/v1/auth/login` | Login → JWT |
 | `GET` | `/api/v1/auth/me` | Get current user |
 | `PATCH` | `/api/v1/auth/me` | Update display name / avatar |
+
+### Agents & Providers
+| Method | Path | Description |
+|--------|------|-------------|
 | `POST` | `/api/v1/providers` | Create LLM provider |
 | `GET` | `/api/v1/providers` | List providers |
+| `PATCH` | `/api/v1/providers/:id` | Update provider |
+| `DELETE` | `/api/v1/providers/:id` | Delete provider |
 | `POST` | `/api/v1/agents` | Create agent |
 | `GET` | `/api/v1/agents` | List agents |
 | `PATCH` | `/api/v1/agents/:id` | Update agent |
 | `DELETE` | `/api/v1/agents/:id` | Delete agent (cascades) |
-| `POST` | `/api/v1/agents/:id/debug` | Test agent (SSE stream) |
+| `POST` | `/api/v1/agents/:id/debug` | Test agent (SSE stream or blocking) |
+| `GET` | `/api/v1/agents/:id/chats` | List agent chat history |
+| `POST` | `/api/v1/agents/:id/chats` | Append chat message (auto-ingests to KB) |
+| `DELETE` | `/api/v1/agents/:id/chats` | Clear chat history |
+
+### Workforces & Executions
+| Method | Path | Description |
+|--------|------|-------------|
 | `POST` | `/api/v1/workforces` | Create workforce |
 | `GET` | `/api/v1/workforces` | List workforces |
 | `PATCH` | `/api/v1/workforces/:id` | Update workforce |
 | `DELETE` | `/api/v1/workforces/:id` | Delete workforce (cascades) |
+| `GET` | `/api/v1/workforces/:id/preflight` | Pre-flight validation (no side effects) |
 | `POST` | `/api/v1/workforces/:id/executions` | Start execution |
+| `GET` | `/api/v1/executions` | List executions |
 | `GET` | `/api/v1/executions/:execID` | Get execution |
+| `DELETE` | `/api/v1/executions/:execID` | Delete execution |
 | `POST` | `/api/v1/executions/:execID/halt` | Halt running execution |
+| `POST` | `/api/v1/executions/:execID/resume` | Resume halted execution |
 | `POST` | `/api/v1/executions/:execID/approve` | Approve / reject plan |
-| `POST` | `/api/v1/executions/:execID/intervene` | Inject human message |
+| `POST` | `/api/v1/executions/:execID/intervene` | Inject human message mid-execution |
+| `GET` | `/api/v1/executions/:execID/discussion` | P1 discussion messages |
+| `GET` | `/api/v1/executions/:execID/review` | P3 review messages |
+
+### Knowledge Base
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/workforces/:id/knowledge` | List KB entries |
+| `POST` | `/api/v1/workforces/:id/knowledge` | Create manual KB entry (auto-embeds) |
+| `POST` | `/api/v1/workforces/:id/knowledge/search` | Semantic vector search |
+| `GET` | `/api/v1/workforces/:id/knowledge/count` | Entry count |
+| `DELETE` | `/api/v1/workforces/:id/knowledge/:entryID` | Delete entry |
+
+### MCP Tools
+| Method | Path | Description |
+|--------|------|-------------|
 | `GET` | `/api/v1/mcp/servers` | List MCP servers |
 | `POST` | `/api/v1/mcp/servers` | Register MCP server |
-| `GET` | `/ws/executions/:execID` | WebSocket — live events |
+| `PATCH` | `/api/v1/mcp/servers/:id` | Update server |
+| `DELETE` | `/api/v1/mcp/servers/:id` | Delete server |
+| `GET` | `/api/v1/mcp/servers/:id/tools` | List cached tool definitions |
+| `POST` | `/api/v1/mcp/servers/:id/discover` | Connect and refresh tool list |
+| `GET` | `/api/v1/workforces/:id/mcp` | List servers attached to workforce |
+| `POST` | `/api/v1/workforces/:id/mcp` | Attach server to workforce |
+| `DELETE` | `/api/v1/workforces/:id/mcp/:serverID` | Detach server |
+| `POST` | `/api/v1/mcp/agent-tools` | Grant tool access to agent |
+| `DELETE` | `/api/v1/mcp/agent-tools/:agentID/:serverID` | Revoke tool access |
+
+### Activity & Approvals
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/activity` | Global activity feed |
+| `GET` | `/api/v1/workforces/:id/activity` | Workforce activity feed |
+| `GET` | `/api/v1/workforces/:id/approvals` | List approvals |
+| `POST` | `/api/v1/approvals/:id/resolve` | Resolve approval (approve/reject) |
+
+### Real-time
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/ws/executions/:execID` | WebSocket — live execution events |
 
 ## Domains
 
@@ -222,17 +322,22 @@ POST /api/v1/workforces/:id/executions
         │
         ▼
 Orchestrator.StartExecution()
+  ├── Run pre-flight validation (workforce, agents, models, active exec check)
   ├── Create Execution record (status: pending → planning)
   ├── Store cancellable context in activeExecs map
   └── go runPlanning()          ← async goroutine
           │
           ▼
-  runPlanning()
-  ├── Load all agents in the workforce
-  ├── For each agent → ask "what's your strategy for this objective?"
-  │     (runAgentTask with a strategy-formulation prompt)
-  ├── Leader agent synthesizes all responses into a final Plan JSON
-  │     (array of ExecutionSubtask with depends_on DAG edges)
+  ── P1: TEAM DISCUSSION ──────────────────────────────────────────
+  runDiscussion()  [multi-agent only; single-agent skips to simple plan]
+  ├── Each non-leader agent contributes 1 turn (perspective on objective)
+  ├── Leader agent synthesizes all contributions into a Plan JSON
+  │     (array of ExecutionSubtask with depends_on DAG edges, max 6 turns)
+  ├── Messages stored with phase='discussion' (excluded from agent context later)
+  ├── Publishes: discussion_started / discussion_turn / discussion_consensus events
+  └── Falls back to buildSimplePlan() if JSON parse fails
+          │
+          ▼
   ├── Parse + persist the plan to executions.plan (JSONB)
   ├── Set status: awaiting_approval
   └── Publish event: execution.plan_ready
@@ -244,23 +349,44 @@ Orchestrator.StartExecution()
         └── If approved: status → running
                 │
                 ▼
+  ── EXECUTION LOOP ───────────────────────────────────────────────
           go runExecutionLoop()
           ├── Connect MCP servers for this workforce
           ├── Build topological order of subtasks (respecting depends_on)
           ├── For each subtask in order:
           │     ├── Resolve agent's connector + model
           │     ├── Resolve agent's allowed MCP tools
+          │     ├── Retrieve agent's long-term memory from KB (RAG, top-3 matches)
           │     ├── Collect previous subtask outputs as context
           │     ├── Check intervention channel for human messages
           │     ├── runAgentTask() → LLM call(s) via engine strategy loop
           │     │     ├── Persist every message to messages table
           │     │     ├── Execute any tool_calls via MCP manager
+          │     │     │
+          │     │     ├── ── P2: PEER CONSULTATION (mid-subtask) ──────────
+          │     │     │   ├── Detect ask_peer signal in response
+          │     │     │   │     {"status":"ask_peer","peer":"Name","question":"..."}
+          │     │     │   ├── Call runPeerConsultation() → 1 LLM call to peer agent
+          │     │     │   ├── Store Q+A with phase='peer_consultation'
+          │     │     │   ├── Inject peer answer back into caller's conversation
+          │     │     │   └── Re-submit (max 3 rounds per subtask)
+          │     │     │
+          │     │     ├── Embed response into KB in real time (IngestSingleMessage)
           │     │     └── Return agentResult (content, tokens, completion signal)
           │     ├── Update subtask status in plan (running → done/blocked/needs_help)
           │     └── Publish event: agent_response / agent_thinking / tool_call
           ├── Check token + time budgets after each subtask
-          ├── Check for OBJECTIVE_COMPLETE signal in agent output
-          └── Persist final result, update status → completed/failed/halted
+          │
+          ├── ── P3: POST-EXECUTION REVIEW ────────────────────────────────
+          │   ├── [multi-agent with leader only]
+          │   ├── runReview() → leader LLM reviews all subtask outputs
+          │   ├── Produces JSON: {status, summary, highlights[], issues[]}
+          │   ├── Messages stored with phase='review'
+          │   └── Publishes: review_started / review_complete events
+          │
+          └── completeExecution()
+                ├── Persist final result, update status → completed
+                └── Background: IngestExecutionResult + IngestAgentMessages → KB
 ```
 
 ### Human-in-the-Loop
@@ -390,12 +516,13 @@ The frontend is a Next.js 16 App Router application (`frontend/src/`).
 | Route | File | Purpose |
 |-------|------|---------|
 | `/dashboard/overview` | `overview/page.tsx` | System stats, recent executions, quick actions |
-| `/dashboard/agents` | `agents/page.tsx` | Agent list; create/edit/delete agents with full form |
-| `/dashboard/agents/[id]` | (detail page) | Agent detail, debug chat playground, variable testing |
-| `/dashboard/workforces` | `workforces/page.tsx` | Workforce cards with team structure diagrams |
-| `/dashboard/workforces/[id]` | `workforces/[id]/page.tsx` | Workforce detail: agents, MCP tools, knowledge base, executions, approvals |
+| `/dashboard/agents` | `agents/page.tsx` | Agent list; create/edit/delete agents (3-step wizard) |
+| `/dashboard/agents/[id]` | `agents/[id]/page.tsx` | Agent detail, debug chat playground, variable testing |
+| `/dashboard/workforces` | `workforces/page.tsx` | Workforce cards with team structure diagrams (3-step wizard) |
+| `/dashboard/workforces/[id]` | `workforces/[id]/page.tsx` | Workforce detail: agents, MCP tools, knowledge base, executions, approvals, launch with preflight |
+| `/dashboard/workforces/[id]/knowledge` | `workforces/[id]/knowledge/page.tsx` | Knowledge Base: browse entries, semantic search, manual add, delete, source type filter |
 | `/dashboard/executions` | `executions/page.tsx` | Execution list with status, tokens, agent avatars |
-| `/dashboard/executions/[id]` | `executions/[id]/page.tsx` | Mission Control: 3-column layout with agent call grid, live chat stream, WebSocket events |
+| `/dashboard/executions/[id]` | `executions/[id]/page.tsx` | Mission Control: agent call grid, live chat stream, WebSocket events; Agent Interactions Panel (P1/P2/P3); Review Panel |
 | `/dashboard/mcp` | `mcp/page.tsx` | MCP server management: create, discover tools, enable/disable |
 | `/dashboard/providers` | `providers/page.tsx` | LLM provider management |
 | `/dashboard/activity` | `activity/page.tsx` | Global activity feed |
@@ -476,6 +603,7 @@ All backend communication goes through `src/lib/api.ts` — a single typed clien
 | `PICOCLAW_TIMEOUT` | No | Request timeout to PicoClaw (default `120s`) |
 | `CORS_ORIGINS` | Yes | Comma-separated allowed origins, e.g. `http://localhost:3000,https://your-domain.com` |
 | `ENCRYPTION_KEY` | Yes | AES key for encrypting sensitive provider credentials — generate with `openssl rand -base64 32` |
+| `EMBEDDING_MODEL` | No | Embedding model for the Knowledge Base (default `text-embedding-3-small`). Must be served by the same `LLM_API_BASE` endpoint (LiteLLM supports this). |
 
 ### Frontend (`frontend/.env.local`)
 

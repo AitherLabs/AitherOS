@@ -182,6 +182,12 @@ class ApiClient {
     });
   }
 
+  async resumeExecution(execId: string) {
+    return this.request<{ status: string }>(`/api/v1/executions/${execId}/resume`, {
+      method: 'POST'
+    });
+  }
+
   async interveneExecution(execId: string, message: string) {
     return this.request<{ status: string }>(`/api/v1/executions/${execId}/intervene`, {
       method: 'POST',
@@ -203,6 +209,26 @@ class ApiClient {
 
   async getMessages(execId: string) {
     return this.request<Message[]>(`/api/v1/executions/${execId}/messages`);
+  }
+
+  async getDiscussionMessages(execId: string) {
+    return this.request<Message[]>(`/api/v1/executions/${execId}/discussion`);
+  }
+
+  async getReviewMessages(execId: string) {
+    return this.request<Message[]>(`/api/v1/executions/${execId}/review`);
+  }
+
+  async preflightWorkforce(wfId: string) {
+    return this.request<{ ok: boolean; checks: { name: string; ok: boolean; detail: string }[] }>(
+      `/api/v1/workforces/${wfId}/preflight`
+    );
+  }
+
+  async deleteExecution(execId: string) {
+    return this.request<{ deleted: string }>(`/api/v1/executions/${execId}`, {
+      method: 'DELETE'
+    });
   }
 
   async updateExecutionMeta(execId: string, data: { title?: string; description?: string; image_url?: string }) {
@@ -537,10 +563,11 @@ export interface Message {
   agent_id: string;
   agent_name?: string;
   role: string;
+  phase: string;
   content: string;
   iteration: number;
-  tokens_in: number;
-  tokens_out: number;
+  tokens_input: number;
+  tokens_output: number;
   model: string;
   latency_ms: number;
   tool_calls?: ToolCallRecord[];

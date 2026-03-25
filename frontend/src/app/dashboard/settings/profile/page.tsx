@@ -22,8 +22,12 @@ export default function ProfilePage() {
   const [hasChanges, setHasChanges] = useState(false);
 
   const loadProfile = useCallback(async () => {
+    if (!session?.accessToken) {
+      setLoading(false);
+      return;
+    }
+    api.setToken(session.accessToken);
     try {
-      if (session?.accessToken) api.setToken(session.accessToken);
       const res = await api.me();
       const u = res.data;
       if (u) {

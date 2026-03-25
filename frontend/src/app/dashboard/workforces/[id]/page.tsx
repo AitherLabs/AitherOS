@@ -28,6 +28,7 @@ import {
   IconArrowLeft,
   IconArrowRight,
   IconBolt,
+  IconBrain,
   IconClock,
   IconCoins,
   IconDeviceFloppy,
@@ -110,6 +111,8 @@ export default function WorkforceDetailPage() {
   const [execOpen, setExecOpen] = useState(false);
   const [execObjective, setExecObjective] = useState('');
   const [execRunning, setExecRunning] = useState(false);
+  const [preflight, setPreflight] = useState<{ ok: boolean; checks: { name: string; ok: boolean; detail: string }[] } | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -289,6 +292,17 @@ export default function WorkforceDetailPage() {
     }
   }
 
+  async function runPreflight() {
+    setPreflightLoading(true);
+    setPreflight(null);
+    try {
+      const res = await api.preflightWorkforce(wfId);
+      if (res.data) setPreflight(res.data);
+    } catch { /* ignore */ } finally {
+      setPreflightLoading(false);
+    }
+  }
+
   async function handleStartExec() {
     if (!execObjective.trim()) return;
     setExecRunning(true);
@@ -296,6 +310,7 @@ export default function WorkforceDetailPage() {
       const res = await api.startExecution(wfId, execObjective);
       setExecOpen(false);
       setExecObjective('');
+      setPreflight(null);
       if (res.data?.id) {
         router.push(`/dashboard/executions/${res.data.id}`);
       }
@@ -468,6 +483,13 @@ export default function WorkforceDetailPage() {
             onClick={() => { setRefreshing(true); loadData(); }}
           >
             <IconRefresh className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => router.push(`/dashboard/workforces/${wfId}/knowledge`)}
+          >
+            <IconBrain className='mr-1 h-3.5 w-3.5 text-[#9A66FF]' /> Knowledge
           </Button>
           <Button variant='outline' size='sm' onClick={openEdit}>
             <IconPencil className='mr-1 h-3.5 w-3.5' /> Edit
@@ -663,12 +685,13 @@ export default function WorkforceDetailPage() {
                   >
                     <CardHeader className='pb-2'>
                       <div className='flex items-start gap-3'>
-                        <div
-                          className='flex h-12 w-12 items-center justify-center rounded-lg text-2xl'
-                          style={{ backgroundColor: agent.color + '20', color: agent.color }}
-                        >
-                          {agent.icon || '🤖'}
-                        </div>
+                        <EntityAvatar
+                          icon={agent.icon}
+                          color={agent.color}
+                          avatarUrl={agent.avatar_url}
+                          name={agent.name}
+                          size='lg'
+                        />
                         <div className='flex-1 min-w-0'>
                           <CardTitle className='text-base' style={{ color: agent.color }}>
                             {agent.name}
@@ -1344,9 +1367,9 @@ export default function WorkforceDetailPage() {
       </ScrollArea>
 
       {/* Start Execution Dialog */}
-      <Dialog open={execOpen} onOpenChange={setExecOpen}>
-        <DialogContent>
-          <DialogHeader>
+      <Dialog open={execOpen} onOpenChange={(v) => { setExecOpen(v); if (v) runPreflight(); else setPreflight(null); }}>
+        <DialogContent className='max-w-lg max-h-[90vh] flex flex-col'>
+          <DialogHeader className='shrink-0'>
             <DialogTitle className='flex items-center gap-2'>
               <IconPlayerPlay className='h-5 w-5 text-[#56D090]' />
               Launch Execution
@@ -1355,19 +1378,60 @@ export default function WorkforceDetailPage() {
               Define the objective for {workforce.name}.
             </DialogDescription>
           </DialogHeader>
-          <div className='space-y-3'>
-            <Label>Objective</Label>
-            <Textarea
-              value={execObjective}
-              onChange={(e) => setExecObjective(e.target.value)}
-              placeholder='What should this workforce accomplish?'
-              rows={5}
-            />
-            <div className='flex items-center gap-2 text-xs text-muted-foreground'>
-              <span>Team: {agents.map((a) => `${a.icon} ${a.name}`).join(', ')}</span>
+          <div className='overflow-y-auto flex-1 min-h-0 space-y-4 py-1'>
+            <div className='space-y-2'>
+              <Label>Objective</Label>
+              <Textarea
+                value={execObjective}
+                onChange={(e) => setExecObjective(e.target.value)}
+                placeholder='What should this workforce accomplish?'
+                rows={4}
+              />
+              <p className='text-xs text-muted-foreground'>Team: {agents.map((a) => `${a.icon} ${a.name}`).join(', ')}</p>
+            </div>
+
+            {/* Pre-flight checks */}
+            <div className='rounded-lg border border-border/40 overflow-hidden'>
+              <div className='flex items-center gap-2 px-3 py-2 bg-muted/10 border-b border-border/30'>
+                <span className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex-1'>Pre-flight Check</span>
+                <button
+                  onClick={runPreflight}
+                  disabled={preflightLoading}
+                  className='flex items-center gap-1 text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors'
+                >
+                  {preflightLoading
+                    ? <IconLoader2 className='h-3 w-3 animate-spin' />
+                    : <IconRefresh className='h-3 w-3' />}
+                  {preflightLoading ? 'Checking…' : 'Re-run'}
+                </button>
+                {preflight && (
+                  <span className={`text-[10px] font-bold ${preflight.ok ? 'text-[#56D090]' : 'text-red-400'}`}>
+                    {preflight.ok ? '✓ Ready' : '✗ Issues found'}
+                  </span>
+                )}
+              </div>
+              <div className='divide-y divide-border/20'>
+                {preflightLoading && !preflight && (
+                  <p className='px-3 py-2 text-[11px] text-muted-foreground/50'>Running checks…</p>
+                )}
+                {preflight?.checks.map((c, i) => (
+                  <div key={i} className='flex items-start gap-2 px-3 py-2'>
+                    <span className={`mt-0.5 text-[11px] font-bold shrink-0 ${c.ok ? 'text-[#56D090]' : 'text-red-400'}`}>
+                      {c.ok ? '✓' : '✗'}
+                    </span>
+                    <div className='min-w-0'>
+                      <p className='text-[11px] font-medium text-foreground/80'>{c.name}</p>
+                      <p className='text-[10px] text-muted-foreground/60'>{c.detail}</p>
+                    </div>
+                  </div>
+                ))}
+                {!preflight && !preflightLoading && (
+                  <p className='px-3 py-2 text-[11px] text-muted-foreground/40'>Click Re-run to validate configuration</p>
+                )}
+              </div>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className='shrink-0'>
             <Button variant='outline' onClick={() => setExecOpen(false)}>Cancel</Button>
             <Button
               onClick={handleStartExec}
@@ -1383,11 +1447,11 @@ export default function WorkforceDetailPage() {
 
       {/* Edit Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className='max-w-2xl'>
-          <DialogHeader>
+        <DialogContent className='max-w-2xl max-h-[90vh] flex flex-col'>
+          <DialogHeader className='shrink-0'>
             <DialogTitle>Edit Workforce</DialogTitle>
           </DialogHeader>
-          <ScrollArea className='max-h-[60vh] pr-4'>
+          <ScrollArea className='flex-1 min-h-0 pr-4'>
             <div className='space-y-4 py-2'>
               <div className='flex items-start gap-4'>
                 <div className='space-y-1'>
@@ -1478,7 +1542,7 @@ export default function WorkforceDetailPage() {
               )}
             </div>
           </ScrollArea>
-          <DialogFooter>
+          <DialogFooter className='shrink-0'>
             <Button variant='outline' onClick={() => setEditOpen(false)}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving} className='bg-[#9A66FF] hover:bg-[#9A66FF]/90'>
               {saving ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : <IconDeviceFloppy className='mr-1 h-4 w-4' />}
