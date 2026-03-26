@@ -8,7 +8,82 @@ Think of it as an AI operating system for organizations: agents are employees, w
 
 ---
 
-## What's New
+## What's New in v0.2.0 (March 2026)
+
+This release brings **production-grade workspace management**, **per-workforce credentials**, **Kanban task boards with autonomous mode**, and **critical performance + reliability fixes**.
+
+### 🚀 Workspace Provisioning & Aither-Tools MCP Server
+
+Every workforce now gets its own isolated workspace directory with automatic provisioning:
+
+- **Auto-provisioned workspaces**: `/opt/AitherOS/workforces/{workforce-slug}/workspace/` created on workforce creation
+- **Aither-Tools MCP server**: 46 built-in tools (filesystem, git, network, secrets, etc.) automatically registered and attached to each workforce
+- **Per-workforce tool environments**: Each Aither-Tools instance runs with `AITHER_WORKSPACE` and `AITHER_WORKFORCE_NAME` env vars, giving agents isolated, safe access to their workspace
+- **Retroactive provisioning**: `POST /api/v1/workforces/{id}/provision` endpoint for migrating old workforces
+- **Tool discovery caching**: Provisioner auto-discovers and caches all 46 tool definitions on workspace creation
+
+### 🔐 Per-Workforce Encrypted Credentials
+
+Agents can now use different API keys and secrets per workforce, stored securely and accessible via tools:
+
+- **AES-256-GCM encryption**: All credentials encrypted at rest using `ENCRYPTION_KEY` env var (32-byte base64)
+- **CRUD API**: `GET/PUT/DELETE /api/v1/workforces/{id}/credentials` for managing secrets per workforce
+- **Automatic file export**: On every credential change, `.secrets.json` is written to `{workforce-root}/.secrets.json` (mode 0600) for agent access
+- **Aither-Tools integration**: New `get_secret(service, key_name)` and `list_secrets()` tools let agents retrieve credentials mid-execution
+- **Frontend UI**: Credentials section on workforce detail page with inline add form, grouped by service, masked values, show/hide toggle
+
+### 📋 Kanban Task Board + Autonomous Mode
+
+Per-workforce task boards with execution linking and optional autonomous operation:
+
+- **5-column board**: Open → Todo → In Progress → Blocked → Done
+- **Execution linking**: Tasks can be started directly from the board via "▶ Run" button, which creates an execution and auto-updates task status on completion/failure
+- **Autonomous mode toggle**: Per-workforce setting (`autonomous_mode` boolean + `heartbeat_interval_m` integer) for future scheduled leader review executions
+- **Priority coloring**: Tasks have priority levels (low/medium/high/critical) with color-coded left borders
+- **Agent assignment**: Tasks can be assigned to specific agents with visual badges
+- **Full lifecycle**: Orchestrator auto-marks tasks done/blocked when linked execution completes/fails
+- **API**: `GET/POST /api/v1/workforces/{id}/kanban`, `PATCH/DELETE /api/v1/kanban/{taskID}`
+
+### ⚡ Performance Improvements
+
+- **N+1 agent loading eliminated**: `GetAgentsBatch()` replaces per-agent queries in `loadWorkForceAgents` (one `SELECT ... WHERE id = ANY($1)` instead of N queries)
+- **Workforces page stats optimization**: New `GET /api/v1/stats` endpoint with single SQL query (`COUNT FILTER` + `SUM`) replaces N+1 execution list calls (7 API calls → 3 for a page with 5 workforces)
+
+### 🛠️ Backend Hardening & Bug Fixes
+
+- **Context cancellation fixes**: All provisioner and knowledge manager goroutines now use `context.Background()` instead of `r.Context()` — fixes silent failures when HTTP response sent before goroutine completes
+- **Circuit breaker recovery**: Embedder `failCount` now resets to 0 on successful response (was permanently one-way, killing RAG after 3 transient failures)
+- **Safe type assertions**: `HaltExecution` and `InjectIntervention` now use two-value form with ok check (prevents panics on corrupted execution context)
+- **Knowledge manager availability guards**: All public methods check `embedder.Available()` before making HTTP calls (avoids wasteful requests when embedder is disabled)
+- **Provisioner idempotency**: `ListWorkforceMCPServers` check before creating Aither-Tools server prevents duplicates on repeated provision calls
+
+### 📚 API Additions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/workforces/:id/provision` | Provision workspace + Aither-Tools for existing workforce |
+| `GET` | `/api/v1/stats` | Global execution stats (total missions, completed, failed, tokens used) |
+| `GET` | `/api/v1/workforces/:id/kanban` | List kanban tasks for workforce |
+| `POST` | `/api/v1/workforces/:id/kanban` | Create kanban task |
+| `PATCH` | `/api/v1/kanban/:taskID` | Update kanban task (status, priority, notes, execution link, etc.) |
+| `DELETE` | `/api/v1/kanban/:taskID` | Delete kanban task |
+| `GET` | `/api/v1/workforces/:id/credentials` | List credentials (values masked) |
+| `PUT` | `/api/v1/workforces/:id/credentials` | Upsert credential (encrypts + exports to .secrets.json) |
+| `DELETE` | `/api/v1/workforces/:id/credentials/:service/:keyName` | Delete credential |
+
+### 🗄️ Schema Changes
+
+- **`workforces` table**: Added `autonomous_mode BOOLEAN DEFAULT FALSE`, `heartbeat_interval_m INTEGER DEFAULT 30`
+- **`kanban_tasks` table** (new): Full task lifecycle tracking with execution linking
+- **`workforce_credentials` table** (new): Encrypted secret storage with unique constraint on (workforce_id, service, key_name)
+
+### 🧩 MCP Server Updates
+
+- **Aither-Tools**: Added `get_secret(service, key_name)` and `list_secrets()` tools for per-workforce credential access
+
+---
+
+## What's New in v0.1.0
 
 ### Multi-Agent Collaboration Phases (P1 / P2 / P3)
 
