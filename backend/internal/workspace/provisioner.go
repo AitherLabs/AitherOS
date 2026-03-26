@@ -89,10 +89,17 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 	if err != nil {
 		return fmt.Errorf("list attached servers: %w", err)
 	}
+	requiredEnv := map[string]string{
+		"AITHER_WORKSPACE":      workspacePath,
+		"AITHER_WORKFORCE_NAME": wf.Name,
+		"AITHER_WORKFORCE_ID":   wf.ID.String(),
+		"AITHER_API_URL":        internalAPIURL(),
+	}
+
 	for _, s := range attached {
 		if s.Name == "Aither-Tools" {
 			srv = s
-			log.Printf("workspace: Aither-Tools already attached to %q (server %s), skipping create", wf.Name, s.ID)
+			log.Printf("workspace: Aither-Tools already attached to %q (server %s)", wf.Name, s.ID)
 			break
 		}
 	}
@@ -105,12 +112,7 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 			Command:     aitherToolsCmd,
 			Args:        []string{aitherToolsBinary},
 			Icon:        "⚙️",
-			EnvVars: map[string]string{
-				"AITHER_WORKSPACE":      workspacePath,
-				"AITHER_WORKFORCE_NAME": wf.Name,
-				"AITHER_WORKFORCE_ID":   wf.ID.String(),
-				"AITHER_API_URL":        internalAPIURL(),
-			},
+			EnvVars:     requiredEnv,
 		})
 		if err != nil {
 			return fmt.Errorf("create mcp server: %w", err)
@@ -119,6 +121,18 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 		// ── 3. Attach server to workforce ─────────────────────────────────────
 		if err := p.store.AttachMCPServer(ctx, wf.ID, srv.ID); err != nil {
 			return fmt.Errorf("attach mcp server: %w", err)
+		}
+	} else {
+		// Patch env vars on existing server — merges new keys without wiping custom additions.
+		merged := make(map[string]string, len(srv.EnvVars)+len(requiredEnv))
+		for k, v := range srv.EnvVars {
+			merged[k] = v
+		}
+		for k, v := range requiredEnv {
+			merged[k] = v
+		}
+		if _, err = p.store.UpdateMCPServer(ctx, srv.ID, models.UpdateMCPServerRequest{EnvVars: merged}); err != nil {
+			log.Printf("workspace: patch env vars for %q failed (non-fatal): %v", wf.Name, err)
 		}
 	}
 

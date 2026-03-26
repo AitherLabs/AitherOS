@@ -166,7 +166,7 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
     const rawCwd   = (args.cwd as string) || WORKSPACE;
     const cwd      = safeResolve(rawCwd);
     const logName  = (args.log_file as string) || `bg_${Date.now()}.log`;
-    const logPath  = path.join(WORKSPACE, logName);
+    const logPath  = safeResolve(path.join(WORKSPACE, logName));
 
     const logFd    = await fs.open(logPath, 'a');
     const child    = spawn('/bin/bash', ['-c', args.command as string], {

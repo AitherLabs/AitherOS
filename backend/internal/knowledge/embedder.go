@@ -98,7 +98,10 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		errMsg := fmt.Errorf("embeddings API status %d: %s", resp.StatusCode, string(respBody))
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		// Only count permanent failures (model not found, bad config) toward the circuit breaker.
+		// 429 (rate limit) and 5xx (transient server errors) should not permanently disable embeddings.
+		isPermanent := resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests
+		if isPermanent {
 			e.mu.Lock()
 			e.failCount++
 			if e.failCount >= 3 && !e.disabled {
