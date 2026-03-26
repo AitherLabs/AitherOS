@@ -1525,6 +1525,7 @@ export default function ExecutionDetailPage() {
   }
 
   return (
+    <>
     <div className='flex h-[calc(100vh-64px)] flex-col'>
       {/* Top Bar */}
       <div className='flex items-center justify-between border-b border-border/50 px-6 py-3'>
@@ -2215,6 +2216,7 @@ export default function ExecutionDetailPage() {
     </div>
 
     {/* ── Strategy / Plan full-screen dialog ── */}
+
     <Dialog open={strategyDialogOpen} onOpenChange={setStrategyDialogOpen}>
       <DialogContent className='max-w-2xl max-h-[85vh] flex flex-col'>
         <DialogHeader className='shrink-0'>
@@ -2262,5 +2264,6 @@ export default function ExecutionDetailPage() {
         </div>
       </DialogContent>
     </Dialog>
+    </>
   );
 }
