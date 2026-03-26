@@ -76,10 +76,12 @@ export function OverviewStats() {
   const loadAll = useCallback(async () => {
     try {
       if (session?.accessToken) api.setToken(session.accessToken);
-      const [agRes, wfRes, pvRes] = await Promise.all([
+      const [agRes, wfRes, pvRes, execRes, actRes] = await Promise.all([
         api.listAgents(),
         api.listWorkforces(),
-        api.listProviders()
+        api.listProviders(),
+        api.listAllExecutions(),
+        api.listActivity(undefined, 10)
       ]);
 
       const agList = agRes.data || [];
@@ -88,43 +90,34 @@ export function OverviewStats() {
       setAgents(agList);
       setWorkforces(wfList);
       setProviders(pvList);
+      setRecentActivity(actRes.data || []);
 
       const agMap: Record<string, Agent> = {};
       for (const a of agList) agMap[a.id] = a;
 
-      const allExecs: ExecWithMeta[] = [];
-      let tokens = 0;
-      for (const wf of wfList) {
-        try {
-          const exRes = await api.listExecutions(wf.id);
-          const wfAgents = (wf.agent_ids || []).map((id) => agMap[id]).filter(Boolean);
-          for (const e of exRes.data || []) {
-            tokens += e.tokens_used;
-            allExecs.push({ ...e, workforce_name: wf.name, workforce_agents: wfAgents });
-          }
-        } catch { /* skip */ }
-      }
-      allExecs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const wfMap: Record<string, Workforce> = {};
+      for (const wf of wfList) wfMap[wf.id] = wf;
+
+      const allExecs: ExecWithMeta[] = (execRes.data || []).map((e) => {
+        const wf = wfMap[e.workforce_id];
+        const wfAgents = wf ? (wf.agent_ids || []).map((id) => agMap[id]).filter(Boolean) : [];
+        return { ...e, workforce_agents: wfAgents };
+      });
+
       setExecutions(allExecs);
-      setTotalTokens(tokens);
+      setTotalTokens(allExecs.reduce((sum, e) => sum + (e.tokens_used || 0), 0));
 
-      // Load pending approvals count across all workforces
-      let totalPending = 0;
-      for (const wf of wfList) {
-        try {
-          const pcRes = await api.countPendingApprovals(wf.id);
-          totalPending += pcRes.data?.count || 0;
-        } catch { /* skip */ }
-      }
+      // Load pending approvals count across all workforces in parallel
+      const approvalCounts = await Promise.allSettled(
+        wfList.map((wf) => api.countPendingApprovals(wf.id))
+      );
+      const totalPending = approvalCounts.reduce((sum, result) => {
+        if (result.status === 'fulfilled') {
+          return sum + (result.value.data?.count || 0);
+        }
+        return sum;
+      }, 0);
       setPendingApprovals(totalPending);
-
-      // Load global activity
-      try {
-        const actRes = await api.listActivity(undefined, 10);
-        setRecentActivity(actRes.data || []);
-      } catch {
-        setRecentActivity([]);
-      }
     } catch (err) {
       console.error('Failed to load stats:', err);
     } finally {

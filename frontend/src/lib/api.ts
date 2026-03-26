@@ -444,6 +444,10 @@ class ApiClient {
     return this.request<string[]>(`/api/v1/mcp/agent-tools/${agentId}/${serverId}`);
   }
 
+  async listAgentMCPServers(agentId: string) {
+    return this.request<AgentMCPServerWithTools[]>(`/api/v1/agents/${agentId}/mcp-servers`);
+  }
+
   async removeAgentTools(agentId: string, serverId: string) {
     return this.request<{ status: string }>(`/api/v1/mcp/agent-tools/${agentId}/${serverId}`, {
       method: 'DELETE'
@@ -766,6 +770,11 @@ export interface MCPServer {
   tools?: MCPToolDefinition[];
   created_at: string;
   updated_at: string;
+}
+
+export interface AgentMCPServerWithTools {
+  server: MCPServer;
+  tools: MCPToolDefinition[];
 }
 
 export interface CreateMCPServerRequest {

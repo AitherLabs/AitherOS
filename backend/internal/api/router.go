@@ -132,6 +132,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.HandleFunc("DELETE /api/v1/workforces/{id}/mcp/{serverID}", mcp.DetachFromWorkforce)
 
 	// Agent tool permissions
+	mux.HandleFunc("GET /api/v1/agents/{agentID}/mcp-servers", mcp.ListAgentServersWithTools)
 	mux.HandleFunc("POST /api/v1/mcp/agent-tools", mcp.SetAgentTools)
 	mux.HandleFunc("GET /api/v1/mcp/agent-tools/{agentID}/{serverID}", mcp.GetAgentTools)
 	mux.HandleFunc("DELETE /api/v1/mcp/agent-tools/{agentID}/{serverID}", mcp.RemoveAgentTools)
