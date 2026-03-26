@@ -214,10 +214,12 @@ export default function ProvidersPage() {
   async function handleSyncAll() {
     if (!addModelProvider || liveModelsList.length === 0) return;
     setSaving(true);
-    const registered = new Set(addModelProvider.models?.map((m) => m.model_name) ?? []);
-    const toAdd = liveModelsList.filter((m) => !registered.has(m));
     try {
-      await Promise.all(
+      // Refresh provider state before filtering to avoid stale-model misses
+      const fresh = await api.getProvider(addModelProvider.id);
+      const registered = new Set(fresh.data?.models?.map((m) => m.model_name) ?? []);
+      const toAdd = liveModelsList.filter((m) => !registered.has(m));
+      await Promise.allSettled(
         toAdd.map((name) =>
           api.addProviderModel(addModelProvider.id, { model_name: name, model_type: 'llm' })
         )
