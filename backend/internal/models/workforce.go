@@ -32,9 +32,11 @@ type WorkForce struct {
 	LeaderAgentID *uuid.UUID      `json:"leader_agent_id,omitempty" db:"leader_agent_id"`
 	AgentIDs      []uuid.UUID     `json:"agent_ids" db:"-"`
 	Agents        []*Agent        `json:"agents,omitempty" db:"-"`
-	WorkspacePath string          `json:"workspace_path,omitempty" db:"-"` // computed, not stored
-	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at" db:"updated_at"`
+	WorkspacePath      string          `json:"workspace_path,omitempty" db:"-"` // computed, not stored
+	AutonomousMode     bool            `json:"autonomous_mode" db:"autonomous_mode"`
+	HeartbeatIntervalM int             `json:"heartbeat_interval_m" db:"heartbeat_interval_m"`
+	CreatedAt          time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at" db:"updated_at"`
 }
 
 type WorkForceAgent struct {
@@ -57,14 +59,16 @@ type CreateWorkForceRequest struct {
 }
 
 type UpdateWorkForceRequest struct {
-	Name          *string  `json:"name,omitempty" validate:"omitempty,min=1,max=255"`
-	Description   *string  `json:"description,omitempty" validate:"omitempty,max=2000"`
-	Objective     *string  `json:"objective,omitempty"`
-	Icon          *string  `json:"icon,omitempty"`
-	Color         *string  `json:"color,omitempty"`
-	AvatarURL     *string  `json:"avatar_url,omitempty"`
-	BudgetTokens  *int64   `json:"budget_tokens,omitempty" validate:"omitempty,min=0"`
-	BudgetTimeS   *int64   `json:"budget_time_s,omitempty" validate:"omitempty,min=0"`
-	AgentIDs      []string `json:"agent_ids,omitempty"`
-	LeaderAgentID *string  `json:"leader_agent_id,omitempty"`
+	Name               *string  `json:"name,omitempty" validate:"omitempty,min=1,max=255"`
+	Description        *string  `json:"description,omitempty" validate:"omitempty,max=2000"`
+	Objective          *string  `json:"objective,omitempty"`
+	Icon               *string  `json:"icon,omitempty"`
+	Color              *string  `json:"color,omitempty"`
+	AvatarURL          *string  `json:"avatar_url,omitempty"`
+	BudgetTokens       *int64   `json:"budget_tokens,omitempty" validate:"omitempty,min=0"`
+	BudgetTimeS        *int64   `json:"budget_time_s,omitempty" validate:"omitempty,min=0"`
+	AgentIDs           []string `json:"agent_ids,omitempty"`
+	LeaderAgentID      *string  `json:"leader_agent_id,omitempty"`
+	AutonomousMode     *bool    `json:"autonomous_mode,omitempty"`
+	HeartbeatIntervalM *int     `json:"heartbeat_interval_m,omitempty" validate:"omitempty,min=5,max=1440"`
 }

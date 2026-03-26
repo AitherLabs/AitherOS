@@ -167,6 +167,29 @@ class ApiClient {
     });
   }
 
+  // ── Kanban ────────────────────────────────────────────
+  async listKanbanTasks(workforceId: string) {
+    return this.request<KanbanTask[]>(`/api/v1/workforces/${workforceId}/kanban`);
+  }
+
+  async createKanbanTask(workforceId: string, data: { title: string; description?: string; priority?: number; assigned_to?: string; created_by?: string }) {
+    return this.request<KanbanTask>(`/api/v1/workforces/${workforceId}/kanban`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+
+  async updateKanbanTask(taskId: string, data: Partial<{ title: string; description: string; status: KanbanStatus; priority: number; assigned_to: string; execution_id: string; notes: string }>) {
+    return this.request<KanbanTask>(`/api/v1/kanban/${taskId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    });
+  }
+
+  async deleteKanbanTask(taskId: string) {
+    return this.request<null>(`/api/v1/kanban/${taskId}`, { method: 'DELETE' });
+  }
+
   // ── Executions ────────────────────────────────────────
   async startExecution(workforceId: string, objective: string, inputs?: Record<string, string>) {
     return this.request<Execution>(`/api/v1/workforces/${workforceId}/executions`, {
@@ -526,6 +549,26 @@ export interface Workforce {
   agent_ids: string[];
   agents?: Agent[];
   workspace_path?: string;
+  autonomous_mode: boolean;
+  heartbeat_interval_m: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type KanbanStatus = 'open' | 'todo' | 'in_progress' | 'blocked' | 'done';
+
+export interface KanbanTask {
+  id: string;
+  workforce_id: string;
+  title: string;
+  description: string;
+  status: KanbanStatus;
+  priority: number; // 0=low 1=normal 2=high 3=urgent
+  assigned_to?: string;
+  created_by: string;
+  execution_id?: string;
+  notes: string;
+  position: number;
   created_at: string;
   updated_at: string;
 }

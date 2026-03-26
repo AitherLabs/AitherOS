@@ -25,6 +25,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mcp := NewMCPHandler(s)
 	kb := NewKnowledgeHandler(s, km)
 	approvals := NewApprovalHandler(s)
+	kanban := NewKanbanHandler(s)
 	activity := NewActivityHandler(s)
 	agentChat := NewAgentChatHandler(s, km)
 	upload := NewUploadHandler()
@@ -128,6 +129,12 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.HandleFunc("POST /api/v1/mcp/agent-tools", mcp.SetAgentTools)
 	mux.HandleFunc("GET /api/v1/mcp/agent-tools/{agentID}/{serverID}", mcp.GetAgentTools)
 	mux.HandleFunc("DELETE /api/v1/mcp/agent-tools/{agentID}/{serverID}", mcp.RemoveAgentTools)
+
+	// Kanban
+	mux.HandleFunc("GET /api/v1/workforces/{id}/kanban", kanban.List)
+	mux.HandleFunc("POST /api/v1/workforces/{id}/kanban", kanban.Create)
+	mux.HandleFunc("PATCH /api/v1/kanban/{taskID}", kanban.Update)
+	mux.HandleFunc("DELETE /api/v1/kanban/{taskID}", kanban.Delete)
 
 	// Approvals
 	mux.HandleFunc("POST /api/v1/workforces/{id}/approvals", approvals.Create)
