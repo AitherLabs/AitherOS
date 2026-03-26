@@ -167,6 +167,7 @@ export default function WorkforceDetailPage() {
   const [newTaskAssignee, setNewTaskAssignee] = useState('');
   const [addingTask, setAddingTask] = useState(false);
   const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
   const [autonomousToggling, setAutonomousToggling] = useState(false);
 
   const loadData = useCallback(async () => {
@@ -342,6 +343,27 @@ export default function WorkforceDetailPage() {
   async function deleteKanbanTask(task: KanbanTask) {
     await api.deleteKanbanTask(task.id);
     setKanbanTasks(prev => prev.filter(t => t.id !== task.id));
+  }
+
+  async function runKanbanTask(task: KanbanTask) {
+    setRunningTaskId(task.id);
+    try {
+      const objective = task.description
+        ? `${task.title}\n\n${task.description}`
+        : task.title;
+      const execRes = await api.startExecution(wfId, objective);
+      if (!execRes.data?.id) return;
+      const execId = execRes.data.id;
+      // Link the task to the execution and move it to in_progress
+      const updated = await api.updateKanbanTask(task.id, {
+        status: 'in_progress',
+        execution_id: execId,
+      });
+      if (updated.data) setKanbanTasks(prev => prev.map(t => t.id === task.id ? updated.data! : t));
+      router.push(`/dashboard/executions/${execId}`);
+    } finally {
+      setRunningTaskId(null);
+    }
   }
 
   async function handleStartExec() {
@@ -790,7 +812,19 @@ export default function WorkforceDetailPage() {
                                         ← Back
                                       </button>
                                     )}
-                                    {next && (
+                                    {task.status === 'todo' && (
+                                      <button
+                                        onClick={() => runKanbanTask(task)}
+                                        disabled={runningTaskId === task.id}
+                                        className='flex items-center gap-0.5 rounded bg-[#9A66FF]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[#9A66FF] hover:bg-[#9A66FF]/25 disabled:opacity-50'
+                                      >
+                                        {runningTaskId === task.id
+                                          ? <IconLoader2 className='h-2.5 w-2.5 animate-spin' />
+                                          : <IconPlayerPlay className='h-2.5 w-2.5' />}
+                                        Run
+                                      </button>
+                                    )}
+                                    {next && task.status !== 'todo' && (
                                       <button
                                         onClick={() => moveKanbanTask(task, next)}
                                         className='rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-accent/50'

@@ -147,6 +147,27 @@ func (s *Store) UpdateKanbanTask(ctx context.Context, id uuid.UUID, req models.U
 	return t, nil
 }
 
+// FindKanbanTaskByExecutionID returns the kanban task linked to an execution, or nil if none.
+func (s *Store) FindKanbanTaskByExecutionID(ctx context.Context, execID uuid.UUID) (*models.KanbanTask, error) {
+	t := &models.KanbanTask{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, workforce_id, title, description, status, priority,
+		       assigned_to, created_by, execution_id, notes, position, created_at, updated_at
+		FROM kanban_tasks WHERE execution_id = $1 LIMIT 1`, execID,
+	).Scan(
+		&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
+		&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
+		&t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find kanban task by execution: %w", err)
+	}
+	return t, nil
+}
+
 func (s *Store) DeleteKanbanTask(ctx context.Context, id uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM kanban_tasks WHERE id = $1`, id)
 	if err != nil {

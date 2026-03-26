@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -46,7 +47,7 @@ func (h *WorkForceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Provision workspace + Aither-Tools in the background (non-blocking)
-	go h.provisioner.Provision(r.Context(), wf)
+	go h.provisioner.Provision(context.Background(), wf)
 
 	wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
 	writeJSON(w, http.StatusCreated, wf)
@@ -130,7 +131,7 @@ func (h *WorkForceHandler) Provision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go h.provisioner.Provision(r.Context(), wf)
+	go h.provisioner.Provision(context.Background(), wf)
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message":        "provisioning started",

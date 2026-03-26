@@ -773,12 +773,23 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 
 	taskParts = append(taskParts, "---\n"+
 		"Execute your subtask now. Produce your output directly.\n\n"+
-		"When your subtask is FULLY complete, you MUST end your response with this JSON block:\n"+
+		"## Tool Usage — MANDATORY\n"+
+		"You have MCP tools available. Use them aggressively and persistently:\n"+
+		"- **Shell tool first**: use `run_command` to run any shell command — clone repos, execute scripts, grep code, anything.\n"+
+		"  Example: `git clone https://github.com/owner/repo /tmp/aitheros-workspace/repo` then read files via Filesystem tool.\n"+
+		"- **Filesystem tool**: read files directly from `/tmp/aitheros-workspace` (your sandbox) or `/opt/AitherOS` (AitherOS source code).\n"+
+		"- **GitHub API**: use only when you cannot clone locally. If you must use it, call `get_file_contents` per file — directory listings are not enough.\n"+
+		"- If a GitHub tool returns a rate-limit error, the system will automatically retry after 62 seconds — do NOT signal `needs_help` for rate limit errors.\n"+
+		"- You can make as many tool calls as needed — there is NO limit. Keep calling until you have what you need.\n"+
+		"- If a tool call fails or returns partial results, try a different approach or different parameters.\n"+
+		"- **Never give up because a single tool call returned insufficient information.** Try again with more specific inputs.\n\n"+
+		"## Completion Signals\n"+
+		"When your subtask is FULLY complete, you MUST end your response with:\n"+
 		"```json\n{\"status\": \"complete\", \"summary\": \"<one-sentence summary of what you did>\"}\n```\n"+
 		"Note: other agents may have additional subtasks — your completion signal only marks YOUR subtask done, not the whole pipeline.\n\n"+
-		"If you need human input to continue, include:\n"+
-		"```json\n{\"status\": \"needs_help\", \"reason\": \"<what you need>\"}\n```\n\n"+
-		"If you are blocked by a dependency or error, include:\n"+
+		"Signal `needs_help` ONLY as a last resort — only if you have exhausted all available tools and genuinely need a human to provide something no tool can fetch:\n"+
+		"```json\n{\"status\": \"needs_help\", \"reason\": \"<exactly what you tried and what specific thing you still need>\"}\n```\n\n"+
+		"If you are blocked by a hard dependency that cannot be resolved with tools:\n"+
 		"```json\n{\"status\": \"blocked\", \"reason\": \"<what is blocking you>\"}\n```"+
 		peerList)
 
@@ -843,6 +854,18 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				map[string]any{"tool": tc.Name, "args": tc.Args, "round": toolRound + 1}))
 
 			result, toolErr := p.mcpSession.ExecuteToolCall(ctx, p.wf.ID, tc.Name, tc.Args)
+			// Retry once on rate-limit errors (GitHub secondary rate limit needs ~60s)
+			if toolErr != nil && isRateLimitError(toolErr) {
+				o.eventBus.PublishSystem(ctx, p.exec.ID,
+					fmt.Sprintf("%s: rate limit hit on %s — waiting 62s before retry", agent.Name, tc.Name))
+				select {
+				case <-time.After(62 * time.Second):
+				case <-ctx.Done():
+					resp.ToolCalls[i].Result = "Error: execution cancelled during rate-limit wait"
+					continue
+				}
+				result, toolErr = p.mcpSession.ExecuteToolCall(ctx, p.wf.ID, tc.Name, tc.Args)
+			}
 			if toolErr != nil {
 				resp.ToolCalls[i].Result = fmt.Sprintf("Error: %s", toolErr.Error())
 				o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
@@ -1181,6 +1204,11 @@ func (o *Orchestrator) loadWorkForceAgents(ctx context.Context, wf *models.WorkF
 func (o *Orchestrator) failExecution(ctx context.Context, execID, wfID uuid.UUID, errMsg string) {
 	o.store.UpdateExecutionStatus(ctx, execID, models.ExecutionStatusFailed)
 	o.store.UpdateWorkForceStatus(ctx, wfID, models.WorkForceStatusFailed)
+	// If this execution was linked to a kanban task, mark it blocked
+	if task, _ := o.store.FindKanbanTaskByExecutionID(ctx, execID); task != nil {
+		blocked := models.KanbanStatusBlocked
+		o.store.UpdateKanbanTask(ctx, task.ID, models.UpdateKanbanTaskRequest{Status: &blocked})
+	}
 	o.eventBus.Publish(ctx, models.NewEvent(execID, nil, "", models.EventTypeExecutionDone,
 		fmt.Sprintf("Execution failed: %s", errMsg), map[string]any{"error": errMsg}))
 	o.recordActivity(ctx, &models.ActivityEvent{
@@ -1218,6 +1246,11 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 	o.store.UpdateExecutionResult(ctx, execID, result, tokensUsed, iterations)
 	o.store.UpdateExecutionStatus(ctx, execID, models.ExecutionStatusCompleted)
 	o.store.UpdateWorkForceStatus(ctx, wfID, models.WorkForceStatusCompleted)
+	// If this execution was linked to a kanban task, mark it done
+	if task, _ := o.store.FindKanbanTaskByExecutionID(ctx, execID); task != nil {
+		done := models.KanbanStatusDone
+		o.store.UpdateKanbanTask(ctx, task.ID, models.UpdateKanbanTaskRequest{Status: &done})
+	}
 	o.eventBus.Publish(ctx, models.NewEvent(execID, nil, "", models.EventTypeExecutionDone,
 		fmt.Sprintf("Objective completed after %d iterations. Total tokens: %d", iterations, tokensUsed),
 		map[string]any{"result": result, "tokens_used": tokensUsed, "iterations": iterations}))
@@ -1432,6 +1465,18 @@ func allSubtasksDone(plan []models.ExecutionSubtask) bool {
 		}
 	}
 	return true
+}
+
+// isRateLimitError returns true if the error looks like a GitHub/API rate-limit response.
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "secondary rate") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "x-ratelimit")
 }
 
 // hasNeedsHelp returns true if any subtask is currently waiting for human input.
@@ -2050,4 +2095,99 @@ func joinResults(results []string) string {
 		out += r + "\n\n"
 	}
 	return out
+}
+
+// AnswerQuestion answers a user question about a finished execution using the
+// full agent transcript as context. Returns the LLM answer as a string.
+func (o *Orchestrator) AnswerQuestion(ctx context.Context, execID uuid.UUID, question string) (string, error) {
+	// Load execution
+	exec, err := o.store.GetExecution(ctx, execID)
+	if err != nil {
+		return "", fmt.Errorf("load execution: %w", err)
+	}
+
+	// Load agent outputs (execution phase, assistant role only)
+	outputs, err := o.store.GetExecutionAgentOutputs(ctx, execID)
+	if err != nil {
+		return "", fmt.Errorf("load outputs: %w", err)
+	}
+
+	// Build compact transcript (truncate each message to 2000 chars)
+	var parts []string
+	seen := map[string]bool{}
+	for _, m := range outputs {
+		content := m.Content
+		if len(content) > 2000 {
+			content = content[:2000] + "...(truncated)"
+		}
+		key := m.AgentName
+		label := m.AgentName
+		if !seen[key] {
+			seen[key] = true
+		}
+		parts = append(parts, fmt.Sprintf("### %s (iteration %d)\n%s", label, m.Iteration, content))
+	}
+	transcript := strings.Join(parts, "\n\n---\n\n")
+	if transcript == "" {
+		transcript = "(no agent output recorded)"
+	}
+
+	// Truncate total transcript to ~12000 chars for context window safety
+	if len(transcript) > 12000 {
+		transcript = transcript[:12000] + "\n\n...(transcript truncated)"
+	}
+
+	systemPrompt := "You are an expert analyst reviewing an AI agent execution. " +
+		"Answer the user's question concisely and factually based solely on the execution transcript provided. " +
+		"If the answer cannot be determined from the transcript, say so clearly."
+
+	message := fmt.Sprintf(
+		"## Execution: %s\n**Objective:** %s\n\n## Agent Transcript\n\n%s\n\n---\n\n## Question\n%s",
+		execID, exec.Objective, transcript, question,
+	)
+
+	// Resolve connector via default provider
+	var eng engine.Connector
+	var modelName string
+
+	if o.registry != nil {
+		provider, err := o.store.GetDefaultProvider(ctx)
+		if err == nil {
+			// Pick the first enabled model, or use the orchestrator default
+			mn := o.llmConfig.Model
+			for _, m := range provider.Models {
+				if m.IsEnabled {
+					mn = m.ModelName
+					break
+				}
+			}
+			conn, _, err2 := o.registry.ResolveByProviderID(ctx, provider.ID, mn)
+			if err2 == nil {
+				eng = conn
+				modelName = mn
+			}
+		}
+	}
+	// Fallback to legacy engines map
+	if eng == nil {
+		for _, e := range o.engines {
+			eng = e
+			break
+		}
+		modelName = o.llmConfig.Model
+	}
+	if eng == nil {
+		return "", fmt.Errorf("no LLM engine available")
+	}
+
+	resp, err := eng.Submit(ctx, engine.TaskRequest{
+		AgentName:    "qa-analyst",
+		SystemPrompt: systemPrompt,
+		Message:      message,
+		Model:        modelName,
+	})
+	if err != nil {
+		return "", fmt.Errorf("llm call: %w", err)
+	}
+	return resp.Content, nil
 }

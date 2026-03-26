@@ -65,25 +65,40 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 	workspacePath := dirs[0]
 	log.Printf("workspace: created %s", filepath.Join(WorkforcesRoot, slug))
 
-	// ── 2. Register Aither-Tools MCP server for this workforce ────────────────
-	srv, err := p.store.CreateMCPServer(ctx, models.CreateMCPServerRequest{
-		Name:        "Aither-Tools",
-		Description: fmt.Sprintf("Official AitherOS toolkit — %s workspace", wf.Name),
-		Transport:   "stdio",
-		Command:     aitherToolsCmd,
-		Args:        []string{aitherToolsBinary},
-		EnvVars: map[string]string{
-			"AITHER_WORKSPACE":      workspacePath,
-			"AITHER_WORKFORCE_NAME": wf.Name,
-		},
-	})
+	// ── 2. Find or create Aither-Tools MCP server for this workforce ──────────
+	var srv *models.MCPServer
+	attached, err := p.store.ListWorkforceMCPServers(ctx, wf.ID)
 	if err != nil {
-		return fmt.Errorf("create mcp server: %w", err)
+		return fmt.Errorf("list attached servers: %w", err)
+	}
+	for _, s := range attached {
+		if s.Name == "Aither-Tools" {
+			srv = s
+			log.Printf("workspace: Aither-Tools already attached to %q (server %s), skipping create", wf.Name, s.ID)
+			break
+		}
 	}
 
-	// ── 3. Attach server to workforce ─────────────────────────────────────────
-	if err := p.store.AttachMCPServer(ctx, wf.ID, srv.ID); err != nil {
-		return fmt.Errorf("attach mcp server: %w", err)
+	if srv == nil {
+		srv, err = p.store.CreateMCPServer(ctx, models.CreateMCPServerRequest{
+			Name:        "Aither-Tools",
+			Description: fmt.Sprintf("Official AitherOS toolkit — %s workspace", wf.Name),
+			Transport:   "stdio",
+			Command:     aitherToolsCmd,
+			Args:        []string{aitherToolsBinary},
+			EnvVars: map[string]string{
+				"AITHER_WORKSPACE":      workspacePath,
+				"AITHER_WORKFORCE_NAME": wf.Name,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("create mcp server: %w", err)
+		}
+
+		// ── 3. Attach server to workforce ─────────────────────────────────────
+		if err := p.store.AttachMCPServer(ctx, wf.ID, srv.ID); err != nil {
+			return fmt.Errorf("attach mcp server: %w", err)
+		}
 	}
 
 	// ── 4. Discover and cache tool definitions ────────────────────────────────
