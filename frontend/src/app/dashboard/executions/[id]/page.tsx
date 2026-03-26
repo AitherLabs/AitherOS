@@ -1073,6 +1073,29 @@ export default function ExecutionDetailPage() {
   const userScrolledUpRef = useRef(false);
   const agentThreadRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
+  // Scan recent messages to auto-detect what credential the blocked agent needs.
+  // Must stay above early returns to satisfy Rules of Hooks.
+  const detectedCred = useMemo(() => {
+    const needsHelp = execution?.plan?.some(s => s.status === 'needs_help');
+    if (!needsHelp) return null;
+    const recent = messages.slice(-12);
+    for (let i = recent.length - 1; i >= 0; i--) {
+      const content = recent[i].content;
+      const envMatch = content.match(/\b([A-Z][A-Z0-9]{1,}_(?:TOKEN|KEY|SECRET|API_KEY|ACCESS_TOKEN|PAT|PASSWORD))\b/);
+      if (envMatch) {
+        const key = envMatch[1];
+        return { service: key.toLowerCase().split('_')[0], key };
+      }
+      if (/github/i.test(content))    return { service: 'github',    key: 'GITHUB_TOKEN' };
+      if (/openai/i.test(content))    return { service: 'openai',    key: 'OPENAI_API_KEY' };
+      if (/anthropic/i.test(content)) return { service: 'anthropic', key: 'ANTHROPIC_API_KEY' };
+      if (/stripe/i.test(content))    return { service: 'stripe',    key: 'STRIPE_SECRET_KEY' };
+      if (/aws/i.test(content))       return { service: 'aws',       key: 'AWS_ACCESS_KEY_ID' };
+      if (/docker/i.test(content))    return { service: 'docker',    key: 'DOCKER_TOKEN' };
+    }
+    return null;
+  }, [execution?.plan, messages]);
+
   const loadData = useCallback(async () => {
     try {
       if (session?.accessToken) api.setToken(session.accessToken);
@@ -1418,30 +1441,6 @@ export default function ExecutionDetailPage() {
 
   const isRunning = execution.status === 'running' || execution.status === 'planning';
   const hasNeedsHelp = execution.plan?.some(s => s.status === 'needs_help');
-
-  // Scan recent messages to auto-detect what credential the blocked agent needs
-  const detectedCred = useMemo(() => {
-    if (!hasNeedsHelp) return null;
-    const recent = messages.slice(-12);
-    for (let i = recent.length - 1; i >= 0; i--) {
-      const content = recent[i].content;
-      // Match explicit env var patterns first: FOO_TOKEN, FOO_KEY, FOO_SECRET, FOO_API_KEY, etc.
-      const envMatch = content.match(/\b([A-Z][A-Z0-9]{1,}_(?:TOKEN|KEY|SECRET|API_KEY|ACCESS_TOKEN|PAT|PASSWORD))\b/);
-      if (envMatch) {
-        const key = envMatch[1];
-        const service = key.toLowerCase().split('_')[0];
-        return { service, key };
-      }
-      // Fallback: known service name mentions
-      if (/github/i.test(content))     return { service: 'github',    key: 'GITHUB_TOKEN' };
-      if (/openai/i.test(content))     return { service: 'openai',    key: 'OPENAI_API_KEY' };
-      if (/anthropic/i.test(content))  return { service: 'anthropic', key: 'ANTHROPIC_API_KEY' };
-      if (/stripe/i.test(content))     return { service: 'stripe',    key: 'STRIPE_SECRET_KEY' };
-      if (/aws/i.test(content))        return { service: 'aws',       key: 'AWS_ACCESS_KEY_ID' };
-      if (/docker/i.test(content))     return { service: 'docker',    key: 'DOCKER_TOKEN' };
-    }
-    return null;
-  }, [hasNeedsHelp, messages]);
 
   async function handleInjectCredential() {
     if (!execution || !credKey.trim() || !credValue.trim()) return;
