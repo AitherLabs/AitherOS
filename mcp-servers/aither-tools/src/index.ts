@@ -7,6 +7,8 @@
  * Environment variables:
  *   AITHER_WORKSPACE       — absolute path to workforce workspace (required)
  *   AITHER_WORKFORCE_NAME  — workforce name (used if WORKSPACE is not set)
+ *   AITHER_WORKFORCE_ID    — workforce UUID (required for knowledge tools)
+ *   AITHER_API_URL         — AitherOS backend URL (default: http://127.0.0.1:8080)
  *   AITHER_BRAVE_KEY       — Brave Search API key (optional, enables web search)
  *   AITHER_SEARXNG_URL     — SearXNG base URL (optional, self-hosted search)
  *   AITHER_MAX_TIMEOUT_S   — max shell command timeout in seconds (default: 300)
@@ -33,6 +35,7 @@ import * as system     from './tools/system.js';
 import * as workspace  from './tools/workspace.js';
 import * as git        from './tools/git.js';
 import * as network    from './tools/network.js';
+import * as knowledge  from './tools/knowledge.js';
 
 // ── Merge all tool definitions and handlers ───────────────────────────────────
 
@@ -44,6 +47,7 @@ const ALL_TOOLS = [
   ...workspace.tools,
   ...git.tools,
   ...network.tools,
+  ...knowledge.tools,
 ];
 
 const ALL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
@@ -54,6 +58,7 @@ const ALL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<st
   ...workspace.handlers,
   ...git.handlers,
   ...network.handlers,
+  ...knowledge.handlers,
 };
 
 // ── Bootstrap workspace directories ──────────────────────────────────────────

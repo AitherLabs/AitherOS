@@ -19,6 +19,8 @@ export const VERSION        = '1.0.0';
 export const MAX_TIMEOUT_S  = parseInt(process.env.AITHER_MAX_TIMEOUT_S  || '300', 10);
 export const BRAVE_API_KEY  = process.env.AITHER_BRAVE_KEY   || '';
 export const SEARXNG_URL    = process.env.AITHER_SEARXNG_URL || '';
+export const WORKFORCE_ID   = process.env.AITHER_WORKFORCE_ID || '';
+export const API_URL        = process.env.AITHER_API_URL      || 'http://127.0.0.1:8080';
 
 const ALLOWED_ROOTS = [WORKSPACE, NOTES_DIR, TOOLS_DIR];
 
