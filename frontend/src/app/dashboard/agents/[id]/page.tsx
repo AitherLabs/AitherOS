@@ -553,7 +553,24 @@ export default function AgentDetailPage() {
               </div>
               <div className='space-y-1.5'>
                 <Label className='text-[10px]'>Model</Label>
-                <Input value={model} onChange={(e) => { setModel(e.target.value); markChanged(); }} placeholder='gpt-4o' className='h-7 font-mono text-xs' />
+                {(() => {
+                  const selectedProvider = providers.find((p) => p.id === providerId);
+                  const llmModels = selectedProvider?.models?.filter((m) => m.model_type === 'llm') ?? [];
+                  return llmModels.length > 0 ? (
+                    <Select value={model} onValueChange={(v) => { setModel(v); markChanged(); }}>
+                      <SelectTrigger className='h-7 font-mono text-xs'><SelectValue placeholder='Select model...' /></SelectTrigger>
+                      <SelectContent>
+                        {llmModels.map((m) => (
+                          <SelectItem key={m.id} value={m.model_name} className='font-mono text-xs'>
+                            {m.model_name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input value={model} onChange={(e) => { setModel(e.target.value); markChanged(); }} placeholder='gpt-4o' className='h-7 font-mono text-xs' />
+                  );
+                })()}
               </div>
               <div className='grid grid-cols-2 gap-2'>
                 <div className='space-y-1.5'>

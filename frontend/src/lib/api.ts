@@ -367,6 +367,10 @@ class ApiClient {
     });
   }
 
+  async liveModels(providerId: string) {
+    return this.request<string[]>(`/api/v1/providers/${providerId}/live-models`);
+  }
+
   // ── MCP Servers ─────────────────────────────────────────
   async listMCPServers() {
     return this.request<MCPServer[]>('/api/v1/mcp/servers');

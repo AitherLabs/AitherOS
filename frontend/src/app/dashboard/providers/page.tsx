@@ -35,6 +35,7 @@ import {
   IconDotsVertical,
   IconPencil,
   IconPlus,
+  IconRefresh,
   IconTrash,
   IconX
 } from '@tabler/icons-react';
@@ -91,6 +92,8 @@ export default function ProvidersPage() {
   // Add model form
   const [modelName, setModelName] = useState('');
   const [modelType, setModelType] = useState('llm');
+  const [liveModelsList, setLiveModelsList] = useState<string[]>([]);
+  const [fetchingLive, setFetchingLive] = useState(false);
 
   const loadProviders = useCallback(async () => {
     try {
@@ -192,6 +195,19 @@ export default function ProvidersPage() {
       console.error('Add model failed:', err);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function fetchLiveModels(provider: Provider) {
+    setFetchingLive(true);
+    setLiveModelsList([]);
+    try {
+      const res = await api.liveModels(provider.id);
+      setLiveModelsList(res.data || []);
+    } catch (err) {
+      console.error('Failed to fetch live models:', err);
+    } finally {
+      setFetchingLive(false);
     }
   }
 
@@ -543,7 +559,12 @@ export default function ProvidersPage() {
       {/* Add Model Dialog */}
       <Dialog
         open={!!addModelProvider}
-        onOpenChange={(o) => !o && setAddModelProvider(null)}
+        onOpenChange={(o) => {
+          if (!o) {
+            setAddModelProvider(null);
+            setLiveModelsList([]);
+          }
+        }}
       >
         <DialogContent>
           <DialogHeader>
@@ -555,6 +576,45 @@ export default function ProvidersPage() {
             </DialogDescription>
           </DialogHeader>
           <div className='space-y-4 py-2'>
+            {/* Live model fetch */}
+            <div className='space-y-2'>
+              <div className='flex items-center justify-between'>
+                <Label className='text-xs text-muted-foreground'>Available from endpoint</Label>
+                <Button
+                  variant='ghost'
+                  size='sm'
+                  className='h-6 px-2 text-xs text-[#14FFF7]'
+                  disabled={fetchingLive}
+                  onClick={() => addModelProvider && fetchLiveModels(addModelProvider)}
+                >
+                  <IconRefresh className={`mr-1 h-3 w-3 ${fetchingLive ? 'animate-spin' : ''}`} />
+                  {fetchingLive ? 'Fetching...' : 'Fetch'}
+                </Button>
+              </div>
+              {liveModelsList.length > 0 && (
+                <div className='flex flex-wrap gap-1.5 rounded-md border border-border/40 bg-muted/20 p-2'>
+                  {liveModelsList.map((m) => {
+                    const alreadyAdded = addModelProvider?.models?.some((pm) => pm.model_name === m);
+                    return (
+                      <button
+                        key={m}
+                        disabled={alreadyAdded}
+                        onClick={() => { if (!alreadyAdded) setModelName(m); }}
+                        className={`rounded px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                          alreadyAdded
+                            ? 'cursor-default bg-muted/40 text-muted-foreground/40 line-through'
+                            : modelName === m
+                              ? 'bg-[#14FFF7]/20 text-[#14FFF7] ring-1 ring-[#14FFF7]/40'
+                              : 'bg-muted/50 text-foreground hover:bg-[#14FFF7]/10 hover:text-[#14FFF7]'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             <div className='space-y-2'>
               <Label>Model Name</Label>
               <Input
@@ -583,7 +643,7 @@ export default function ProvidersPage() {
           <DialogFooter>
             <Button
               variant='outline'
-              onClick={() => setAddModelProvider(null)}
+              onClick={() => { setAddModelProvider(null); setLiveModelsList([]); }}
             >
               Cancel
             </Button>
