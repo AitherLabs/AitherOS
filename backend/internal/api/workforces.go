@@ -117,6 +117,27 @@ func (h *WorkForceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, wf)
 }
 
+func (h *WorkForceHandler) Provision(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workforce id")
+		return
+	}
+
+	wf, err := h.store.GetWorkForce(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	go h.provisioner.Provision(r.Context(), wf)
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message":        "provisioning started",
+		"workspace_path": workspace.WorkspacePath(wf.Name),
+	})
+}
+
 func (h *WorkForceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {

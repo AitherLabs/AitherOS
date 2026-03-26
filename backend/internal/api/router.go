@@ -76,6 +76,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.HandleFunc("GET /api/v1/workforces/{id}", workforces.Get)
 	mux.HandleFunc("PATCH /api/v1/workforces/{id}", workforces.Update)
 	mux.HandleFunc("DELETE /api/v1/workforces/{id}", workforces.Delete)
+	mux.HandleFunc("POST /api/v1/workforces/{id}/provision", workforces.Provision)
 
 	// Executions
 	mux.HandleFunc("POST /api/v1/workforces/{id}/executions", executions.Start)

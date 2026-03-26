@@ -32,6 +32,7 @@ import {
   IconClock,
   IconCoins,
   IconDeviceFloppy,
+  IconFolder,
   IconLink,
   IconLinkOff,
   IconLoader2,
@@ -150,6 +151,9 @@ export default function WorkforceDetailPage() {
 
   // Activity state
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([]);
+
+  // Workspace provisioning
+  const [provisioning, setProvisioning] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -555,6 +559,43 @@ export default function WorkforceDetailPage() {
                     <p className='text-lg font-semibold'>{formatTime(workforce.budget_time_s)}</p>
                     <p className='text-xs text-muted-foreground'>Time budget</p>
                   </div>
+                </CardContent>
+              </Card>
+              <Card className='border-border/50'>
+                <CardContent className='flex items-center gap-3 p-4'>
+                  <div className='flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[#9A66FF]/15'>
+                    <IconFolder className='h-5 w-5 text-[#9A66FF]' />
+                  </div>
+                  <div className='min-w-0 flex-1'>
+                    {workforce.workspace_path ? (
+                      <p className='truncate font-mono text-xs text-foreground' title={workforce.workspace_path}>
+                        {workforce.workspace_path}
+                      </p>
+                    ) : (
+                      <p className='text-xs text-muted-foreground'>Not provisioned</p>
+                    )}
+                    <p className='text-xs text-muted-foreground'>Workspace</p>
+                  </div>
+                  {!workforce.workspace_path && (
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      className='flex-shrink-0 border-[#9A66FF]/40 text-[#9A66FF] hover:bg-[#9A66FF]/10'
+                      disabled={provisioning}
+                      onClick={async () => {
+                        setProvisioning(true);
+                        try {
+                          await api.provisionWorkspace(wfId);
+                          const res = await api.getWorkforce(wfId);
+                          if (res.data) setWorkforce(res.data);
+                        } finally {
+                          setProvisioning(false);
+                        }
+                      }}
+                    >
+                      {provisioning ? <IconLoader2 className='h-3 w-3 animate-spin' /> : 'Provision'}
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             </div>

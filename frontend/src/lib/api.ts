@@ -161,6 +161,12 @@ class ApiClient {
     });
   }
 
+  async provisionWorkspace(id: string) {
+    return this.request<{ message: string; workspace_path: string }>(`/api/v1/workforces/${id}/provision`, {
+      method: 'POST'
+    });
+  }
+
   // ── Executions ────────────────────────────────────────
   async startExecution(workforceId: string, objective: string, inputs?: Record<string, string>) {
     return this.request<Execution>(`/api/v1/workforces/${workforceId}/executions`, {
@@ -217,6 +223,10 @@ class ApiClient {
 
   async getReviewMessages(execId: string) {
     return this.request<Message[]>(`/api/v1/executions/${execId}/review`);
+  }
+
+  async listExecutionEvents(execId: string) {
+    return this.request<ExecutionEvent[]>(`/api/v1/executions/${execId}/events`);
   }
 
   async listExecutionQA(execId: string) {
@@ -515,6 +525,7 @@ export interface Workforce {
   leader_agent_id?: string;
   agent_ids: string[];
   agents?: Agent[];
+  workspace_path?: string;
   created_at: string;
   updated_at: string;
 }
@@ -762,6 +773,17 @@ export interface ActivityEvent {
   summary: string;
   metadata: Record<string, any>;
   created_at: string;
+}
+
+export interface ExecutionEvent {
+  id: string;
+  execution_id: string;
+  agent_id?: string;
+  agent_name?: string;
+  type: string;
+  message: string;
+  data?: Record<string, any>;
+  timestamp: string;
 }
 
 export interface ExecutionQA {
