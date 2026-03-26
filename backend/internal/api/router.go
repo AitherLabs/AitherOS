@@ -10,13 +10,14 @@ import (
 	"github.com/aitheros/backend/internal/mcp"
 	"github.com/aitheros/backend/internal/orchestrator"
 	"github.com/aitheros/backend/internal/store"
+	"github.com/aitheros/backend/internal/workspace"
 )
 
 func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventBus, reg *engine.ProviderRegistry, jwtMgr *auth.JWTManager, km *knowledge.Manager, mcpMgr *mcp.Manager, corsOrigins string) http.Handler {
 	mux := http.NewServeMux()
 
 	agents := NewAgentHandler(s)
-	workforces := NewWorkForceHandler(s)
+	workforces := NewWorkForceHandler(s, workspace.NewProvisioner(s))
 	executions := NewExecutionHandler(s, o)
 	ws := NewWebSocketHandler(eb, jwtMgr)
 	providers := NewProviderHandler(s)
@@ -93,6 +94,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.HandleFunc("GET /api/v1/executions/{execID}/review", executions.ReviewMessages)
 	mux.HandleFunc("POST /api/v1/executions/{execID}/qa", executions.AskQA)
 	mux.HandleFunc("GET /api/v1/executions/{execID}/qa", executions.ListQA)
+	mux.HandleFunc("GET /api/v1/executions/{execID}/events", executions.Events)
 
 	// File uploads
 	mux.HandleFunc("POST /api/v1/upload", upload.Upload)

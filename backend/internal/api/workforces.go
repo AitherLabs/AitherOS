@@ -6,15 +6,17 @@ import (
 
 	"github.com/aitheros/backend/internal/models"
 	"github.com/aitheros/backend/internal/store"
+	"github.com/aitheros/backend/internal/workspace"
 	"github.com/google/uuid"
 )
 
 type WorkForceHandler struct {
-	store *store.Store
+	store       *store.Store
+	provisioner *workspace.Provisioner
 }
 
-func NewWorkForceHandler(s *store.Store) *WorkForceHandler {
-	return &WorkForceHandler{store: s}
+func NewWorkForceHandler(s *store.Store, p *workspace.Provisioner) *WorkForceHandler {
+	return &WorkForceHandler{store: s, provisioner: p}
 }
 
 func (h *WorkForceHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +45,10 @@ func (h *WorkForceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Provision workspace + Aither-Tools in the background (non-blocking)
+	go h.provisioner.Provision(r.Context(), wf)
+
+	wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
 	writeJSON(w, http.StatusCreated, wf)
 }
 
@@ -62,6 +68,7 @@ func (h *WorkForceHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// Load full agent objects for the response
 	h.store.LoadWorkForceAgents(r.Context(), wf)
 
+	wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
 	writeJSON(w, http.StatusOK, wf)
 }
 
@@ -81,6 +88,9 @@ func (h *WorkForceHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for _, wf := range workforces {
+		wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
+	}
 	writeJSONList(w, http.StatusOK, workforces, total)
 }
 
@@ -103,6 +113,7 @@ func (h *WorkForceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
 	writeJSON(w, http.StatusOK, wf)
 }
 

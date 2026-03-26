@@ -32,6 +32,7 @@ type WorkForce struct {
 	LeaderAgentID *uuid.UUID      `json:"leader_agent_id,omitempty" db:"leader_agent_id"`
 	AgentIDs      []uuid.UUID     `json:"agent_ids" db:"-"`
 	Agents        []*Agent        `json:"agents,omitempty" db:"-"`
+	WorkspacePath string          `json:"workspace_path,omitempty" db:"-"` // computed, not stored
 	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at" db:"updated_at"`
 }
