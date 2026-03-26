@@ -288,3 +288,64 @@ func (s *Store) DeleteExecution(ctx context.Context, id uuid.UUID) error {
 	}
 	return nil
 }
+
+type ExecutionWithWorkforce struct {
+	models.Execution
+	WorkforceName string `json:"workforce_name"`
+}
+
+func (s *Store) ListAllExecutions(ctx context.Context, limit, offset int) ([]*ExecutionWithWorkforce, int, error) {
+	var total int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM executions`).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count executions: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			e.id, e.workforce_id, e.objective, e.strategy, e.plan, e.status,
+			e.inputs, e.tokens_used, e.iterations, e.title, e.description,
+			e.image_url, e.result, e.error_message, e.started_at, e.ended_at,
+			e.created_at, e.updated_at,
+			w.name AS workforce_name
+		FROM executions e
+		LEFT JOIN workforces w ON e.workforce_id = w.id
+		ORDER BY e.created_at DESC
+		LIMIT $1 OFFSET $2`, limit, offset,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list all executions: %w", err)
+	}
+	defer rows.Close()
+
+	var execs []*ExecutionWithWorkforce
+	for rows.Next() {
+		e := &ExecutionWithWorkforce{}
+		var inputsJSON, planJSON []byte
+		var workforceName *string
+		if err := rows.Scan(
+			&e.ID, &e.WorkForceID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
+			&inputsJSON, &e.TokensUsed, &e.Iterations, &e.Title, &e.Description, &e.ImageURL,
+			&e.Result, &e.ErrorMessage, &e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.UpdatedAt,
+			&workforceName,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan execution: %w", err)
+		}
+		if workforceName != nil {
+			e.WorkforceName = *workforceName
+		}
+		if err := json.Unmarshal(inputsJSON, &e.Inputs); err != nil {
+			log.Printf("store: unmarshal execution inputs for %s: %v", e.ID, err)
+		}
+		if err := json.Unmarshal(planJSON, &e.Plan); err != nil {
+			log.Printf("store: unmarshal execution plan for %s: %v", e.ID, err)
+		}
+		if e.Plan == nil {
+			e.Plan = []models.ExecutionSubtask{}
+		}
+		e.ComputeElapsedS()
+		execs = append(execs, e)
+	}
+
+	return execs, total, nil
+}

@@ -74,32 +74,28 @@ export default function ExecutionsPage() {
   const loadExecutions = useCallback(async () => {
     try {
       if (session?.accessToken) api.setToken(session.accessToken);
-      const [wfRes, agRes] = await Promise.all([
+      const [execRes, wfRes, agRes] = await Promise.all([
+        api.listAllExecutions(),
         api.listWorkforces(),
         api.listAgents(),
       ]);
+
       const workforces: Workforce[] = wfRes.data || [];
       const agentsMap: Record<string, Agent> = {};
       for (const a of agRes.data || []) agentsMap[a.id] = a;
 
-      // Fetch all workforces' executions in parallel
-      const results = await Promise.allSettled(
-        workforces.map(async (wf) => {
-          const exRes = await api.listExecutions(wf.id);
-          const wfAgents = (wf.agent_ids || []).map((id) => agentsMap[id]).filter(Boolean);
-          return (exRes.data || []).map((e) => ({
-            ...e,
-            workforce_name: wf.name,
-            workforce_agents: wfAgents,
-          }));
-        })
-      );
+      const workforcesMap: Record<string, Workforce> = {};
+      for (const wf of workforces) workforcesMap[wf.id] = wf;
 
-      const allExecs: ExecWithMeta[] = [];
-      for (const r of results) {
-        if (r.status === 'fulfilled') allExecs.push(...r.value);
-      }
-      allExecs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const allExecs: ExecWithMeta[] = (execRes.data || []).map((e) => {
+        const wf = workforcesMap[e.workforce_id];
+        const wfAgents = wf ? (wf.agent_ids || []).map((id) => agentsMap[id]).filter(Boolean) : [];
+        return {
+          ...e,
+          workforce_agents: wfAgents,
+        };
+      });
+
       setExecutions(allExecs);
     } catch (err) {
       console.error('Failed to load executions:', err);
