@@ -195,10 +195,14 @@ function DiscussionPanel({ agents, discussionMessages, isPlanning, leaderAgentId
                 const agent = agents.find(a => a.id === msg.agent_id);
                 const isLeader = msg.agent_id === leaderAgentId;
                 const isSynthesis = isLeader && idx === chatMsgs.length - 1 && !isPlanning;
-                const cleanContent = msg.content
+                // Strip code-fenced blocks then bare JSON plan blobs
+                let cleanContent = msg.content
                   .replace(/```json\n[\s\S]*?\n```/g, '')
-                  .replace(/```[\s\S]*?```/g, '[plan]')
+                  .replace(/```[\s\S]*?```/g, '')
                   .trim();
+                const jsonStart = cleanContent.indexOf('{');
+                const hasPlanJson = jsonStart >= 0 && cleanContent.includes('"plan"') && cleanContent.includes('"subtask"');
+                const textBeforeJson = hasPlanJson ? cleanContent.slice(0, jsonStart).trim() : cleanContent;
                 return (
                   <div key={msg.id} className='flex items-start gap-3 px-4 py-3'>
                     <div className='shrink-0 mt-0.5'>
@@ -218,7 +222,12 @@ function DiscussionPanel({ agents, discussionMessages, isPlanning, leaderAgentId
                       </div>
                       <div className='rounded-lg bg-muted/10 px-3 py-2 text-xs leading-relaxed text-[#EAEAEA]/80 whitespace-pre-wrap border-l-2'
                         style={{ borderLeftColor: (agent?.color || '#9A66FF') + (isLeader ? 'A0' : '50') }}>
-                        {cleanContent || '(synthesizing plan…)'}
+                        {textBeforeJson || (!hasPlanJson ? '(synthesizing plan…)' : null)}
+                        {hasPlanJson && (
+                          <span className='inline-flex items-center gap-1 rounded-full border border-[#56D090]/30 bg-[#56D090]/10 px-2 py-0.5 font-mono text-[9px] text-[#56D090]'>
+                            ✓ plan ready — see strategy panel
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
