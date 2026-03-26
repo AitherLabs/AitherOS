@@ -24,6 +24,8 @@ func (s *Store) CreateMCPServer(ctx context.Context, req models.CreateMCPServerR
 		URL:         req.URL,
 		Headers:     req.Headers,
 		EnvVars:     req.EnvVars,
+		Icon:        req.Icon,
+		AvatarURL:   req.AvatarURL,
 		IsEnabled:   true,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
@@ -37,17 +39,20 @@ func (s *Store) CreateMCPServer(ctx context.Context, req models.CreateMCPServerR
 	if srv.EnvVars == nil {
 		srv.EnvVars = make(map[string]string)
 	}
+	if srv.Icon == "" {
+		srv.Icon = "🔧"
+	}
 
 	argsJSON, _ := json.Marshal(srv.Args)
 	headersJSON, _ := json.Marshal(srv.Headers)
 	envJSON, _ := json.Marshal(srv.EnvVars)
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO mcp_servers (id, name, description, transport, command, args, url, headers, env_vars, is_enabled, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		INSERT INTO mcp_servers (id, name, description, transport, command, args, url, headers, env_vars, is_enabled, icon, avatar_url, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		srv.ID, srv.Name, srv.Description, srv.Transport, srv.Command,
 		argsJSON, srv.URL, headersJSON, envJSON,
-		srv.IsEnabled, srv.CreatedAt, srv.UpdatedAt,
+		srv.IsEnabled, srv.Icon, srv.AvatarURL, srv.CreatedAt, srv.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert mcp_server: %w", err)
@@ -60,12 +65,12 @@ func (s *Store) GetMCPServer(ctx context.Context, id uuid.UUID) (*models.MCPServ
 	var argsJSON, headersJSON, envJSON []byte
 
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, description, transport, command, args, url, headers, env_vars, is_enabled, created_at, updated_at
+		SELECT id, name, description, transport, command, args, url, headers, env_vars, is_enabled, icon, avatar_url, created_at, updated_at
 		FROM mcp_servers WHERE id = $1`, id,
 	).Scan(
 		&srv.ID, &srv.Name, &srv.Description, &srv.Transport, &srv.Command,
 		&argsJSON, &srv.URL, &headersJSON, &envJSON,
-		&srv.IsEnabled, &srv.CreatedAt, &srv.UpdatedAt,
+		&srv.IsEnabled, &srv.Icon, &srv.AvatarURL, &srv.CreatedAt, &srv.UpdatedAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -90,7 +95,7 @@ func (s *Store) GetMCPServer(ctx context.Context, id uuid.UUID) (*models.MCPServ
 
 func (s *Store) ListMCPServers(ctx context.Context) ([]*models.MCPServer, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, transport, command, args, url, headers, env_vars, is_enabled, created_at, updated_at
+		SELECT id, name, description, transport, command, args, url, headers, env_vars, is_enabled, icon, avatar_url, created_at, updated_at
 		FROM mcp_servers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list mcp_servers: %w", err)
@@ -104,7 +109,7 @@ func (s *Store) ListMCPServers(ctx context.Context) ([]*models.MCPServer, error)
 		if err := rows.Scan(
 			&srv.ID, &srv.Name, &srv.Description, &srv.Transport, &srv.Command,
 			&argsJSON, &srv.URL, &headersJSON, &envJSON,
-			&srv.IsEnabled, &srv.CreatedAt, &srv.UpdatedAt,
+			&srv.IsEnabled, &srv.Icon, &srv.AvatarURL, &srv.CreatedAt, &srv.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan mcp_server: %w", err)
 		}
@@ -262,7 +267,7 @@ func (s *Store) DetachMCPServer(ctx context.Context, workforceID, serverID uuid.
 
 func (s *Store) ListWorkforceMCPServers(ctx context.Context, workforceID uuid.UUID) ([]*models.MCPServer, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT s.id, s.name, s.description, s.transport, s.command, s.args, s.url, s.headers, s.env_vars, s.is_enabled, s.created_at, s.updated_at
+		SELECT s.id, s.name, s.description, s.transport, s.command, s.args, s.url, s.headers, s.env_vars, s.is_enabled, s.icon, s.avatar_url, s.created_at, s.updated_at
 		FROM mcp_servers s
 		JOIN workforce_mcp_servers ws ON ws.server_id = s.id
 		WHERE ws.workforce_id = $1
@@ -279,7 +284,7 @@ func (s *Store) ListWorkforceMCPServers(ctx context.Context, workforceID uuid.UU
 		if err := rows.Scan(
 			&srv.ID, &srv.Name, &srv.Description, &srv.Transport, &srv.Command,
 			&argsJSON, &srv.URL, &headersJSON, &envJSON,
-			&srv.IsEnabled, &srv.CreatedAt, &srv.UpdatedAt,
+			&srv.IsEnabled, &srv.Icon, &srv.AvatarURL, &srv.CreatedAt, &srv.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan workforce mcp_server: %w", err)
 		}

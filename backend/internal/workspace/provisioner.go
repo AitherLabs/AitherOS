@@ -91,6 +91,7 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 			Transport:   "stdio",
 			Command:     aitherToolsCmd,
 			Args:        []string{aitherToolsBinary},
+			Icon:        "⚙️",
 			EnvVars: map[string]string{
 				"AITHER_WORKSPACE":      workspacePath,
 				"AITHER_WORKFORCE_NAME": wf.Name,

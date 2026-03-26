@@ -27,9 +27,99 @@ type MCPServer struct {
 	Headers     map[string]string    `json:"headers,omitempty" db:"headers"`     // For SSE/HTTP: custom headers
 	EnvVars     map[string]string    `json:"env_vars,omitempty" db:"env_vars"`   // Environment variables (contains secrets like tokens)
 	IsEnabled   bool                 `json:"is_enabled" db:"is_enabled"`
+	Icon        string               `json:"icon,omitempty" db:"icon"`
+	AvatarURL   string               `json:"avatar_url,omitempty" db:"avatar_url"`
 	Tools       []MCPToolDefinition  `json:"tools,omitempty"`                    // Discovered tools (not stored in this table)
 	CreatedAt   time.Time            `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time            `json:"updated_at" db:"updated_at"`
+}
+
+// RequiredCredentials extracts credential requirements from env vars.
+// Returns a list of {service, key} pairs that should be in workforce credentials.
+// Pattern: SERVER_NAME + env var like "GITHUB_PERSONAL_ACCESS_TOKEN" → {service: "github", key: "token"}
+func (s *MCPServer) RequiredCredentials() []CredentialRequirement {
+	var reqs []CredentialRequirement
+	credentialPatterns := []string{"TOKEN", "API_KEY", "SECRET", "PASSWORD", "KEY"}
+
+	for envKey := range s.EnvVars {
+		isCredential := false
+		for _, pattern := range credentialPatterns {
+			if contains(envKey, pattern) {
+				isCredential = true
+				break
+			}
+		}
+		if isCredential {
+			reqs = append(reqs, CredentialRequirement{
+				Service:     normalizeService(s.Name),
+				KeyName:     normalizeKeyName(envKey),
+				EnvVarName:  envKey,
+				Description: envKey + " for " + s.Name,
+			})
+		}
+	}
+	return reqs
+}
+
+type CredentialRequirement struct {
+	Service     string `json:"service"`
+	KeyName     string `json:"key_name"`
+	EnvVarName  string `json:"env_var_name"`
+	Description string `json:"description"`
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
+		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
+		 indexOf(s, substr) >= 0))
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}
+
+func normalizeService(name string) string {
+	// "GitHub" → "github", "Web Fetch" → "webfetch"
+	s := ""
+	for _, r := range name {
+		if r >= 'A' && r <= 'Z' {
+			s += string(r + 32)
+		} else if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			s += string(r)
+		}
+	}
+	return s
+}
+
+func normalizeKeyName(envVar string) string {
+	// "GITHUB_PERSONAL_ACCESS_TOKEN" → "token"
+	// "API_KEY" → "key"
+	s := ""
+	for _, r := range envVar {
+		if r >= 'A' && r <= 'Z' {
+			s += string(r + 32)
+		} else if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			s += string(r)
+		} else {
+			s += "_"
+		}
+	}
+	// Extract last meaningful word
+	if contains(s, "token") {
+		return "token"
+	} else if contains(s, "api_key") || contains(s, "key") {
+		return "api_key"
+	} else if contains(s, "secret") {
+		return "secret"
+	} else if contains(s, "password") {
+		return "password"
+	}
+	return s
 }
 
 // MCPToolDefinition represents a tool discovered from an MCP server.
@@ -86,6 +176,8 @@ type CreateMCPServerRequest struct {
 	URL         string            `json:"url,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	EnvVars     map[string]string `json:"env_vars,omitempty"`
+	Icon        string            `json:"icon,omitempty"`
+	AvatarURL   string            `json:"avatar_url,omitempty"`
 }
 
 type UpdateMCPServerRequest struct {
