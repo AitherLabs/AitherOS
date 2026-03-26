@@ -28,6 +28,9 @@ func NewManager(s *store.Store, embedder *Embedder) *Manager {
 // IngestExecutionResult embeds and stores an execution's final result into the
 // workforce's knowledge base. Called when an execution completes.
 func (m *Manager) IngestExecutionResult(ctx context.Context, workforceID, executionID uuid.UUID, objective, result string) error {
+	if !m.embedder.Available() {
+		return nil
+	}
 	if result == "" || len(result) < 20 {
 		return nil // Skip trivial results
 	}
@@ -66,6 +69,9 @@ func (m *Manager) IngestExecutionResult(ctx context.Context, workforceID, execut
 // IngestAgentMessages embeds and stores significant agent messages from an execution.
 // Only stores messages that are long enough to contain useful knowledge.
 func (m *Manager) IngestAgentMessages(ctx context.Context, workforceID, executionID uuid.UUID, messages []*models.Message) {
+	if !m.embedder.Available() {
+		return
+	}
 	for _, msg := range messages {
 		if msg.Role != models.MessageRoleAssistant {
 			continue
@@ -110,6 +116,9 @@ func (m *Manager) IngestAgentMessages(ctx context.Context, workforceID, executio
 
 // IngestManual embeds and stores user-provided knowledge.
 func (m *Manager) IngestManual(ctx context.Context, workforceID uuid.UUID, title, content string) (*models.KnowledgeEntry, error) {
+	if !m.embedder.Available() {
+		return nil, fmt.Errorf("embeddings are not available — check your EMBEDDING_MODEL configuration")
+	}
 	if content == "" {
 		return nil, fmt.Errorf("content is required")
 	}
@@ -148,6 +157,9 @@ func (m *Manager) IngestManual(ctx context.Context, workforceID uuid.UUID, title
 // specific agent across ALL executions. This gives agents long-term episodic memory:
 // Daedalus can recall that it documented the MCP system last week.
 func (m *Manager) RetrieveRelevantForAgent(ctx context.Context, agentID uuid.UUID, query string, limit int) (string, error) {
+	if !m.embedder.Available() {
+		return "", nil
+	}
 	if limit <= 0 {
 		limit = 3
 	}
@@ -187,12 +199,15 @@ func (m *Manager) IngestSingleMessage(ctx context.Context, workforceID, executio
 	if len(content) < 100 {
 		return // skip trivial messages
 	}
+	// Use a detached context — the execution context may cancel before the goroutine finishes.
+	_ = ctx
 	go func() {
+		bgCtx := context.Background()
 		textToEmbed := fmt.Sprintf("Agent: %s\n\n%s", agentName, content)
 		if len(textToEmbed) > 8000 {
 			textToEmbed = textToEmbed[:8000]
 		}
-		embedding, err := m.embedder.Embed(ctx, textToEmbed)
+		embedding, err := m.embedder.Embed(bgCtx, textToEmbed)
 		if err != nil {
 			log.Printf("knowledge: embed single message (%s iter=%d): %v", agentName, iteration, err)
 			return
@@ -214,7 +229,7 @@ func (m *Manager) IngestSingleMessage(ctx context.Context, workforceID, executio
 			},
 			CreatedAt: time.Now(),
 		}
-		if err := m.store.CreateKnowledgeEntry(ctx, entry); err != nil {
+		if err := m.store.CreateKnowledgeEntry(bgCtx, entry); err != nil {
 			log.Printf("knowledge: store single message (%s): %v", agentName, err)
 		}
 	}()
@@ -223,6 +238,9 @@ func (m *Manager) IngestSingleMessage(ctx context.Context, workforceID, executio
 // RetrieveRelevant searches the workforce knowledge base for entries relevant to a query.
 // Returns formatted context text for injection into agent prompts.
 func (m *Manager) RetrieveRelevant(ctx context.Context, workforceID uuid.UUID, query string, limit int) (string, error) {
+	if !m.embedder.Available() {
+		return "", nil
+	}
 	if limit <= 0 {
 		limit = 5
 	}

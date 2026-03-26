@@ -14,10 +14,20 @@ import (
 
 const channelPrefix = "aitheros:events:"
 
+// EventPersister is called asynchronously after each Publish to persist the event.
+type EventPersister func(ctx context.Context, event models.Event)
+
 type EventBus struct {
 	rdb         *redis.Client
 	subscribers map[uuid.UUID][]chan models.Event // executionID -> subscribers
 	mu          sync.RWMutex
+	persister   EventPersister
+}
+
+// SetPersister registers a callback that persists every published event.
+// Call once at startup after both the event bus and store are initialised.
+func (eb *EventBus) SetPersister(p EventPersister) {
+	eb.persister = p
 }
 
 func New(redisURL string) (*EventBus, error) {
@@ -55,6 +65,7 @@ func (eb *EventBus) Publish(ctx context.Context, event models.Event) error {
 	// Fan out to in-process subscribers
 	eb.mu.RLock()
 	subs := eb.subscribers[event.ExecutionID]
+	persister := eb.persister
 	eb.mu.RUnlock()
 
 	for _, ch := range subs {
@@ -63,6 +74,11 @@ func (eb *EventBus) Publish(ctx context.Context, event models.Event) error {
 		default:
 			// Drop if subscriber is slow
 		}
+	}
+
+	// Persist to DB asynchronously if a persister is registered
+	if persister != nil {
+		go persister(context.Background(), event)
 	}
 
 	return nil

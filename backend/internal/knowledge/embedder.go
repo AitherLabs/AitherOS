@@ -6,16 +6,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
 // Embedder generates vector embeddings via an OpenAI-compatible API.
+// It includes a circuit breaker: after 3 permanent failures (4xx) it
+// disables itself for the process lifetime and logs exactly once.
 type Embedder struct {
 	baseURL    string // e.g. "http://127.0.0.1:4000/v1"
 	apiKey     string
 	model      string // e.g. "text-embedding-3-small"
 	httpClient *http.Client
+
+	mu        sync.Mutex
+	failCount int
+	disabled  bool
 }
 
 func NewEmbedder(baseURL, apiKey, model string) *Embedder {
@@ -48,8 +56,22 @@ type embeddingResponse struct {
 	} `json:"usage"`
 }
 
+// Available returns false if the circuit breaker has tripped (permanent config error).
+func (e *Embedder) Available() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.disabled
+}
+
 // Embed generates an embedding vector for the given text.
 func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	e.mu.Lock()
+	if e.disabled {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("embeddings disabled (model not available)")
+	}
+	e.mu.Unlock()
+
 	body, err := json.Marshal(embeddingRequest{
 		Model: e.model,
 		Input: text,
@@ -75,8 +97,24 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("embeddings API status %d: %s", resp.StatusCode, string(respBody))
+		errMsg := fmt.Errorf("embeddings API status %d: %s", resp.StatusCode, string(respBody))
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			e.mu.Lock()
+			e.failCount++
+			if e.failCount >= 3 && !e.disabled {
+				e.disabled = true
+				log.Printf("knowledge: embeddings disabled — model '%s' is not available on this endpoint. Configure EMBEDDING_MODEL or add the model to LiteLLM.", e.model)
+			}
+			e.mu.Unlock()
+		}
+		return nil, errMsg
 	}
+	// Successful response — reset fail counter so transient errors don't permanently disable
+	e.mu.Lock()
+	if e.failCount > 0 {
+		e.failCount = 0
+	}
+	e.mu.Unlock()
 
 	var embResp embeddingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&embResp); err != nil {

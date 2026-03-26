@@ -1171,7 +1171,9 @@ func (o *Orchestrator) HaltExecution(executionID uuid.UUID) error {
 
 	// Cancel the goroutine context if it is still running
 	if val, ok := o.activeExecs.Load(executionID); ok {
-		val.(*executionContext).cancel()
+		if ec, ok := val.(*executionContext); ok {
+			ec.cancel()
+		}
 		o.activeExecs.Delete(executionID)
 	}
 	// Remove intervention channel if present
@@ -1309,7 +1311,10 @@ func (o *Orchestrator) InjectIntervention(executionID uuid.UUID, message string)
 	if !ok {
 		return fmt.Errorf("execution %s is not currently running", executionID)
 	}
-	ch := val.(chan string)
+	ch, ok := val.(chan string)
+	if !ok {
+		return fmt.Errorf("execution %s intervention channel in invalid state", executionID)
+	}
 	select {
 	case ch <- message:
 		return nil

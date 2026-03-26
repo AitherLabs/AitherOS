@@ -114,6 +114,26 @@ export const tools = [
       required: ['query'],
     },
   },
+  {
+    name: 'get_secret',
+    description:
+      'Retrieve a workforce credential (API key, token, password, etc.) by service name and key. ' +
+      'Credentials are set per-workforce by the operator and are never hard-coded in agent prompts. ' +
+      'Example: get_secret("hackerone", "api_key") or get_secret("github", "token").',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        service:  { type: 'string', description: 'Service name, e.g. "hackerone", "github", "aws"' },
+        key_name: { type: 'string', description: 'Credential key, e.g. "api_key", "token", "username"' },
+      },
+      required: ['service', 'key_name'],
+    },
+  },
+  {
+    name: 'list_secrets',
+    description: 'List all configured credential services and key names for this workforce (values are not shown).',
+    inputSchema: { type: 'object' as const, properties: {}, required: [] },
+  },
 ];
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -181,6 +201,45 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
       await fs.writeFile(file, content, 'utf8');
     }
     return `Notes ${append ? 'appended' : 'written'} to ${path.relative(NOTES_DIR, file)}`;
+  },
+
+  async get_secret(args) {
+    const secretsPath = path.join(WORKSPACE, '..', '.secrets.json');
+    let secrets: Record<string, Record<string, string>>;
+    try {
+      const raw = await fs.readFile(secretsPath, 'utf8');
+      secrets = JSON.parse(raw);
+    } catch {
+      return 'ERROR: No credentials configured for this workforce. Ask the operator to add them via the workforce settings page.';
+    }
+    const service  = (args.service  as string).toLowerCase();
+    const keyName  = (args.key_name as string).toLowerCase();
+    const svcSecrets = secrets[service] ?? secrets[Object.keys(secrets).find(k => k.toLowerCase() === service) ?? ''];
+    if (!svcSecrets) {
+      return `ERROR: No credentials found for service "${args.service}". Available services: ${Object.keys(secrets).join(', ') || 'none'}.`;
+    }
+    const value = svcSecrets[keyName] ?? svcSecrets[Object.keys(svcSecrets).find(k => k.toLowerCase() === keyName) ?? ''];
+    if (value === undefined) {
+      return `ERROR: Key "${args.key_name}" not found for service "${args.service}". Available keys: ${Object.keys(svcSecrets).join(', ')}.`;
+    }
+    return value;
+  },
+
+  async list_secrets(_args) {
+    const secretsPath = path.join(WORKSPACE, '..', '.secrets.json');
+    let secrets: Record<string, Record<string, string>>;
+    try {
+      const raw = await fs.readFile(secretsPath, 'utf8');
+      secrets = JSON.parse(raw);
+    } catch {
+      return 'No credentials configured for this workforce.';
+    }
+    if (Object.keys(secrets).length === 0) return 'No credentials configured.';
+    const lines: string[] = ['Configured credentials (values hidden):'];
+    for (const [service, keys] of Object.entries(secrets)) {
+      lines.push(`  ${service}: ${Object.keys(keys).join(', ')}`);
+    }
+    return lines.join('\n');
   },
 
   async workspace_search(args) {

@@ -330,6 +330,26 @@ func (h *ExecutionHandler) AskQA(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, qa)
 }
 
+// Events returns the persisted event log for an execution (action-level events only).
+func (h *ExecutionHandler) Events(w http.ResponseWriter, r *http.Request) {
+	execID, err := uuid.Parse(r.PathValue("execID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+
+	events, err := h.store.ListExecutionEvents(r.Context(), execID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list events: "+err.Error())
+		return
+	}
+	if events == nil {
+		events = []*models.Event{}
+	}
+
+	writeJSON(w, http.StatusOK, events)
+}
+
 // ListQA returns all Q&A pairs for an execution.
 func (h *ExecutionHandler) ListQA(w http.ResponseWriter, r *http.Request) {
 	execID, err := uuid.Parse(r.PathValue("execID"))

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/aitheros/backend/internal/eventbus"
 	"github.com/aitheros/backend/internal/knowledge"
 	"github.com/aitheros/backend/internal/mcp"
+	"github.com/aitheros/backend/internal/models"
 	"github.com/aitheros/backend/internal/orchestrator"
 	"github.com/aitheros/backend/internal/store"
 	"github.com/joho/godotenv"
@@ -44,6 +46,17 @@ func main() {
 	defer db.Close()
 	log.Println("Connected to PostgreSQL")
 
+	// Wire encryption key for credential storage
+	if encKey := os.Getenv("ENCRYPTION_KEY"); encKey != "" {
+		if err := db.SetEncryptionKey(encKey); err != nil {
+			log.Printf("WARNING: invalid ENCRYPTION_KEY: %v — credential encryption disabled", err)
+		} else {
+			log.Println("Credential encryption enabled (AES-256-GCM)")
+		}
+	} else {
+		log.Println("WARNING: ENCRYPTION_KEY not set — credentials will be stored unencrypted")
+	}
+
 	// Initialize event bus
 	eb, err := eventbus.New(cfg.Redis.URL)
 	if err != nil {
@@ -51,6 +64,13 @@ func main() {
 	}
 	defer eb.Close()
 	log.Println("Connected to Redis")
+
+	// Persist all events to DB so the frontend can replay them for completed executions
+	eb.SetPersister(func(ctx context.Context, event models.Event) {
+		if err := db.SaveEvent(ctx, event); err != nil {
+			log.Printf("WARNING: failed to persist event %s: %v", event.Type, err)
+		}
+	})
 
 	// Initialize orchestrator
 	orch := orchestrator.New(db, eb, orchestrator.LLMConfig{

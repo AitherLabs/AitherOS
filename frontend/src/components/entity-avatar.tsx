@@ -47,7 +47,7 @@ export function EntityAvatar({
         title={name}
         onClick={onClick}
       >
-        <img src={resolved} alt={name || ''} className='h-full w-full object-cover' />
+        <img src={resolved} alt={name || ''} className='h-full w-full object-cover' loading='lazy' decoding='async' />
       </div>
     );
   }

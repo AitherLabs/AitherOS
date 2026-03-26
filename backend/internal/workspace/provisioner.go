@@ -33,6 +33,11 @@ func NewProvisioner(s *store.Store) *Provisioner {
 	return &Provisioner{store: s}
 }
 
+// WorkforceRoot returns the root directory for a workforce (parent of workspace/).
+func WorkforceRoot(workforceName string) string {
+	return filepath.Join(WorkforcesRoot, Slug(workforceName))
+}
+
 // WorkspacePath returns the canonical workspace path for a workforce name.
 func WorkspacePath(workforceName string) string {
 	return filepath.Join(WorkforcesRoot, Slug(workforceName), "workspace")

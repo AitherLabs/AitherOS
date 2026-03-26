@@ -174,8 +174,44 @@ export default function AgentsPage() {
 
   if (loading) {
     return (
-      <div className='flex h-[50vh] items-center justify-center'>
-        <div className='h-8 w-8 animate-spin rounded-full border-2 border-[#9A66FF]/30 border-t-[#9A66FF]' />
+      <div className='space-y-6 p-6'>
+        <div className='flex items-center justify-between'>
+          <div className='space-y-2'>
+            <div className='h-7 w-24 animate-pulse rounded-lg bg-muted/50' />
+            <div className='h-4 w-64 animate-pulse rounded-md bg-muted/30' />
+          </div>
+          <div className='h-9 w-28 animate-pulse rounded-lg bg-muted/40' />
+        </div>
+        <div className='h-px bg-border/50' />
+        <div className='grid gap-5 md:grid-cols-2 lg:grid-cols-3'>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className='rounded-xl border border-border/30 bg-background/60 p-4 space-y-4'>
+              <div className='flex items-start justify-between'>
+                <div className='flex items-center gap-3'>
+                  <div className='h-10 w-10 animate-pulse rounded-lg bg-muted/50' />
+                  <div className='space-y-1.5'>
+                    <div className='h-4 w-28 animate-pulse rounded bg-muted/50' />
+                    <div className='h-3 w-20 animate-pulse rounded bg-muted/30' />
+                  </div>
+                </div>
+                <div className='h-5 w-12 animate-pulse rounded bg-muted/40' />
+              </div>
+              <div className='flex gap-1'>
+                {Array.from({ length: 5 }).map((_, j) => (
+                  <div key={j} className='h-1 flex-1 animate-pulse rounded-full bg-muted/40' />
+                ))}
+              </div>
+              <div className='space-y-1.5'>
+                {Array.from({ length: 4 }).map((_, j) => (
+                  <div key={j} className='flex items-center gap-2'>
+                    <div className='h-2 w-6 animate-pulse rounded bg-muted/40' />
+                    <div className='h-1.5 flex-1 animate-pulse rounded-full bg-muted/30' />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }

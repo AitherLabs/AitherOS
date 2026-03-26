@@ -190,6 +190,24 @@ class ApiClient {
     return this.request<null>(`/api/v1/kanban/${taskId}`, { method: 'DELETE' });
   }
 
+  // ── Credentials ───────────────────────────────────────
+  async listCredentials(workforceId: string) {
+    return this.request<Credential[]>(`/api/v1/workforces/${workforceId}/credentials`);
+  }
+
+  async upsertCredential(workforceId: string, data: { service: string; key_name: string; value: string }) {
+    return this.request<Credential>(`/api/v1/workforces/${workforceId}/credentials`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  }
+
+  async deleteCredential(workforceId: string, service: string, keyName: string) {
+    return this.request<null>(`/api/v1/workforces/${workforceId}/credentials/${service}/${keyName}`, {
+      method: 'DELETE'
+    });
+  }
+
   // ── Executions ────────────────────────────────────────
   async startExecution(workforceId: string, objective: string, inputs?: Record<string, string>) {
     return this.request<Execution>(`/api/v1/workforces/${workforceId}/executions`, {
@@ -551,6 +569,16 @@ export interface Workforce {
   workspace_path?: string;
   autonomous_mode: boolean;
   heartbeat_interval_m: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Credential {
+  id: string;
+  workforce_id: string;
+  service: string;
+  key_name: string;
+  value: string; // always "****" from API
   created_at: string;
   updated_at: string;
 }

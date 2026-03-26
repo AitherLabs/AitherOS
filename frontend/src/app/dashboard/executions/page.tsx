@@ -1,68 +1,52 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Separator } from '@/components/ui/separator';
-import { IconTrash } from '@tabler/icons-react';
+import { IconBolt, IconCheck, IconClock, IconLoader2, IconPlayerPlay, IconTrash, IconX } from '@tabler/icons-react';
 import api, { Agent, Workforce, Execution } from '@/lib/api';
 import { EntityAvatarStack } from '@/components/entity-avatar';
+import { Button } from '@/components/ui/button';
 
-const execStatusConfig: Record<
-  string,
-  { color: string; bg: string; border: string; label: string }
-> = {
-  running: {
-    color: '#9A66FF',
-    bg: '#9A66FF15',
-    border: '#9A66FF30',
-    label: 'Running'
-  },
-  completed: {
-    color: '#56D090',
-    bg: '#56D09015',
-    border: '#56D09030',
-    label: 'Completed'
-  },
-  failed: {
-    color: '#EF4444',
-    bg: '#EF444415',
-    border: '#EF444430',
-    label: 'Failed'
-  },
-  halted: {
-    color: '#FFBF47',
-    bg: '#FFBF4715',
-    border: '#FFBF4730',
-    label: 'Halted'
-  },
-  pending_approval: {
-    color: '#FFBF47',
-    bg: '#FFBF4715',
-    border: '#FFBF4730',
-    label: 'Awaiting Approval'
-  },
-  awaiting_approval: {
-    color: '#56D090',
-    bg: '#56D09015',
-    border: '#56D09030',
-    label: 'Awaiting Approval'
-  },
-  planning: {
-    color: '#14FFF7',
-    bg: '#14FFF715',
-    border: '#14FFF730',
-    label: 'Planning'
-  }
+const execStatusConfig: Record<string, { color: string; bg: string; border: string; label: string; pulse?: boolean }> = {
+  running:           { color: '#9A66FF', bg: '#9A66FF12', border: '#9A66FF35', label: 'Running',          pulse: true },
+  planning:          { color: '#14FFF7', bg: '#14FFF712', border: '#14FFF735', label: 'Planning',          pulse: true },
+  completed:         { color: '#56D090', bg: '#56D09012', border: '#56D09035', label: 'Completed' },
+  failed:            { color: '#EF4444', bg: '#EF444412', border: '#EF444435', label: 'Failed' },
+  halted:            { color: '#FFBF47', bg: '#FFBF4712', border: '#FFBF4735', label: 'Halted' },
+  pending_approval:  { color: '#FFBF47', bg: '#FFBF4712', border: '#FFBF4735', label: 'Awaiting Approval', pulse: true },
+  awaiting_approval: { color: '#FFBF47', bg: '#FFBF4712', border: '#FFBF4735', label: 'Awaiting Approval', pulse: true },
 };
+
+const STATUS_FILTERS = [
+  { key: 'all',     label: 'All' },
+  { key: 'active',  label: 'Active' },
+  { key: 'completed', label: 'Completed' },
+  { key: 'awaiting_approval', label: 'Approval' },
+  { key: 'halted',  label: 'Halted' },
+  { key: 'failed',  label: 'Failed' },
+] as const;
+
+type FilterKey = typeof STATUS_FILTERS[number]['key'];
+
+function matchesFilter(exec: Execution, filter: FilterKey): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'active') return exec.status === 'running' || exec.status === 'planning';
+  if (filter === 'awaiting_approval') return exec.status === 'awaiting_approval' || exec.status === 'pending_approval';
+  return exec.status === filter;
+}
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return String(n);
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return '';
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${(seconds / 3600).toFixed(1)}h`;
 }
 
 function timeAgo(date: string): string {
@@ -85,42 +69,37 @@ export default function ExecutionsPage() {
   const router = useRouter();
   const [executions, setExecutions] = useState<ExecWithMeta[]>([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<FilterKey>('all');
 
   const loadExecutions = useCallback(async () => {
     try {
       if (session?.accessToken) api.setToken(session.accessToken);
       const [wfRes, agRes] = await Promise.all([
         api.listWorkforces(),
-        api.listAgents()
+        api.listAgents(),
       ]);
       const workforces: Workforce[] = wfRes.data || [];
       const agentsMap: Record<string, Agent> = {};
-      for (const a of agRes.data || []) {
-        agentsMap[a.id] = a;
-      }
+      for (const a of agRes.data || []) agentsMap[a.id] = a;
 
-      const allExecs: ExecWithMeta[] = [];
-      for (const wf of workforces) {
-        try {
+      // Fetch all workforces' executions in parallel
+      const results = await Promise.allSettled(
+        workforces.map(async (wf) => {
           const exRes = await api.listExecutions(wf.id);
-          const wfAgents = (wf.agent_ids || [])
-            .map((id) => agentsMap[id])
-            .filter(Boolean);
-          const execs = (exRes.data || []).map((e) => ({
+          const wfAgents = (wf.agent_ids || []).map((id) => agentsMap[id]).filter(Boolean);
+          return (exRes.data || []).map((e) => ({
             ...e,
             workforce_name: wf.name,
-            workforce_agents: wfAgents
+            workforce_agents: wfAgents,
           }));
-          allExecs.push(...execs);
-        } catch {
-          // skip
-        }
-      }
-
-      allExecs.sort(
-        (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        })
       );
+
+      const allExecs: ExecWithMeta[] = [];
+      for (const r of results) {
+        if (r.status === 'fulfilled') allExecs.push(...r.value);
+      }
+      allExecs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       setExecutions(allExecs);
     } catch (err) {
       console.error('Failed to load executions:', err);
@@ -129,124 +108,225 @@ export default function ExecutionsPage() {
     }
   }, [session]);
 
-  useEffect(() => {
-    loadExecutions();
-  }, [loadExecutions]);
+  useEffect(() => { loadExecutions(); }, [loadExecutions]);
+
+  const filtered = useMemo(
+    () => executions.filter((e) => matchesFilter(e, filter)),
+    [executions, filter]
+  );
+
+  const counts = useMemo<Record<FilterKey, number>>(() => ({
+    all: executions.length,
+    active: executions.filter((e) => e.status === 'running' || e.status === 'planning').length,
+    completed: executions.filter((e) => e.status === 'completed').length,
+    awaiting_approval: executions.filter((e) => e.status === 'awaiting_approval' || e.status === 'pending_approval').length,
+    halted: executions.filter((e) => e.status === 'halted').length,
+    failed: executions.filter((e) => e.status === 'failed').length,
+  }), [executions]);
 
   if (loading) {
     return (
-      <div className='flex h-[50vh] items-center justify-center'>
-        <div className='h-8 w-8 animate-spin rounded-full border-2 border-[#9A66FF]/30 border-t-[#9A66FF]' />
+      <div className='flex h-[calc(100vh-64px)] flex-col'>
+        <div className='border-b border-border/50 px-6 py-4 space-y-4'>
+          <div className='flex items-center justify-between'>
+            <div className='space-y-1.5'>
+              <div className='h-5 w-28 animate-pulse rounded bg-muted/50' />
+              <div className='h-3 w-44 animate-pulse rounded bg-muted/30' />
+            </div>
+          </div>
+          <div className='flex gap-1.5'>
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className='h-7 w-16 animate-pulse rounded-lg bg-muted/40' />
+            ))}
+          </div>
+        </div>
+        <div className='flex-1 overflow-hidden px-6 py-4 space-y-2'>
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className='flex items-center gap-4 rounded-xl border border-border/30 bg-background/60 px-4 py-3'
+              style={{ borderLeftWidth: 3, borderLeftColor: '#9A66FF30', opacity: 1 - i * 0.08 }}>
+              <div className='flex -space-x-2'>
+                {Array.from({ length: 3 }).map((_, j) => (
+                  <div key={j} className='h-8 w-8 animate-pulse rounded-lg bg-muted/50 border-2 border-background' />
+                ))}
+              </div>
+              <div className='flex-1 space-y-1.5'>
+                <div className='h-4 w-3/4 animate-pulse rounded bg-muted/50' />
+                <div className='h-3 w-1/3 animate-pulse rounded bg-muted/30' />
+              </div>
+              <div className='h-6 w-20 animate-pulse rounded-lg bg-muted/40' />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className='space-y-6 p-6'>
-      <div>
-        <h2 className='text-2xl font-bold tracking-tight'>Executions</h2>
-        <p className='text-muted-foreground'>
-          Workforce execution history. Click to view the full conversation.
-        </p>
+    <div className='flex h-[calc(100vh-64px)] flex-col'>
+      {/* Header */}
+      <div className='border-b border-border/50 px-6 py-4'>
+        <div className='flex items-center justify-between'>
+          <div>
+            <h2 className='text-lg font-semibold tracking-tight'>Executions</h2>
+            <p className='text-xs text-muted-foreground mt-0.5'>
+              {executions.length} total across {new Set(executions.map(e => e.workforce_id)).size} workforces
+            </p>
+          </div>
+        </div>
+
+        {/* Status filter tabs */}
+        <div className='flex items-center gap-1 mt-4 flex-wrap'>
+          {STATUS_FILTERS.map(({ key, label }) => {
+            const count = counts[key];
+            if (count === 0 && key !== 'all') return null;
+            const isActive = filter === key;
+            const cfg = key === 'all' ? null : execStatusConfig[key === 'active' ? 'running' : key];
+            return (
+              <button
+                key={key}
+                onClick={() => setFilter(key)}
+                className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-all ${
+                  isActive
+                    ? 'border-[#9A66FF]/50 bg-[#9A66FF]/15 text-[#9A66FF]'
+                    : 'border-border/40 bg-background/40 text-muted-foreground hover:border-border hover:text-foreground'
+                }`}
+              >
+                {key === 'active' && <span className='h-1.5 w-1.5 rounded-full bg-[#9A66FF] animate-pulse' />}
+                {key === 'completed' && <IconCheck className='h-3 w-3' />}
+                {key === 'failed' && <IconX className='h-3 w-3' />}
+                {key === 'halted' && <IconPlayerPlay className='h-3 w-3' />}
+                {key === 'awaiting_approval' && <IconClock className='h-3 w-3' />}
+                {label}
+                <span className={`rounded-full px-1 py-0.5 text-[10px] font-bold ${
+                  isActive ? 'bg-[#9A66FF]/20 text-[#9A66FF]' : 'bg-muted text-muted-foreground'
+                }`}>{count}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
-      <Separator />
-      <div className='space-y-3'>
-        {executions.map((exec) => {
-          const statusConf = execStatusConfig[exec.status] || {
-            color: '#888',
-            bg: '#88815',
-            border: '#88830',
-            label: exec.status
-          };
 
-          return (
-            <Card
-              key={exec.id}
-              className='cursor-pointer border-border/50 transition-all hover:border-[#9A66FF]/40 hover:shadow-md hover:shadow-[#9A66FF]/5'
-              onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
-            >
-              <CardHeader className='pb-2'>
-                <div className='flex items-start gap-4'>
-                  {/* Agent Avatars Stack */}
-                  <EntityAvatarStack
-                    entities={(exec.workforce_agents || []).map((a) => ({ icon: a.icon, color: a.color, avatarUrl: a.avatar_url, name: a.name, id: a.id }))}
-                    max={4}
-                    size='sm'
-                  />
+      {/* List */}
+      <div className='flex-1 overflow-y-auto px-6 py-4'>
+        {filtered.length === 0 ? (
+          <div className='flex h-40 items-center justify-center rounded-xl border border-dashed border-border/50'>
+            <p className='text-sm text-muted-foreground'>
+              {filter === 'all' ? 'No executions yet. Start one from a workforce.' : `No ${filter} executions.`}
+            </p>
+          </div>
+        ) : (
+          <div className='space-y-2'>
+            {filtered.map((exec) => {
+              const cfg = execStatusConfig[exec.status] || { color: '#888', bg: '#88812', border: '#88830', label: exec.status };
+              const isActive = exec.status === 'running' || exec.status === 'planning';
+              const isApproval = exec.status === 'awaiting_approval' || exec.status === 'pending_approval';
 
-                  {/* Content */}
-                  <div className='flex-1 min-w-0'>
-                    <div className='flex items-center justify-between gap-2'>
-                      <h3 className='text-sm font-medium leading-snug line-clamp-1'>
-                        {exec.title || exec.objective.slice(0, 120)}
-                      </h3>
-                      <div className='flex items-center gap-2 shrink-0'>
-                        <Badge
-                          variant='outline'
-                          className='text-[10px]'
-                          style={{
-                            backgroundColor: statusConf.bg,
-                            borderColor: statusConf.border,
-                            color: statusConf.color
-                          }}
-                        >
-                          {statusConf.label}
-                        </Badge>
-                        {exec.status !== 'running' && exec.status !== 'planning' && (
-                          <Button
-                            variant='ghost'
-                            size='icon'
-                            className='h-6 w-6 text-muted-foreground hover:text-destructive hover:bg-destructive/10'
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (!confirm('Delete this execution? This cannot be undone.')) return;
-                              api.deleteExecution(exec.id).then(() => {
-                                setExecutions((prev) => prev.filter((x) => x.id !== exec.id));
-                              });
-                            }}
-                          >
-                            <IconTrash className='h-3.5 w-3.5' />
-                          </Button>
+              return (
+                <div
+                  key={exec.id}
+                  onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
+                  className='group relative flex cursor-pointer items-stretch gap-0 rounded-xl border border-border/40 bg-background/60 transition-all hover:border-border/80 hover:bg-background/80 overflow-hidden'
+                  style={{ borderLeftColor: cfg.color + '60', borderLeftWidth: 3 }}
+                >
+                  {/* Active pulse overlay */}
+                  {isActive && (
+                    <div className='pointer-events-none absolute inset-0 rounded-xl animate-pulse'
+                      style={{ background: `linear-gradient(90deg, ${cfg.color}06 0%, transparent 60%)` }} />
+                  )}
+
+                  {/* Main content */}
+                  <div className='flex flex-1 items-start gap-4 px-4 py-3 min-w-0'>
+                    {/* Agent stack */}
+                    <div className='shrink-0 mt-0.5'>
+                      <EntityAvatarStack
+                        entities={(exec.workforce_agents || []).map((a) => ({ icon: a.icon, color: a.color, avatarUrl: a.avatar_url, name: a.name, id: a.id }))}
+                        max={4}
+                        size='sm'
+                      />
+                    </div>
+
+                    {/* Title + meta */}
+                    <div className='flex-1 min-w-0'>
+                      <div className='flex items-start justify-between gap-3'>
+                        <div className='min-w-0'>
+                          <h3 className='text-sm font-medium leading-snug line-clamp-1 text-foreground/90'>
+                            {exec.title || exec.objective}
+                          </h3>
+                          <div className='mt-0.5 flex items-center gap-1.5 flex-wrap'>
+                            <span className='text-[11px] text-muted-foreground/60 font-medium'>{exec.workforce_name}</span>
+                            {(exec.workforce_agents || []).length > 0 && (
+                              <>
+                                <span className='text-border'>·</span>
+                                <span className='text-[11px] text-muted-foreground/45'>
+                                  {(exec.workforce_agents || []).map(a => a.name).join(', ')}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Status badge */}
+                        <div className='flex items-center gap-2 shrink-0'>
+                          <div className='flex items-center gap-1.5 rounded-lg border px-2 py-1'
+                            style={{ backgroundColor: cfg.bg, borderColor: cfg.border }}>
+                            {(isActive || isApproval) && (
+                              <span className='h-1.5 w-1.5 rounded-full animate-pulse shrink-0' style={{ backgroundColor: cfg.color }} />
+                            )}
+                            {exec.status === 'completed' && <IconCheck className='h-3 w-3 shrink-0' style={{ color: cfg.color }} />}
+                            {exec.status === 'failed' && <IconX className='h-3 w-3 shrink-0' style={{ color: cfg.color }} />}
+                            <span className='text-[11px] font-semibold' style={{ color: cfg.color }}>{cfg.label}</span>
+                          </div>
+                          {exec.status !== 'running' && exec.status !== 'planning' && (
+                            <Button
+                              variant='ghost' size='icon'
+                              className='h-6 w-6 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all'
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!confirm('Delete this execution?')) return;
+                                api.deleteExecution(exec.id).then(() =>
+                                  setExecutions(prev => prev.filter(x => x.id !== exec.id))
+                                );
+                              }}
+                            >
+                              <IconTrash className='h-3.5 w-3.5' />
+                            </Button>
+                          )}
+                          {isActive && (
+                            <IconLoader2 className='h-3.5 w-3.5 animate-spin shrink-0' style={{ color: cfg.color }} />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Result preview for completed */}
+                      {exec.status === 'completed' && exec.result && (
+                        <p className='mt-1.5 text-[11px] leading-relaxed text-muted-foreground/55 line-clamp-2'>
+                          {exec.result.slice(0, 200)}
+                        </p>
+                      )}
+
+                      {/* Stats row */}
+                      <div className='mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/40 flex-wrap'>
+                        {exec.tokens_used > 0 && (
+                          <span>{formatTokens(exec.tokens_used)} tokens</span>
                         )}
+                        {exec.iterations > 0 && (
+                          <><span className='text-border'>·</span><span>{exec.iterations} iter{exec.iterations !== 1 ? 's' : ''}</span></>
+                        )}
+                        {exec.elapsed_s > 0 && (
+                          <><span className='text-border'>·</span><span>{formatDuration(exec.elapsed_s)}</span></>
+                        )}
+                        <span className='text-border'>·</span>
+                        <span>{timeAgo(exec.created_at)}</span>
+                        <span className='ml-auto font-mono text-[9px] text-muted-foreground/25'>{exec.id.slice(0, 8)}</span>
                       </div>
                     </div>
-                    <p className='mt-0.5 text-xs text-muted-foreground'>
-                      {exec.workforce_name}
-                    </p>
                   </div>
                 </div>
-              </CardHeader>
-              <CardContent className='pt-0'>
-                <div className='flex items-center gap-3 text-[11px] text-muted-foreground'>
-                  {/* Agent names */}
-                  <span>
-                    {(exec.workforce_agents || [])
-                      .map((a) => a.name)
-                      .join(', ')}
-                  </span>
-                  <span className='text-border'>·</span>
-                  <span>{formatTokens(exec.tokens_used)} tokens</span>
-                  <span className='text-border'>·</span>
-                  <span>{exec.iterations > 0 ? `${exec.iterations} iter${exec.iterations !== 1 ? 's' : ''}` : 'no iters'}</span>
-                  <span className='text-border'>·</span>
-                  <span>{timeAgo(exec.created_at)}</span>
-                  <span className='ml-auto font-mono text-[10px] text-muted-foreground/40'>
-                    {exec.id.slice(0, 8)}
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
+              );
+            })}
+          </div>
+        )}
       </div>
-
-      {executions.length === 0 && (
-        <div className='flex h-40 items-center justify-center rounded-lg border border-dashed border-border/50'>
-          <p className='text-muted-foreground'>
-            No executions yet. Start one from a workforce.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

@@ -9,7 +9,6 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Textarea } from '@/components/ui/textarea';
 import {
   IconArrowLeft,
-  IconBolt,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
@@ -24,7 +23,7 @@ import {
   IconTool,
   IconX
 } from '@tabler/icons-react';
-import api, { Agent, Execution, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
+import api, { Agent, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { Input } from '@/components/ui/input';
@@ -419,7 +418,7 @@ function InteractionsPanel({
                         style={{ backgroundColor: color + '22', border: `1.5px solid ${color}50` }}
                       >
                         {avatarSrc ? (
-                          <img src={avatarSrc} alt={name} className='h-full w-full object-cover' />
+                          <img src={resolveImg(avatarSrc)} alt={name} className='h-full w-full object-cover' />
                         ) : (
                           <span>{icon}</span>
                         )}
@@ -1012,50 +1011,56 @@ export default function ExecutionDetailPage() {
     try {
       if (session?.accessToken) api.setToken(session.accessToken);
 
-      // Use direct endpoint — no workforce ID needed
+      // First: fetch execution — need workforce_id before parallel calls
       const exRes = await api.getExecutionDirect(execId);
       const foundExec = exRes.data;
       if (!foundExec) return;
-
       setExecution(foundExec);
 
-      // Fetch workforce for context (name, etc.) if not already loaded
-      if (foundExec.workforce_id) {
-        try {
-          const wfRes = await api.getWorkforce(foundExec.workforce_id);
-          if (wfRes.data) setWorkforce(wfRes.data);
-        } catch { /* workforce may be deleted */ }
+      // Parallel: fetch everything else at once
+      const [wfResult, msgResult, discResult, revResult, qaResult, evResult, agResult] =
+        await Promise.allSettled([
+          foundExec.workforce_id ? api.getWorkforce(foundExec.workforce_id) : Promise.resolve(null),
+          api.getMessages(execId),
+          api.getDiscussionMessages(execId),
+          api.getReviewMessages(execId),
+          api.listExecutionQA(execId),
+          api.listExecutionEvents(execId),
+          api.listAgents(),
+        ]);
+
+      if (wfResult.status === 'fulfilled' && wfResult.value?.data)
+        setWorkforce(wfResult.value.data);
+
+      if (msgResult.status === 'fulfilled')
+        setMessages(msgResult.value.data || []);
+
+      if (discResult.status === 'fulfilled')
+        setDiscussionMessages(discResult.value.data || []);
+
+      if (revResult.status === 'fulfilled')
+        setReviewMessages(revResult.value.data || []);
+
+      if (qaResult.status === 'fulfilled')
+        setQaItems(qaResult.value.data || []);
+
+      if (evResult.status === 'fulfilled') {
+        const historical: LiveEvent[] = (evResult.value.data || []).map((e: ExecutionEvent) => ({
+          id: e.id,
+          type: e.type,
+          agent_name: e.agent_name || undefined,
+          content: e.message,
+          timestamp: new Date(e.timestamp),
+          isNew: false,
+        }));
+        setLiveEvents(historical);
       }
 
-      // Load messages
-      const msgRes = await api.getMessages(execId);
-      setMessages(msgRes.data || []);
-
-      // Load discussion messages (pre-execution team discussion)
-      try {
-        const discRes = await api.getDiscussionMessages(execId);
-        setDiscussionMessages(discRes.data || []);
-      } catch { /* no discussion yet */ }
-
-      // Load review messages (post-execution quality review)
-      try {
-        const revRes = await api.getReviewMessages(execId);
-        setReviewMessages(revRes.data || []);
-      } catch { /* no review yet */ }
-
-      // Load Q&A history (only relevant once completed)
-      try {
-        const qaRes = await api.listExecutionQA(execId);
-        setQaItems(qaRes.data || []);
-      } catch { /* table may not exist yet on older deployments */ }
-
-      // Load agents for avatars
-      const agRes = await api.listAgents();
-      const map: Record<string, Agent> = {};
-      for (const a of agRes.data || []) {
-        map[a.id] = a;
+      if (agResult.status === 'fulfilled') {
+        const map: Record<string, Agent> = {};
+        for (const a of agResult.value.data || []) map[a.id] = a;
+        setAgentsMap(map);
       }
-      setAgentsMap(map);
     } catch (err) {
       console.error('Failed to load execution:', err);
     } finally {
@@ -1068,33 +1073,37 @@ export default function ExecutionDetailPage() {
     loadData();
   }, [loadData]);
 
-  // Auto-poll when active
+  // Auto-poll when active. Slows down when WS is connected (events arrive live already).
   useEffect(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     if (!execution) return;
     const active = ['running', 'planning', 'awaiting_approval'].includes(execution.status);
-    if (active) {
-      pollRef.current = setInterval(async () => {
-        try {
-          const exRes = await api.getExecutionDirect(execId);
-          if (exRes.data) {
-            setExecution(exRes.data);
-            const msgRes = await api.getMessages(execId);
-            setMessages(msgRes.data || []);
-            try {
-              const discRes = await api.getDiscussionMessages(execId);
-              setDiscussionMessages(discRes.data || []);
-            } catch { /* */ }
-            try {
-              const revRes = await api.getReviewMessages(execId);
-              setReviewMessages(revRes.data || []);
-            } catch { /* */ }
-          }
-        } catch { /* */ }
-      }, 3000);
-    }
+    if (!active) return;
+
+    const interval = wsConnected ? 8000 : 4000;
+
+    pollRef.current = setInterval(async () => {
+      try {
+        // All poll requests in parallel — no sequential waterfall
+        const [exRes, msgRes, discRes, revRes] = await Promise.allSettled([
+          api.getExecutionDirect(execId),
+          api.getMessages(execId),
+          api.getDiscussionMessages(execId),
+          api.getReviewMessages(execId),
+        ]);
+        if (exRes.status === 'fulfilled' && exRes.value.data)
+          setExecution(exRes.value.data);
+        if (msgRes.status === 'fulfilled')
+          setMessages(msgRes.value.data || []);
+        if (discRes.status === 'fulfilled')
+          setDiscussionMessages(discRes.value.data || []);
+        if (revRes.status === 'fulfilled')
+          setReviewMessages(revRes.value.data || []);
+      } catch { /* */ }
+    }, interval);
+
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [execution?.status, execId]);
+  }, [execution?.status, execId, wsConnected]);
 
   // WebSocket for live events
   useEffect(() => {
@@ -1112,20 +1121,43 @@ export default function ExecutionDetailPage() {
       ws.onmessage = (ev) => {
         try {
           const data = JSON.parse(ev.data);
+          // Skip noise events — same filter as the backend API
+          if (['agent_thinking', 'iteration_done', 'system'].includes(data.type)) return;
           const evt: LiveEvent = {
-            id: Math.random().toString(36).slice(2),
+            id: data.id || Math.random().toString(36).slice(2),
             type: data.type || 'event',
             agent_name: data.agent_name,
-            content: data.content || data.message || JSON.stringify(data),
+            content: data.message || data.content || JSON.stringify(data),
             timestamp: new Date(),
             isNew: true
           };
-          setLiveEvents((prev) => [...prev, evt].slice(-60));
+          setLiveEvents((prev) => {
+            // Deduplicate: if we already loaded this event from DB, skip it
+            if (prev.some(e => e.id === evt.id)) return prev;
+            return [...prev, evt].slice(-200);
+          });
         } catch { /* */ }
       };
       return () => { ws.close(); };
     } catch { /* */ }
   }, [execId]);
+
+  // Auto-clear intervene status after 3s — uses effect so cleanup fires on unmount
+  useEffect(() => {
+    if (interveneStatus === 'idle') return;
+    const t = setTimeout(() => setInterveneStatus('idle'), 3000);
+    return () => clearTimeout(t);
+  }, [interveneStatus]);
+
+  // Build ordered agent list: plan order first, then by first message appearance.
+  // Must be before any early returns to satisfy Rules of Hooks.
+  const orderedAgents = useMemo(() => {
+    if (!execution) return [];
+    const planAgentIds = (execution.plan || []).map(s => s.agent_id);
+    const msgAgentIds = messages.filter(m => m.role === 'assistant').map(m => m.agent_id);
+    const allAgentIds = Array.from(new Set([...planAgentIds, ...msgAgentIds]));
+    return allAgentIds.map(id => agentsMap[id]).filter(Boolean);
+  }, [execution, messages, agentsMap]);
 
   // Speech bubbles: latest assistant message snippet per agent
   const speechBubbles = useMemo(() => {
@@ -1239,7 +1271,6 @@ export default function ExecutionDetailPage() {
       await api.interveneExecution(execution.id, feedback.trim());
       setFeedback('');
       setInterveneStatus('ok');
-      setTimeout(() => setInterveneStatus('idle'), 3000);
     } catch (err: any) {
       const msg = err?.message || 'Intervention failed — execution may no longer be active';
       setInterveneStatus('err');
@@ -1262,12 +1293,41 @@ export default function ExecutionDetailPage() {
 
   if (loading) {
     return (
-      <div className='flex h-[80vh] flex-col items-center justify-center gap-4'>
-        <div className='relative'>
-          <div className='h-12 w-12 animate-spin rounded-full border-2 border-[#9A66FF]/20 border-t-[#9A66FF]' />
-          <IconBolt className='absolute inset-0 m-auto h-5 w-5 text-[#9A66FF]' />
+      <div className='flex h-[calc(100vh-64px)] flex-col'>
+        {/* Top bar skeleton */}
+        <div className='flex items-center justify-between border-b border-border/50 px-6 py-3'>
+          <div className='flex items-center gap-3'>
+            <div className='h-8 w-8 animate-pulse rounded-lg bg-muted/40' />
+            <div className='space-y-1.5'>
+              <div className='h-4 w-40 animate-pulse rounded bg-muted/50' />
+              <div className='h-3 w-64 animate-pulse rounded bg-muted/30' />
+            </div>
+          </div>
+          <div className='flex items-center gap-2'>
+            <div className='h-6 w-20 animate-pulse rounded-full bg-muted/40' />
+            <div className='h-6 w-24 animate-pulse rounded bg-muted/30' />
+          </div>
         </div>
-        <p className='animate-pulse text-sm text-muted-foreground'>Loading execution...</p>
+        {/* 3-column layout skeleton */}
+        <div className='flex min-h-0 flex-1 overflow-hidden'>
+          <div className='w-56 border-r border-border/50 p-2 space-y-2'>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className='h-16 animate-pulse rounded-xl bg-muted/30' />
+            ))}
+          </div>
+          <div className='flex-1 p-4 space-y-3'>
+            <div className='h-12 animate-pulse rounded-xl bg-muted/30' />
+            <div className='h-24 animate-pulse rounded-xl bg-[#56D090]/5 border border-[#56D090]/20' />
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className='h-20 animate-pulse rounded-xl bg-muted/20' style={{ opacity: 1 - i * 0.2 }} />
+            ))}
+          </div>
+          <div className='w-80 border-l border-border/50 p-4 space-y-3'>
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className='h-12 animate-pulse rounded-lg bg-muted/30' />
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
@@ -1325,13 +1385,6 @@ export default function ExecutionDetailPage() {
       setMetaSaving(false);
     }
   }
-
-  // Build ordered agent list: plan order first, then by first message appearance
-  // Only include agents that actually participated — never pull in agents from other workforces
-  const planAgentIds = (execution.plan || []).map(s => s.agent_id);
-  const msgAgentIds = messages.filter(m => m.role === 'assistant').map(m => m.agent_id);
-  const allAgentIds = Array.from(new Set([...planAgentIds, ...msgAgentIds]));
-  const orderedAgents = allAgentIds.map(id => agentsMap[id]).filter(Boolean);
 
   function scrollToAgent(id: string) {
     userScrolledUpRef.current = true;
