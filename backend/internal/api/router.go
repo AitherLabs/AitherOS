@@ -85,6 +85,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.HandleFunc("GET /api/v1/stats", executions.GlobalStats)
 
 	// Executions
+	mux.HandleFunc("GET /api/v1/executions", executions.ListAll)
 	mux.HandleFunc("POST /api/v1/workforces/{id}/executions", executions.Start)
 	mux.HandleFunc("GET /api/v1/workforces/{id}/executions", executions.List)
 	mux.HandleFunc("GET /api/v1/workforces/{id}/executions/{execID}", executions.Get)

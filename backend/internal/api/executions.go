@@ -119,6 +119,25 @@ func (h *ExecutionHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSONList(w, http.StatusOK, execs, total)
 }
 
+func (h *ExecutionHandler) ListAll(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	execs, total, err := h.store.ListAllExecutions(r.Context(), limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list executions: "+err.Error())
+		return
+	}
+
+	writeJSONList(w, http.StatusOK, execs, total)
+}
+
 func (h *ExecutionHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	execID, err := uuid.Parse(r.PathValue("execID"))
 	if err != nil {

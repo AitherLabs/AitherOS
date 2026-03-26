@@ -250,6 +250,10 @@ class ApiClient {
     return this.request<Execution[]>(`/api/v1/workforces/${workforceId}/executions`);
   }
 
+  async listAllExecutions() {
+    return this.request<ExecutionWithWorkforce[]>('/api/v1/executions');
+  }
+
   async getExecution(workforceId: string, execId: string) {
     return this.request<Execution>(`/api/v1/workforces/${workforceId}/executions/${execId}`);
   }
@@ -640,6 +644,10 @@ export interface Execution {
   created_at: string;
   updated_at: string;
   pending_approval?: Approval;
+}
+
+export interface ExecutionWithWorkforce extends Execution {
+  workforce_name: string;
 }
 
 export interface ToolCallRecord {
