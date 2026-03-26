@@ -9,6 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Textarea } from '@/components/ui/textarea';
 import {
   IconArrowLeft,
+  IconArrowsMaximize,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
@@ -23,6 +24,12 @@ import {
   IconTool,
   IconX
 } from '@tabler/icons-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog';
 import api, { Agent, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { AvatarUpload } from '@/components/avatar-upload';
@@ -838,6 +845,60 @@ interface AgentThreadProps {
   onToggle: () => void;
 }
 
+// ── Smart message content renderer ───────────────────────────────────────────
+// Detects JSON plan blobs and renders them as a readable plan list instead of
+// dumping raw JSON at the user.
+function MessageContent({ content, dim = false }: { content: string; dim?: boolean }) {
+  const planSteps = useMemo(() => {
+    const start = content.indexOf('{');
+    const end = content.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      const parsed = JSON.parse(content.slice(start, end + 1));
+      if (Array.isArray(parsed?.plan) && parsed.plan.length > 0) return parsed.plan as any[];
+    } catch { /* not valid JSON */ }
+    return null;
+  }, [content]);
+
+  if (planSteps) {
+    const prefix = content.slice(0, content.indexOf('{')).trim();
+    return (
+      <div className='space-y-2'>
+        {prefix && (
+          <p className={`text-sm leading-relaxed ${dim ? 'text-[#EAEAEA]/60' : 'text-[#EAEAEA]/88'}`}>{prefix}</p>
+        )}
+        <div className='rounded-lg border border-[#9A66FF]/25 bg-[#9A66FF]/5 p-3 space-y-2.5'>
+          <p className='font-mono text-[9px] font-bold uppercase tracking-wider text-[#9A66FF]/60'>
+            Execution Plan · {planSteps.length} subtasks
+          </p>
+          {planSteps.map((step: any, i: number) => (
+            <div key={step.id ?? i} className='flex gap-2.5'>
+              <span className='mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#9A66FF]/20 font-mono text-[9px] font-bold text-[#9A66FF]'>
+                {step.id ?? i + 1}
+              </span>
+              <div className='min-w-0 flex-1'>
+                <div className='flex flex-wrap items-center gap-1.5 mb-0.5'>
+                  <span className='font-mono text-[9px] font-semibold text-[#14FFF7]/80'>{step.agent_name}</span>
+                  {Array.isArray(step.depends_on) && step.depends_on.length > 0 && (
+                    <span className='font-mono text-[9px] text-muted-foreground/40'>after {step.depends_on.join(', ')}</span>
+                  )}
+                </div>
+                <p className={`text-xs leading-relaxed ${dim ? 'text-[#EAEAEA]/55' : 'text-[#EAEAEA]/75'}`}>{step.subtask}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${dim ? 'text-[#EAEAEA]/60' : 'text-[#EAEAEA]/88'}`}>
+      {content}
+    </div>
+  );
+}
+
 const AgentThread = React.forwardRef<HTMLDivElement, AgentThreadProps>(
 function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle }, ref) {
   const [showOlderMsgs, setShowOlderMsgs] = useState(false);
@@ -921,9 +982,7 @@ function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle 
                     {msg.latency_ms > 0 && <><span>·</span><span>{msg.latency_ms < 1000 ? `${msg.latency_ms}ms` : `${(msg.latency_ms / 1000).toFixed(1)}s`}</span></>}
                     <span className='ml-auto'>{timeAgo(msg.created_at)}</span>
                   </div>
-                  <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/60'>
-                    {msg.content}
-                  </div>
+                  <MessageContent content={msg.content} dim />
                   {(msg.tool_calls?.length ?? 0) > 0 && <ToolCallBlock calls={msg.tool_calls!} />}
                 </div>
               ))}
@@ -944,9 +1003,7 @@ function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle 
                     {lastMsg.latency_ms > 0 && <><span>·</span><span>{lastMsg.latency_ms < 1000 ? `${lastMsg.latency_ms}ms` : `${(lastMsg.latency_ms / 1000).toFixed(1)}s`}</span></>}
                     {olderMsgs.length === 0 && <span className='ml-auto'>{timeAgo(lastMsg.created_at)}</span>}
                   </div>
-                  <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/88'>
-                    {lastMsg.content}
-                  </div>
+                  <MessageContent content={lastMsg.content} />
                   {(lastMsg.tool_calls?.length ?? 0) > 0 && <ToolCallBlock calls={lastMsg.tool_calls!} />}
                 </div>
               )}
@@ -982,6 +1039,7 @@ export default function ExecutionDetailPage() {
   const [feedback, setFeedback] = useState('');
   const [sending, setSending] = useState(false);
   const [strategyOpen, setStrategyOpen] = useState(false);
+  const [strategyDialogOpen, setStrategyDialogOpen] = useState(false);
   const [intervening, setIntervening] = useState(false);
   const [interveneStatus, setInterveneStatus] = useState<'idle' | 'ok' | 'err'>('idle');
   const [interveneErrMsg, setInterveneErrMsg] = useState('');
@@ -1853,18 +1911,28 @@ export default function ExecutionDetailPage() {
                   </div>
                 </div>
                 {execution.strategy && (
-                  <button
-                    type='button'
-                    onClick={() => setStrategyOpen(v => !v)}
-                    className='w-full flex items-center justify-between rounded-lg border border-[#FFBF47]/30 bg-[#FFBF47]/5 px-3 py-2 text-[11px] font-medium text-[#FFBF47] hover:bg-[#FFBF47]/10 transition-colors'
-                  >
-                    <span>{strategyOpen ? 'Hide strategy' : 'View strategy'}</span>
-                    {strategyOpen ? <IconChevronDown className='h-3 w-3' /> : <IconChevronRight className='h-3 w-3' />}
-                  </button>
+                  <div className='flex items-center gap-1.5'>
+                    <button
+                      type='button'
+                      onClick={() => setStrategyOpen(v => !v)}
+                      className='flex-1 flex items-center justify-between rounded-lg border border-[#FFBF47]/30 bg-[#FFBF47]/5 px-3 py-2 text-[11px] font-medium text-[#FFBF47] hover:bg-[#FFBF47]/10 transition-colors'
+                    >
+                      <span>{strategyOpen ? 'Hide strategy' : 'View strategy'}</span>
+                      {strategyOpen ? <IconChevronDown className='h-3 w-3' /> : <IconChevronRight className='h-3 w-3' />}
+                    </button>
+                    <button
+                      type='button'
+                      onClick={() => setStrategyDialogOpen(true)}
+                      title='Expand plan'
+                      className='flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[#FFBF47]/30 bg-[#FFBF47]/5 text-[#FFBF47] hover:bg-[#FFBF47]/10 transition-colors'
+                    >
+                      <IconArrowsMaximize className='h-3.5 w-3.5' />
+                    </button>
+                  </div>
                 )}
               </div>
               {strategyOpen && (
-                <div className='max-h-64 overflow-y-auto border-t border-[#FFBF47]/20'>
+                <div className='max-h-[45vh] overflow-y-auto border-t border-[#FFBF47]/20'>
                   <PlanningRoomPanel agents={orderedAgents} messages={messages} isPlanning={false} />
                 </div>
               )}
@@ -2018,5 +2086,54 @@ export default function ExecutionDetailPage() {
 
       </div>
     </div>
+
+    {/* ── Strategy / Plan full-screen dialog ── */}
+    <Dialog open={strategyDialogOpen} onOpenChange={setStrategyDialogOpen}>
+      <DialogContent className='max-w-2xl max-h-[85vh] flex flex-col'>
+        <DialogHeader className='shrink-0'>
+          <DialogTitle className='text-[#FFBF47]'>Proposed Execution Plan</DialogTitle>
+        </DialogHeader>
+        <div className='overflow-y-auto flex-1 min-h-0 space-y-4 pr-1'>
+          {execution?.strategy && (() => {
+            try {
+              const parsed = JSON.parse(execution.strategy);
+              if (Array.isArray(parsed?.plan)) {
+                return (
+                  <div className='space-y-3'>
+                    {parsed.plan.map((step: any, i: number) => (
+                      <div key={step.id ?? i} className='flex gap-3 rounded-lg border border-border/40 bg-muted/10 p-3'>
+                        <span className='mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#9A66FF]/20 font-mono text-[10px] font-bold text-[#9A66FF]'>
+                          {step.id ?? i + 1}
+                        </span>
+                        <div className='min-w-0 flex-1 space-y-1'>
+                          <div className='flex flex-wrap items-center gap-2'>
+                            <span className='font-mono text-xs font-semibold text-[#14FFF7]'>{step.agent_name}</span>
+                            {Array.isArray(step.depends_on) && step.depends_on.length > 0 && (
+                              <span className='rounded-full border border-border/40 bg-muted/30 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground/60'>
+                                after {step.depends_on.join(', ')}
+                              </span>
+                            )}
+                          </div>
+                          <p className='text-sm leading-relaxed text-[#EAEAEA]/80'>{step.subtask}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              }
+            } catch { /* fall through */ }
+            return (
+              <pre className='whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-muted/10 p-4 font-mono text-xs text-[#EAEAEA]/75'>
+                {execution.strategy}
+              </pre>
+            );
+          })()}
+          <div className='border-t border-border/30 pt-3'>
+            <p className='mb-2 font-mono text-[9px] font-bold uppercase tracking-wider text-muted-foreground/40'>Planning Discussion</p>
+            <PlanningRoomPanel agents={orderedAgents} messages={messages} isPlanning={false} />
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
