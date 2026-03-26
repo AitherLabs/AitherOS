@@ -105,8 +105,8 @@ export default function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton size='lg' asChild>
               <Link href='/dashboard/overview'>
-                <div className='flex aspect-square size-8 items-center justify-center rounded-lg bg-[#9A66FF] text-white'>
-                  <span className='font-mono text-sm font-bold'>A</span>
+                <div className='flex aspect-square size-8 items-center justify-center rounded-lg overflow-hidden'>
+                  <img src='/assets/favicon.png' alt='AitherOS' className='size-8 object-contain' />
                 </div>
                 <div className='grid flex-1 text-left text-sm leading-tight'>
                   <span className='truncate font-mono font-semibold text-[#9A66FF]'>
