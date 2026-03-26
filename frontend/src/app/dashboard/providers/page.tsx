@@ -211,6 +211,25 @@ export default function ProvidersPage() {
     }
   }
 
+  async function handleSyncAll() {
+    if (!addModelProvider || liveModelsList.length === 0) return;
+    setSaving(true);
+    const registered = new Set(addModelProvider.models?.map((m) => m.model_name) ?? []);
+    const toAdd = liveModelsList.filter((m) => !registered.has(m));
+    try {
+      await Promise.all(
+        toAdd.map((name) =>
+          api.addProviderModel(addModelProvider.id, { model_name: name, model_type: 'llm' })
+        )
+      );
+      await loadProviders();
+    } catch (err) {
+      console.error('Sync all failed:', err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleRemoveModel(providerId: string, modelId: string) {
     try {
       await api.removeProviderModel(providerId, modelId);
@@ -580,16 +599,29 @@ export default function ProvidersPage() {
             <div className='space-y-2'>
               <div className='flex items-center justify-between'>
                 <Label className='text-xs text-muted-foreground'>Available from endpoint</Label>
-                <Button
-                  variant='ghost'
-                  size='sm'
-                  className='h-6 px-2 text-xs text-[#14FFF7]'
-                  disabled={fetchingLive}
-                  onClick={() => addModelProvider && fetchLiveModels(addModelProvider)}
-                >
-                  <IconRefresh className={`mr-1 h-3 w-3 ${fetchingLive ? 'animate-spin' : ''}`} />
-                  {fetchingLive ? 'Fetching...' : 'Fetch'}
-                </Button>
+                <div className='flex items-center gap-1'>
+                  {liveModelsList.length > 0 && (
+                    <Button
+                      variant='ghost'
+                      size='sm'
+                      className='h-6 px-2 text-xs text-[#56D090]'
+                      disabled={saving}
+                      onClick={handleSyncAll}
+                    >
+                      {saving ? 'Syncing...' : `Sync All (${liveModelsList.filter((m) => !addModelProvider?.models?.some((pm) => pm.model_name === m)).length} new)`}
+                    </Button>
+                  )}
+                  <Button
+                    variant='ghost'
+                    size='sm'
+                    className='h-6 px-2 text-xs text-[#14FFF7]'
+                    disabled={fetchingLive}
+                    onClick={() => addModelProvider && fetchLiveModels(addModelProvider)}
+                  >
+                    <IconRefresh className={`mr-1 h-3 w-3 ${fetchingLive ? 'animate-spin' : ''}`} />
+                    {fetchingLive ? 'Fetching...' : 'Fetch'}
+                  </Button>
+                </div>
               </div>
               {liveModelsList.length > 0 && (
                 <div className='flex flex-wrap gap-1.5 rounded-md border border-border/40 bg-muted/20 p-2'>
