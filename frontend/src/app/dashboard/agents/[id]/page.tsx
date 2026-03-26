@@ -541,7 +541,16 @@ export default function AgentDetailPage() {
               <p className='font-mono text-[9px] font-bold uppercase tracking-widest text-muted-foreground/50'>ENGINE</p>
               <div className='space-y-1.5'>
                 <Label className='text-[10px]'>Provider</Label>
-                <Select value={providerId || '_none'} onValueChange={(v) => { setProviderId(v === '_none' ? '' : v); markChanged(); }}>
+                <Select value={providerId || '_none'} onValueChange={(v) => {
+                  const newId = v === '_none' ? '' : v;
+                  setProviderId(newId);
+                  markChanged();
+                  const pv = providers.find((p) => p.id === newId);
+                  const llmModels = pv?.models?.filter((m) => m.model_type === 'llm') ?? [];
+                  if (llmModels.length > 0 && !llmModels.some((m) => m.model_name === model)) {
+                    setModel(llmModels[0].model_name);
+                  }
+                }}>
                   <SelectTrigger className='h-7 text-xs'><SelectValue placeholder='Auto-detect' /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value='_none'>Auto-detect</SelectItem>
