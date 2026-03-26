@@ -197,29 +197,8 @@ export default function AgentDetailPage() {
 
       // Load MCP tools from workforces this agent belongs to
       try {
-        const wfRes = await api.listWorkforces();
-        const agentWorkforces = (wfRes.data || []).filter((wf) =>
-          (wf.agent_ids || []).includes(agentId)
-        );
-        const mcpEntries: { server: MCPServer; tools: MCPToolDefinition[] }[] = [];
-        const seenServers = new Set<string>();
-        for (const wf of agentWorkforces) {
-          try {
-            const srvRes = await api.listWorkforceMCPServers(wf.id);
-            for (const srv of srvRes.data || []) {
-              if (seenServers.has(srv.id)) continue;
-              try {
-                const perms = await api.getAgentTools(agentId, srv.id);
-                if ((perms.data || []).length > 0) {
-                  const toolsRes = await api.listMCPServerTools(srv.id);
-                  seenServers.add(srv.id);
-                  mcpEntries.push({ server: srv, tools: toolsRes.data || [] });
-                }
-              } catch { /* no permissions */ }
-            }
-          } catch { /* */ }
-        }
-        setMcpTools(mcpEntries);
+        const mcpRes = await api.listAgentMCPServers(agentId);
+        setMcpTools(mcpRes.data || []);
       } catch { /* MCP load optional */ }
     } catch (err) {
       console.error('Failed to load agent:', err);

@@ -314,3 +314,20 @@ func (h *MCPHandler) GetAgentTools(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, tools)
 }
+
+func (h *MCPHandler) ListAgentServersWithTools(w http.ResponseWriter, r *http.Request) {
+	agentID, err := uuid.Parse(r.PathValue("agentID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid agent id")
+		return
+	}
+	data, err := h.store.ListAgentMCPServersWithTools(r.Context(), agentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if data == nil {
+		data = []store.AgentMCPServerWithTools{}
+	}
+	writeJSON(w, http.StatusOK, data)
+}

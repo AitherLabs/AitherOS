@@ -427,3 +427,72 @@ func (s *Store) ListAgentAllowedTools(ctx context.Context, workforceID, agentID 
 
 	return allowed, nil
 }
+
+type AgentMCPServerWithTools struct {
+	Server models.MCPServer            `json:"server"`
+	Tools  []models.MCPToolDefinition   `json:"tools"`
+}
+
+// ListAgentMCPServersWithTools returns all MCP servers and tools that an agent
+// has permissions for across all workforces they belong to.
+func (s *Store) ListAgentMCPServersWithTools(ctx context.Context, agentID uuid.UUID) ([]AgentMCPServerWithTools, error) {
+	// Get all workforces the agent belongs to
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT w.id
+		FROM workforces w
+		JOIN workforce_agents wa ON wa.workforce_id = w.id
+		WHERE wa.agent_id = $1`, agentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list agent workforces: %w", err)
+	}
+	defer rows.Close()
+
+	var workforceIDs []uuid.UUID
+	for rows.Next() {
+		var wfID uuid.UUID
+		if err := rows.Scan(&wfID); err != nil {
+			return nil, fmt.Errorf("scan workforce id: %w", err)
+		}
+		workforceIDs = append(workforceIDs, wfID)
+	}
+
+	if len(workforceIDs) == 0 {
+		return []AgentMCPServerWithTools{}, nil
+	}
+
+	// Get all unique MCP servers across these workforces
+	seenServers := make(map[uuid.UUID]*models.MCPServer)
+	for _, wfID := range workforceIDs {
+		servers, err := s.ListWorkforceMCPServers(ctx, wfID)
+		if err != nil {
+			continue
+		}
+		for _, srv := range servers {
+			if _, exists := seenServers[srv.ID]; !exists {
+				seenServers[srv.ID] = srv
+			}
+		}
+	}
+
+	// For each server, get agent permissions and tools
+	var result []AgentMCPServerWithTools
+	for serverID, server := range seenServers {
+		permissions, err := s.GetAgentMCPPermissions(ctx, agentID, serverID)
+		if err != nil || len(permissions) == 0 {
+			continue
+		}
+
+		allTools, err := s.ListMCPServerTools(ctx, serverID)
+		if err != nil {
+			continue
+		}
+
+		result = append(result, AgentMCPServerWithTools{
+			Server: *server,
+			Tools:  allTools,
+		})
+	}
+
+	return result, nil
+}
