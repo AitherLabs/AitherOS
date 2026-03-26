@@ -14,6 +14,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconHandStop,
+  IconKey,
   IconLoader2,
   IconMessageQuestion,
   IconPencil,
@@ -1042,6 +1043,13 @@ export default function ExecutionDetailPage() {
   const [strategyDialogOpen, setStrategyDialogOpen] = useState(false);
   const [intervening, setIntervening] = useState(false);
   const [interveneStatus, setInterveneStatus] = useState<'idle' | 'ok' | 'err'>('idle');
+
+  // Credential quick-inject panel (shown when agent reports needs_help)
+  const [credPanelOpen, setCredPanelOpen] = useState(false);
+  const [credService, setCredService] = useState('');
+  const [credKey, setCredKey] = useState('');
+  const [credValue, setCredValue] = useState('');
+  const [credSaving, setCredSaving] = useState(false);
   const [interveneErrMsg, setInterveneErrMsg] = useState('');
 
   // Q&A
@@ -1410,6 +1418,57 @@ export default function ExecutionDetailPage() {
 
   const isRunning = execution.status === 'running' || execution.status === 'planning';
   const hasNeedsHelp = execution.plan?.some(s => s.status === 'needs_help');
+
+  // Scan recent messages to auto-detect what credential the blocked agent needs
+  const detectedCred = useMemo(() => {
+    if (!hasNeedsHelp) return null;
+    const recent = messages.slice(-12);
+    for (let i = recent.length - 1; i >= 0; i--) {
+      const content = recent[i].content;
+      // Match explicit env var patterns first: FOO_TOKEN, FOO_KEY, FOO_SECRET, FOO_API_KEY, etc.
+      const envMatch = content.match(/\b([A-Z][A-Z0-9]{1,}_(?:TOKEN|KEY|SECRET|API_KEY|ACCESS_TOKEN|PAT|PASSWORD))\b/);
+      if (envMatch) {
+        const key = envMatch[1];
+        const service = key.toLowerCase().split('_')[0];
+        return { service, key };
+      }
+      // Fallback: known service name mentions
+      if (/github/i.test(content))     return { service: 'github',    key: 'GITHUB_TOKEN' };
+      if (/openai/i.test(content))     return { service: 'openai',    key: 'OPENAI_API_KEY' };
+      if (/anthropic/i.test(content))  return { service: 'anthropic', key: 'ANTHROPIC_API_KEY' };
+      if (/stripe/i.test(content))     return { service: 'stripe',    key: 'STRIPE_SECRET_KEY' };
+      if (/aws/i.test(content))        return { service: 'aws',       key: 'AWS_ACCESS_KEY_ID' };
+      if (/docker/i.test(content))     return { service: 'docker',    key: 'DOCKER_TOKEN' };
+    }
+    return null;
+  }, [hasNeedsHelp, messages]);
+
+  async function handleInjectCredential() {
+    if (!execution || !credKey.trim() || !credValue.trim()) return;
+    setCredSaving(true);
+    setInterveneStatus('idle');
+    try {
+      if (workforce?.id && credService.trim()) {
+        await api.upsertCredential(workforce.id, {
+          service: credService.trim().toLowerCase(),
+          key_name: credKey.trim(),
+          value: credValue.trim()
+        });
+      }
+      const msg = workforce?.id
+        ? `Credential stored: ${credKey.trim()} is now available via list_secrets (service: ${credService.trim() || credKey.trim()}). Please retry the blocked operation.`
+        : `Here is the credential you need — ${credKey.trim()}: ${credValue.trim()}. Please retry the blocked operation.`;
+      await api.interveneExecution(execution.id, msg);
+      setCredPanelOpen(false);
+      setCredValue('');
+      setInterveneStatus('ok');
+    } catch (err: any) {
+      setInterveneStatus('err');
+      setInterveneErrMsg(err?.message || 'Failed to store credential');
+    } finally {
+      setCredSaving(false);
+    }
+  }
 
   async function handleAskQA() {
     if (!qaQuestion.trim() || qaLoading) return;
@@ -1939,11 +1998,79 @@ export default function ExecutionDetailPage() {
             </div>
           )}
 
-          {/* Running — needs help banner (outside awaiting_approval) */}
+          {/* Running — needs help: expandable credential injector */}
           {hasNeedsHelp && isRunning && execution.status !== 'awaiting_approval' && (
-            <div className='shrink-0 border-b border-border/50 flex items-center gap-2 px-4 py-2.5'>
-              <span className='animate-pulse text-sm'>🙋</span>
-              <span className='text-xs text-[#FFBF47]'>An agent needs your input to continue.</span>
+            <div className='shrink-0 border-b border-border/50'>
+              <button
+                type='button'
+                className='w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#FFBF47]/5 transition-colors'
+                onClick={() => {
+                  const next = !credPanelOpen;
+                  setCredPanelOpen(next);
+                  if (next && detectedCred) {
+                    setCredService(detectedCred.service);
+                    setCredKey(detectedCred.key);
+                  }
+                }}
+              >
+                <div className='flex items-center gap-2'>
+                  <span className='animate-pulse text-sm'>🙋</span>
+                  <span className='text-xs text-[#FFBF47]'>
+                    {detectedCred ? `Agent needs ${detectedCred.key}` : 'Agent needs credentials to continue'}
+                  </span>
+                </div>
+                <span className='font-mono text-[9px] text-[#FFBF47]/70'>
+                  {credPanelOpen ? 'hide ↑' : 'add ↓'}
+                </span>
+              </button>
+              {credPanelOpen && (
+                <div className='border-t border-[#FFBF47]/20 bg-[#FFBF47]/[0.03] px-4 py-3 space-y-2.5'>
+                  <div className='grid grid-cols-2 gap-2'>
+                    <div className='space-y-1'>
+                      <p className='font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50'>Service</p>
+                      <Input
+                        value={credService}
+                        onChange={(e) => setCredService(e.target.value)}
+                        placeholder='github'
+                        className='h-7 font-mono text-xs'
+                      />
+                    </div>
+                    <div className='space-y-1'>
+                      <p className='font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50'>Key Name</p>
+                      <Input
+                        value={credKey}
+                        onChange={(e) => setCredKey(e.target.value)}
+                        placeholder='GITHUB_TOKEN'
+                        className='h-7 font-mono text-xs uppercase'
+                      />
+                    </div>
+                  </div>
+                  <div className='space-y-1'>
+                    <p className='font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50'>Value</p>
+                    <Input
+                      type='password'
+                      value={credValue}
+                      onChange={(e) => setCredValue(e.target.value)}
+                      placeholder='ghp_••••••••'
+                      className='h-7 font-mono text-xs'
+                    />
+                  </div>
+                  <Button
+                    size='sm'
+                    className='w-full bg-[#FFBF47] text-[#0A0D11] hover:bg-[#FFBF47]/90'
+                    disabled={credSaving || !credKey.trim() || !credValue.trim()}
+                    onClick={handleInjectCredential}
+                  >
+                    {credSaving
+                      ? <IconLoader2 className='mr-1.5 h-3.5 w-3.5 animate-spin' />
+                      : <IconKey className='mr-1.5 h-3.5 w-3.5' />}
+                    {workforce?.id ? 'Store & Resume' : 'Inject & Resume'}
+                  </Button>
+                  {!workforce?.id && (
+                    <p className='text-[10px] text-muted-foreground/40'>No workforce linked — value will be injected as message only, not persisted.</p>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
