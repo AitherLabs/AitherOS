@@ -181,9 +181,10 @@ export default function WorkforcesPage() {
   const loadData = useCallback(async () => {
     try {
       if (session?.accessToken) api.setToken(session.accessToken);
-      const [wfRes, agRes] = await Promise.all([
+      const [wfRes, agRes, statsRes] = await Promise.all([
         api.listWorkforces(),
-        api.listAgents()
+        api.listAgents(),
+        api.getGlobalStats()
       ]);
       const wfList = wfRes.data || [];
       setWorkforces(wfList);
@@ -192,20 +193,12 @@ export default function WorkforcesPage() {
       for (const a of agRes.data || []) map[a.id] = a;
       setAgentsMap(map);
 
-      // Fetch cumulative execution stats across all workforces
-      const execResults = await Promise.allSettled(wfList.map((wf) => api.listExecutions(wf.id)));
-      let totalTokens = 0, totalMissions = 0, completed = 0, failed = 0;
-      for (const r of execResults) {
-        if (r.status === 'fulfilled') {
-          for (const e of r.value.data || []) {
-            totalMissions++;
-            totalTokens += e.tokens_used || 0;
-            if (e.status === 'completed') completed++;
-            if (e.status === 'failed') failed++;
-          }
-        }
-      }
-      setCumStats({ totalTokens, totalMissions, completed, failed });
+      setCumStats({
+        totalTokens: statsRes.data.total_tokens,
+        totalMissions: statsRes.data.total_missions,
+        completed: statsRes.data.completed,
+        failed: statsRes.data.failed
+      });
     } catch (err) {
       console.error('Failed to load:', err);
     } finally {

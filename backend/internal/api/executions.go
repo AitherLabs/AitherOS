@@ -394,3 +394,12 @@ func (h *ExecutionHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": execID.String()})
 }
+
+func (h *ExecutionHandler) GlobalStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.store.GetGlobalStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to fetch stats: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}

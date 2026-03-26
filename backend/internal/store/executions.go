@@ -256,6 +256,28 @@ func (s *Store) UpdateExecutionMeta(ctx context.Context, id uuid.UUID, req model
 	return nil
 }
 
+type GlobalStats struct {
+	TotalMissions int   `json:"total_missions"`
+	Completed     int   `json:"completed"`
+	Failed        int   `json:"failed"`
+	TotalTokens   int64 `json:"total_tokens"`
+}
+
+func (s *Store) GetGlobalStats(ctx context.Context) (*GlobalStats, error) {
+	st := &GlobalStats{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*)                                        AS total_missions,
+			COUNT(*) FILTER (WHERE status = 'completed')   AS completed,
+			COUNT(*) FILTER (WHERE status = 'failed')      AS failed,
+			COALESCE(SUM(tokens_used), 0)                  AS total_tokens
+		FROM executions`).Scan(&st.TotalMissions, &st.Completed, &st.Failed, &st.TotalTokens)
+	if err != nil {
+		return nil, fmt.Errorf("get global stats: %w", err)
+	}
+	return st, nil
+}
+
 func (s *Store) DeleteExecution(ctx context.Context, id uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM executions WHERE id = $1`, id)
 	if err != nil {

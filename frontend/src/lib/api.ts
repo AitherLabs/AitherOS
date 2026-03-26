@@ -242,6 +242,10 @@ class ApiClient {
     });
   }
 
+  async getGlobalStats() {
+    return this.request<{ total_missions: number; completed: number; failed: number; total_tokens: number }>('/api/v1/stats');
+  }
+
   async listExecutions(workforceId: string) {
     return this.request<Execution[]>(`/api/v1/workforces/${workforceId}/executions`);
   }
