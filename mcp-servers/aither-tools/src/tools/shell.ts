@@ -3,7 +3,7 @@ import fs                     from 'node:fs/promises';
 import path                   from 'node:path';
 import os                     from 'node:os';
 import { promisify }          from 'node:util';
-import { WORKSPACE, MAX_TIMEOUT_S } from '../config.js';
+import { WORKSPACE, MAX_TIMEOUT_S, safeResolve } from '../config.js';
 
 const execAsync     = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -117,7 +117,8 @@ const LANG_BIN: Record<string, string> = {
 export const handlers: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
 
   async run_command(args) {
-    const cwd      = (args.cwd as string) || WORKSPACE;
+    const rawCwd   = (args.cwd as string) || WORKSPACE;
+    const cwd      = safeResolve(rawCwd);
     const timeout  = Math.min((args.timeout_s as number) || 60, MAX_TIMEOUT_S);
     const env      = (args.env as Record<string, string>) || {};
     return runInShell(args.command as string, cwd, timeout, env);
@@ -162,7 +163,8 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
 
   async run_background(args) {
     const { spawn } = await import('node:child_process');
-    const cwd      = (args.cwd as string) || WORKSPACE;
+    const rawCwd   = (args.cwd as string) || WORKSPACE;
+    const cwd      = safeResolve(rawCwd);
     const logName  = (args.log_file as string) || `bg_${Date.now()}.log`;
     const logPath  = path.join(WORKSPACE, logName);
 

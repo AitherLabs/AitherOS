@@ -18,6 +18,19 @@ import (
 	"github.com/google/uuid"
 )
 
+// internalAPIURL returns the URL aither-tools should use to call back into the
+// AitherOS API. Reads SERVER_PORT from the environment (same as the backend).
+func internalAPIURL() string {
+	if u := os.Getenv("AITHER_API_URL"); u != "" {
+		return u
+	}
+	port := os.Getenv("SERVER_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	return "http://127.0.0.1:" + port
+}
+
 const (
 	WorkforcesRoot    = "/opt/AitherOS/workforces"
 	aitherToolsCmd    = "node"
@@ -95,6 +108,8 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 			EnvVars: map[string]string{
 				"AITHER_WORKSPACE":      workspacePath,
 				"AITHER_WORKFORCE_NAME": wf.Name,
+				"AITHER_WORKFORCE_ID":   wf.ID.String(),
+				"AITHER_API_URL":        internalAPIURL(),
 			},
 		})
 		if err != nil {
