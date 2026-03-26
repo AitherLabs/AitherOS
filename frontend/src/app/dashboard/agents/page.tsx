@@ -525,7 +525,13 @@ export default function AgentsPage() {
                     <Label>Provider</Label>
                     <Select
                       value={formProviderId || '_none'}
-                      onValueChange={(v) => setFormProviderId(v === '_none' ? '' : v)}
+                      onValueChange={(v) => {
+                        const newId = v === '_none' ? '' : v;
+                        setFormProviderId(newId);
+                        const pv = providers.find((p) => p.id === newId);
+                        const first = pv?.models?.find((m) => m.model_type === 'llm');
+                        if (first) setFormModel(first.model_name);
+                      }}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder='Select a provider...' />
