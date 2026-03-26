@@ -104,6 +104,53 @@ func (s *Store) GetAgent(ctx context.Context, id uuid.UUID) (*models.Agent, erro
 	return agent, nil
 }
 
+// GetAgentsBatch fetches multiple agents in a single query, preserving the order of ids.
+func (s *Store) GetAgentsBatch(ctx context.Context, ids []uuid.UUID) ([]*models.Agent, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, description, system_prompt, instructions, engine_type, engine_config, tools, model,
+			provider_id, variables, strategy, max_iterations, icon, color, avatar_url, status, created_at, updated_at
+		FROM agents WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("get agents batch: %w", err)
+	}
+	defer rows.Close()
+
+	byID := make(map[uuid.UUID]*models.Agent, len(ids))
+	for rows.Next() {
+		agent := &models.Agent{}
+		var varsJSON []byte
+		if err := rows.Scan(
+			&agent.ID, &agent.Name, &agent.Description, &agent.SystemPrompt, &agent.Instructions,
+			&agent.EngineType, &agent.EngineConfig, &agent.Tools, &agent.Model,
+			&agent.ProviderID, &varsJSON, &agent.Strategy, &agent.MaxIterations, &agent.Icon, &agent.Color, &agent.AvatarURL,
+			&agent.Status, &agent.CreatedAt, &agent.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan agent: %w", err)
+		}
+		if err := json.Unmarshal(varsJSON, &agent.Variables); err != nil {
+			log.Printf("store: unmarshal agent variables for %s: %v", agent.ID, err)
+		}
+		if agent.Variables == nil {
+			agent.Variables = []models.AgentVariable{}
+		}
+		byID[agent.ID] = agent
+	}
+
+	// Return in the same order as ids, error on missing
+	result := make([]*models.Agent, 0, len(ids))
+	for _, id := range ids {
+		a, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("agent not found: %s", id)
+		}
+		result = append(result, a)
+	}
+	return result, nil
+}
+
 func (s *Store) ListAgents(ctx context.Context, limit, offset int) ([]*models.Agent, int, error) {
 	var total int
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM agents WHERE status != 'archived'`).Scan(&total)

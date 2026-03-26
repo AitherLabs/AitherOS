@@ -1192,15 +1192,7 @@ func (o *Orchestrator) HaltExecution(executionID uuid.UUID) error {
 }
 
 func (o *Orchestrator) loadWorkForceAgents(ctx context.Context, wf *models.WorkForce) ([]*models.Agent, error) {
-	var agents []*models.Agent
-	for _, aid := range wf.AgentIDs {
-		agent, err := o.store.GetAgent(ctx, aid)
-		if err != nil {
-			return nil, fmt.Errorf("get agent %s: %w", aid, err)
-		}
-		agents = append(agents, agent)
-	}
-	return agents, nil
+	return o.store.GetAgentsBatch(ctx, wf.AgentIDs)
 }
 
 func (o *Orchestrator) failExecution(ctx context.Context, execID, wfID uuid.UUID, errMsg string) {
