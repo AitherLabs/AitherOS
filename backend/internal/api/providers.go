@@ -1,7 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/aitheros/backend/internal/engine"
 	"github.com/aitheros/backend/internal/models"
@@ -172,4 +175,60 @@ func (h *ProviderHandler) RemoveModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "model removed"})
+}
+
+// ProbeModels calls the provider's /v1/models endpoint and returns live model IDs.
+func (h *ProviderHandler) ProbeModels(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid provider id")
+		return
+	}
+
+	provider, err := h.store.GetProvider(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	base := strings.TrimRight(provider.BaseURL, "/")
+	var modelsURL string
+	if strings.HasSuffix(base, "/v1") {
+		modelsURL = base + "/models"
+	} else {
+		modelsURL = base + "/v1/models"
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, modelsURL, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build request: "+err.Error())
+		return
+	}
+	if provider.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to reach provider: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		writeError(w, http.StatusBadGateway, "failed to parse response: "+err.Error())
+		return
+	}
+
+	ids := make([]string, 0, len(result.Data))
+	for _, m := range result.Data {
+		ids = append(ids, m.ID)
+	}
+	writeJSON(w, http.StatusOK, ids)
 }

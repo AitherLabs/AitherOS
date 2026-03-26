@@ -71,6 +71,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.HandleFunc("DELETE /api/v1/providers/{id}", providers.Delete)
 	mux.HandleFunc("POST /api/v1/providers/{id}/models", providers.AddModel)
 	mux.HandleFunc("DELETE /api/v1/providers/{id}/models/{modelID}", providers.RemoveModel)
+	mux.HandleFunc("GET /api/v1/providers/{id}/live-models", providers.ProbeModels)
 
 	// WorkForces CRUD
 	mux.HandleFunc("POST /api/v1/workforces", workforces.Create)

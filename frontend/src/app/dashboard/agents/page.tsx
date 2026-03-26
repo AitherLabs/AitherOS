@@ -521,25 +521,6 @@ export default function AgentsPage() {
                       Set up the model, provider, and system prompt. You can fine-tune everything on the detail page.
                     </p>
                   </div>
-                  <div className='grid grid-cols-2 gap-4'>
-                    <div className='space-y-2'>
-                      <Label>Model</Label>
-                      <Input
-                        value={formModel}
-                        onChange={(e) => setFormModel(e.target.value)}
-                        placeholder='gpt-4o'
-                        className='font-mono text-sm'
-                      />
-                    </div>
-                    <div className='space-y-2'>
-                      <Label>Max Iterations</Label>
-                      <Input
-                        type='number'
-                        value={formMaxIter}
-                        onChange={(e) => setFormMaxIter(parseInt(e.target.value) || 10)}
-                      />
-                    </div>
-                  </div>
                   <div className='space-y-2'>
                     <Label>Provider</Label>
                     <Select
@@ -558,6 +539,44 @@ export default function AgentsPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+                  <div className='grid grid-cols-2 gap-4'>
+                    <div className='space-y-2'>
+                      <Label>Model</Label>
+                      {(() => {
+                        const selectedProvider = providers.find((p) => p.id === formProviderId);
+                        const llmModels = selectedProvider?.models?.filter((m) => m.model_type === 'llm') ?? [];
+                        return llmModels.length > 0 ? (
+                          <Select value={formModel} onValueChange={setFormModel}>
+                            <SelectTrigger className='font-mono text-sm'>
+                              <SelectValue placeholder='Select model...' />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {llmModels.map((m) => (
+                                <SelectItem key={m.id} value={m.model_name} className='font-mono text-sm'>
+                                  {m.model_name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input
+                            value={formModel}
+                            onChange={(e) => setFormModel(e.target.value)}
+                            placeholder='gpt-4o'
+                            className='font-mono text-sm'
+                          />
+                        );
+                      })()}
+                    </div>
+                    <div className='space-y-2'>
+                      <Label>Max Iterations</Label>
+                      <Input
+                        type='number'
+                        value={formMaxIter}
+                        onChange={(e) => setFormMaxIter(parseInt(e.target.value) || 10)}
+                      />
+                    </div>
                   </div>
                   <div className='space-y-2'>
                     <Label>System Prompt</Label>
