@@ -354,7 +354,7 @@ func (o *Orchestrator) ApproveExecution(ctx context.Context, executionID uuid.UU
 
 	if !approved {
 		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypePlanRejected,
-			fmt.Sprintf("Plan rejected by human operator. Feedback: %s", feedback), nil))
+			fmt.Sprintf("Plan rejected. Feedback: %s — replanning now.", feedback), nil))
 		o.recordActivity(ctx, &models.ActivityEvent{
 			WorkforceID:  &exec.WorkForceID,
 			ExecutionID:  &exec.ID,
@@ -363,10 +363,44 @@ func (o *Orchestrator) ApproveExecution(ctx context.Context, executionID uuid.UU
 			Action:       "execution.rejected",
 			ResourceType: "execution",
 			ResourceID:   exec.ID.String(),
-			Summary:      "Execution plan rejected",
+			Summary:      "Execution plan rejected — triggering replan",
 			Metadata:     map[string]any{"feedback": feedback},
 		})
-		return o.store.UpdateExecutionStatus(ctx, executionID, models.ExecutionStatusFailed)
+
+		// Resolve the pending approval as rejected
+		if approvals, _, err := o.store.ListApprovals(ctx, exec.WorkForceID, "pending", 10, 0); err == nil {
+			for _, a := range approvals {
+				if a.ExecutionID != nil && *a.ExecutionID == exec.ID && a.ActionType == models.ApprovalActionExecutionStart {
+					o.store.ResolveApproval(ctx, a.ID, false, feedback, "operator")
+					break
+				}
+			}
+		}
+
+		// Store rejection feedback as a context message so replanning agents see it
+		if feedback != "" {
+			_ = o.store.CreateMessage(ctx, &models.Message{
+				ID:          uuid.New(),
+				ExecutionID: exec.ID,
+				Role:        models.MessageRoleUser,
+				Content: fmt.Sprintf("[Human Operator Rejected Plan — Revision Required]\n%s\n\n"+
+					"Please revise your strategy and execution plan to fully address this feedback.", feedback),
+				CreatedAt: time.Now(),
+			})
+		}
+
+		// Reset to planning and trigger a fresh planning round
+		if err := o.store.UpdateExecutionStatus(ctx, executionID, models.ExecutionStatusPlanning); err != nil {
+			return err
+		}
+		wf, err := o.store.GetWorkForce(ctx, exec.WorkForceID)
+		if err != nil {
+			return o.store.UpdateExecutionStatus(ctx, executionID, models.ExecutionStatusFailed)
+		}
+		planCtx, planCancel := context.WithCancel(context.Background())
+		o.activeExecs.Store(exec.ID, &executionContext{cancel: planCancel})
+		go o.runPlanning(exec, wf, planCtx)
+		return nil
 	}
 
 	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypePlanApproved,
@@ -1099,6 +1133,65 @@ func (o *Orchestrator) buildConversationContext(ctx context.Context, execID, wor
 	}
 	sections = append(sections, strings.Join(parts, "\n\n"))
 	return strings.Join(sections, "\n\n---\n\n")
+}
+
+// StartScheduler runs the autonomous workforce scheduler until ctx is cancelled.
+// Every minute it checks workforces with autonomous_mode=true and fires an execution
+// if heartbeat_interval_m has elapsed since the last execution.
+func (o *Orchestrator) StartScheduler(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	log.Println("orchestrator: autonomous scheduler started")
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("orchestrator: autonomous scheduler stopped")
+			return
+		case <-ticker.C:
+			o.runSchedulerTick(ctx)
+		}
+	}
+}
+
+func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
+	workforces, err := o.store.ListAutonomousWorkforces(ctx)
+	if err != nil {
+		log.Printf("scheduler: list autonomous workforces: %v", err)
+		return
+	}
+	for _, wf := range workforces {
+		// Skip if already running
+		if wf.Status == models.WorkForceStatusExecuting || wf.Status == models.WorkForceStatusPlanning {
+			continue
+		}
+		// Skip if an active execution goroutine is registered
+		var alreadyActive bool
+		o.activeExecs.Range(func(_, v any) bool {
+			alreadyActive = true
+			return false
+		})
+		if alreadyActive {
+			continue
+		}
+
+		// Check if enough time has elapsed since the last execution
+		lastExec, err := o.store.GetLatestExecution(ctx, wf.ID)
+		if err != nil {
+			log.Printf("scheduler: latest execution for %q: %v", wf.Name, err)
+			continue
+		}
+		if lastExec != nil {
+			interval := time.Duration(wf.HeartbeatIntervalM) * time.Minute
+			if time.Since(lastExec.CreatedAt) < interval {
+				continue // too soon
+			}
+		}
+
+		log.Printf("scheduler: auto-launching execution for workforce %q (interval=%dm)", wf.Name, wf.HeartbeatIntervalM)
+		if _, err := o.StartExecution(ctx, wf.ID, wf.Objective, nil); err != nil {
+			log.Printf("scheduler: start execution for %q: %v", wf.Name, err)
+		}
+	}
 }
 
 // isObjectiveComplete checks if the agent's response contains a structured completion signal.

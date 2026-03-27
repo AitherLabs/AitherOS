@@ -202,6 +202,35 @@ func (s *Store) ListWorkForces(ctx context.Context, limit, offset int) ([]*model
 	return workforces, total, nil
 }
 
+// ListAutonomousWorkforces returns all workforces with autonomous_mode = true.
+// Used by the scheduler to determine which workforces should auto-execute.
+func (s *Store) ListAutonomousWorkforces(ctx context.Context) ([]*models.WorkForce, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, heartbeat_interval_m, created_at, updated_at
+		FROM workforces WHERE autonomous_mode = true ORDER BY updated_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list autonomous workforces: %w", err)
+	}
+	defer rows.Close()
+
+	var workforces []*models.WorkForce
+	for rows.Next() {
+		wf := &models.WorkForce{}
+		if err := rows.Scan(
+			&wf.ID, &wf.Name, &wf.Description, &wf.Objective, &wf.Status,
+			&wf.Icon, &wf.Color, &wf.AvatarURL,
+			&wf.BudgetTokens, &wf.BudgetTimeS, &wf.LeaderAgentID,
+			&wf.AutonomousMode, &wf.HeartbeatIntervalM,
+			&wf.CreatedAt, &wf.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan workforce: %w", err)
+		}
+		wf.AgentIDs = []uuid.UUID{}
+		workforces = append(workforces, wf)
+	}
+	return workforces, nil
+}
+
 func (s *Store) UpdateWorkForce(ctx context.Context, id uuid.UUID, req models.UpdateWorkForceRequest) (*models.WorkForce, error) {
 	wf, err := s.GetWorkForce(ctx, id)
 	if err != nil {

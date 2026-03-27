@@ -104,6 +104,27 @@ func (s *Store) GetExecution(ctx context.Context, id uuid.UUID) (*models.Executi
 	return exec, nil
 }
 
+// GetLatestExecution returns the most recent execution for a workforce, or nil if none exist.
+func (s *Store) GetLatestExecution(ctx context.Context, workforceID uuid.UUID) (*models.Execution, error) {
+	e := &models.Execution{}
+	var inputsJSON, planJSON []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, workforce_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
+		FROM executions WHERE workforce_id = $1 ORDER BY created_at DESC LIMIT 1`, workforceID,
+	).Scan(
+		&e.ID, &e.WorkForceID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
+		&inputsJSON, &e.TokensUsed, &e.Iterations, &e.Title, &e.Description, &e.ImageURL,
+		&e.Result, &e.ErrorMessage, &e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.UpdatedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get latest execution: %w", err)
+	}
+	return e, nil
+}
+
 func (s *Store) ListExecutions(ctx context.Context, workforceID uuid.UUID, limit, offset int) ([]*models.Execution, int, error) {
 	var total int
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM executions WHERE workforce_id = $1`, workforceID).Scan(&total)
