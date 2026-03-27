@@ -60,6 +60,20 @@ func OptionalMiddleware(jwt *JWTManager) func(http.Handler) http.Handler {
 	}
 }
 
+// AdminMiddleware requires a valid JWT AND the "admin" role.
+func AdminMiddleware(jwt *JWTManager) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return Middleware(jwt)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims := GetClaims(r.Context())
+			if claims == nil || claims.Role != "admin" {
+				http.Error(w, `{"success":false,"error":"admin access required"}`, http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		}))
+	}
+}
+
 // GetClaims extracts JWT claims from the request context.
 func GetClaims(ctx context.Context) *Claims {
 	claims, _ := ctx.Value(claimsKey).(*Claims)
