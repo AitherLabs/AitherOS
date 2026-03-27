@@ -382,6 +382,12 @@ class ApiClient {
     );
   }
 
+  async embeddingStatus() {
+    return this.request<{ ok: boolean; endpoint: string; model: string; dimensions?: number; error?: string }>(
+      '/api/v1/knowledge/embedding-status'
+    );
+  }
+
   // ── MCP Servers ─────────────────────────────────────────
   async listMCPServers() {
     return this.request<MCPServer[]>('/api/v1/mcp/servers');

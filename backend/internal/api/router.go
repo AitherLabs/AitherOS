@@ -174,6 +174,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.Handle("GET /api/v1/workforces/{id}/activity", protect(http.HandlerFunc(activity.List)))
 
 	// Knowledge Base
+	mux.Handle("GET /api/v1/knowledge/embedding-status", protect(http.HandlerFunc(kb.EmbeddingStatus)))
 	mux.Handle("GET /api/v1/workforces/{id}/knowledge", protect(http.HandlerFunc(kb.List)))
 	mux.Handle("POST /api/v1/workforces/{id}/knowledge", protect(http.HandlerFunc(kb.Create)))
 	mux.Handle("POST /api/v1/workforces/{id}/knowledge/search", protect(http.HandlerFunc(kb.Search)))
