@@ -12,6 +12,7 @@
  *   AITHER_BRAVE_KEY       — Brave Search API key (optional, enables web search)
  *   AITHER_SEARXNG_URL     — SearXNG base URL (optional, self-hosted search)
  *   AITHER_MAX_TIMEOUT_S   — max shell command timeout in seconds (default: 300)
+ *   AITHER_API_TOKEN       — service token for internal API auth (injected by provisioner)
  *
  * © AitherLabs — https://aitheros.io
  */
@@ -36,6 +37,7 @@ import * as workspace  from './tools/workspace.js';
 import * as git        from './tools/git.js';
 import * as network    from './tools/network.js';
 import * as knowledge  from './tools/knowledge.js';
+import * as kanban    from './tools/kanban.js';
 
 // ── Merge all tool definitions and handlers ───────────────────────────────────
 
@@ -48,6 +50,7 @@ const ALL_TOOLS = [
   ...git.tools,
   ...network.tools,
   ...knowledge.tools,
+  ...kanban.tools,
 ];
 
 const ALL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
@@ -59,6 +62,7 @@ const ALL_HANDLERS: Record<string, (args: Record<string, unknown>) => Promise<st
   ...git.handlers,
   ...network.handlers,
   ...knowledge.handlers,
+  ...kanban.handlers,
 };
 
 // ── Bootstrap workspace directories ──────────────────────────────────────────

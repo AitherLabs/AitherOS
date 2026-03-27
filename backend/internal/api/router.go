@@ -13,7 +13,7 @@ import (
 	"github.com/aitheros/backend/internal/workspace"
 )
 
-func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventBus, reg *engine.ProviderRegistry, jwtMgr *auth.JWTManager, km *knowledge.Manager, mcpMgr *mcp.Manager, corsOrigins string, registrationToken string) http.Handler {
+func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventBus, reg *engine.ProviderRegistry, jwtMgr *auth.JWTManager, km *knowledge.Manager, mcpMgr *mcp.Manager, corsOrigins string, registrationToken string, serviceToken string) http.Handler {
 	mux := http.NewServeMux()
 
 	agents := NewAgentHandler(s)
@@ -32,10 +32,23 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	upload := NewUploadHandler()
 
 	// protect wraps a handler with JWT enforcement (no-op if jwtMgr is nil).
+	// Requests bearing the SERVICE_TOKEN bypass JWT — used by Aither-Tools
+	// for internal API calls (knowledge writes, kanban updates, etc.).
 	protect := func(h http.Handler) http.Handler { return h }
 	adminOnly := func(h http.Handler) http.Handler { return h }
 	if jwtMgr != nil {
-		protect = auth.Middleware(jwtMgr)
+		jwtMiddleware := auth.Middleware(jwtMgr)
+		protect = func(h http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serviceToken != "" {
+					if bearer := r.Header.Get("Authorization"); bearer == "Bearer "+serviceToken {
+						h.ServeHTTP(w, r)
+						return
+					}
+				}
+				jwtMiddleware(h).ServeHTTP(w, r)
+			})
+		}
 		adminOnly = auth.AdminMiddleware(jwtMgr)
 	}
 

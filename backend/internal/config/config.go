@@ -17,6 +17,7 @@ type Config struct {
 	Embedding    EmbeddingConfig
 	CORS         CORSConfig
 	Registration RegistrationConfig
+	Service      ServiceConfig
 }
 
 type ServerConfig struct {
@@ -68,6 +69,10 @@ type CORSConfig struct {
 
 type RegistrationConfig struct {
 	Token string // REGISTRATION_TOKEN — if set, self-registration requires this token
+}
+
+type ServiceConfig struct {
+	Token string // SERVICE_TOKEN — internal service-to-service auth (Aither-Tools → API)
 }
 
 func Load() (*Config, error) {
@@ -154,6 +159,9 @@ func Load() (*Config, error) {
 		},
 		Registration: RegistrationConfig{
 			Token: getEnv("REGISTRATION_TOKEN", ""),
+		},
+		Service: ServiceConfig{
+			Token: getEnv("SERVICE_TOKEN", ""),
 		},
 	}, nil
 }
