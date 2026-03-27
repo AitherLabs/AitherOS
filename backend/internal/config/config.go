@@ -14,6 +14,7 @@ type Config struct {
 	JWT          JWTConfig
 	PicoClaw     PicoClawConfig
 	LLM          LLMConfig
+	Embedding    EmbeddingConfig
 	CORS         CORSConfig
 	Registration RegistrationConfig
 }
@@ -53,6 +54,12 @@ type LLMConfig struct {
 	APIBase string
 	APIKey  string
 	Model   string
+}
+
+type EmbeddingConfig struct {
+	APIBase string // EMBEDDING_API_BASE — defaults to https://api.openai.com/v1
+	APIKey  string // EMBEDDING_API_KEY  — defaults to LLM_API_KEY if not set
+	Model   string // EMBEDDING_MODEL    — defaults to text-embedding-3-small
 }
 
 type CORSConfig struct {
@@ -136,6 +143,11 @@ func Load() (*Config, error) {
 			APIBase: getEnv("LLM_API_BASE", "http://127.0.0.1:4000/v1"),
 			APIKey:  getEnv("LLM_API_KEY", "dummy_token"),
 			Model:   getEnv("LLM_MODEL", "gpt-5.4-mini"),
+		},
+		Embedding: EmbeddingConfig{
+			APIBase: getEnv("EMBEDDING_API_BASE", "https://api.openai.com/v1"),
+			APIKey:  getEnv("EMBEDDING_API_KEY", getEnv("LLM_API_KEY", "")),
+			Model:   getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
 		},
 		CORS: CORSConfig{
 			Origins: getEnv("CORS_ORIGINS", "http://localhost:3000"),
