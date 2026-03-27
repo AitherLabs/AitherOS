@@ -218,6 +218,7 @@ export default function WorkforceDetailPage() {
   const [credValue, setCredValue] = useState('');
   const [credSaving, setCredSaving] = useState(false);
   const [credShowValue, setCredShowValue] = useState(false);
+  const [credError, setCredError] = useState('');
 
   // Kanban state
   const [kanbanTasks, setKanbanTasks] = useState<KanbanTask[]>([]);
@@ -1684,12 +1685,13 @@ export default function WorkforceDetailPage() {
                   </button>
                 </div>
                 <Button
-                  id='cred-save-btn'
                   size='sm'
                   className='h-8 bg-[#9A66FF] hover:bg-[#9A66FF]/90'
                   disabled={!credService.trim() || !credKey.trim() || !credValue.trim() || credSaving}
                   onClick={async () => {
+                    if (session?.accessToken) api.setToken(session.accessToken);
                     setCredSaving(true);
+                    setCredError('');
                     try {
                       const res = await api.upsertCredential(wfId, {
                         service: credService.trim().toLowerCase(),
@@ -1705,6 +1707,8 @@ export default function WorkforceDetailPage() {
                         setCredKey('');
                         setCredValue('');
                       }
+                    } catch (err: any) {
+                      setCredError(err.message || 'Failed to save credential');
                     } finally {
                       setCredSaving(false);
                     }
@@ -1714,6 +1718,9 @@ export default function WorkforceDetailPage() {
                   <span className='ml-1'>Save</span>
                 </Button>
               </div>
+              {credError && (
+                <p className='mt-2 text-xs text-red-400'>{credError}</p>
+              )}
             </div>
 
             {/* Stored credentials grouped by service */}
