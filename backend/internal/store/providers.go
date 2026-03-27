@@ -82,15 +82,39 @@ func (s *Store) ListProviders(ctx context.Context) ([]*models.ModelProvider, err
 	defer rows.Close()
 
 	var providers []*models.ModelProvider
+	providerMap := map[uuid.UUID]*models.ModelProvider{}
 	for rows.Next() {
 		p := &models.ModelProvider{}
 		var configJSON []byte
-		err := rows.Scan(&p.ID, &p.Name, &p.ProviderType, &p.BaseURL, &p.IsEnabled, &p.IsDefault, &configJSON, &p.CreatedAt, &p.UpdatedAt)
-		if err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.ProviderType, &p.BaseURL, &p.IsEnabled, &p.IsDefault, &configJSON, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			continue
 		}
 		json.Unmarshal(configJSON, &p.Config)
 		providers = append(providers, p)
+		providerMap[p.ID] = p
+	}
+
+	if len(providers) == 0 {
+		return providers, nil
+	}
+
+	// Load all models in one query and attach to their providers
+	modelRows, err := s.pool.Query(ctx,
+		`SELECT id, provider_id, model_name, model_type, is_enabled, config, created_at, updated_at
+		 FROM provider_models ORDER BY model_name`)
+	if err == nil {
+		defer modelRows.Close()
+		for modelRows.Next() {
+			var m models.ProviderModel
+			var mConfigJSON []byte
+			if err := modelRows.Scan(&m.ID, &m.ProviderID, &m.ModelName, &m.ModelType, &m.IsEnabled, &mConfigJSON, &m.CreatedAt, &m.UpdatedAt); err != nil {
+				continue
+			}
+			json.Unmarshal(mConfigJSON, &m.Config)
+			if p, ok := providerMap[m.ProviderID]; ok {
+				p.Models = append(p.Models, m)
+			}
+		}
 	}
 
 	return providers, nil

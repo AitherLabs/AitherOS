@@ -544,19 +544,45 @@ export default function AgentDetailPage() {
                 {(() => {
                   const selectedProvider = providers.find((p) => p.id === providerId);
                   const llmModels = selectedProvider?.models?.filter((m) => m.model_type === 'llm') ?? [];
-                  return llmModels.length > 0 ? (
-                    <Select value={model} onValueChange={(v) => { setModel(v); markChanged(); }}>
-                      <SelectTrigger className='h-7 font-mono text-xs'><SelectValue placeholder='Select model...' /></SelectTrigger>
-                      <SelectContent>
-                        {llmModels.map((m) => (
-                          <SelectItem key={m.id} value={m.model_name} className='font-mono text-xs'>
-                            {m.model_name}
+                  if (llmModels.length === 0) {
+                    return (
+                      <Input value={model} onChange={(e) => { setModel(e.target.value); markChanged(); }} placeholder='gpt-4o' className='h-7 font-mono text-xs' />
+                    );
+                  }
+                  // model is "custom" if it's non-empty and not in the registered list
+                  const isCustom = model !== '' && !llmModels.some((m) => m.model_name === model);
+                  const dropdownVal = isCustom ? '_custom' : (model || '');
+                  return (
+                    <>
+                      <Select
+                        value={dropdownVal}
+                        onValueChange={(v) => {
+                          if (v === '_custom') { setModel(''); } else { setModel(v); }
+                          markChanged();
+                        }}
+                      >
+                        <SelectTrigger className='h-7 font-mono text-xs'><SelectValue placeholder='Select model...' /></SelectTrigger>
+                        <SelectContent>
+                          {llmModels.map((m) => (
+                            <SelectItem key={m.id} value={m.model_name} className='font-mono text-xs'>
+                              {m.model_name}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value='_custom' className='font-mono text-xs italic text-muted-foreground'>
+                            Custom model ID...
                           </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input value={model} onChange={(e) => { setModel(e.target.value); markChanged(); }} placeholder='gpt-4o' className='h-7 font-mono text-xs' />
+                        </SelectContent>
+                      </Select>
+                      {(isCustom || dropdownVal === '_custom') && (
+                        <Input
+                          value={model}
+                          onChange={(e) => { setModel(e.target.value); markChanged(); }}
+                          placeholder='e.g. gemini-2.0-flash-exp'
+                          className='mt-1.5 h-7 font-mono text-xs'
+                          autoFocus
+                        />
+                      )}
+                    </>
                   );
                 })()}
               </div>
