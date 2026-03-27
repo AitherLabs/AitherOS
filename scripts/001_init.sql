@@ -28,9 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS model_providers (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(255) NOT NULL,
-    provider_type VARCHAR(50) NOT NULL CHECK (provider_type IN (
-        'openai', 'openai_compatible', 'ollama', 'openrouter', 'litellm', 'picoclaw', 'openclaw', 'gemini'
-    )),
+    provider_type VARCHAR(50) NOT NULL,
     base_url TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT '',
     is_enabled BOOLEAN NOT NULL DEFAULT true,
