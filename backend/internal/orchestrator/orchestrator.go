@@ -16,6 +16,7 @@ import (
 	"github.com/aitheros/backend/internal/mcp"
 	"github.com/aitheros/backend/internal/models"
 	"github.com/aitheros/backend/internal/store"
+	"github.com/aitheros/backend/internal/workspace"
 	"github.com/google/uuid"
 )
 
@@ -771,27 +772,42 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		}
 	}
 
-	taskParts = append(taskParts, "---\n"+
+	// ── Workspace + credentials context ──────────────────────────────────────
+	workspacePath := workspace.WorkspacePath(p.wf.Name)
+	taskParts = append(taskParts, fmt.Sprintf(
+		"## Your Workspace\n"+
+			"Path: `%s`\n\n"+
+			"This is your dedicated workspace — treat it exactly like a local development machine:\n"+
+			"- Full read/write access. Create, edit, delete files freely.\n"+
+			"- Use `run_command` to run git, npm, python, cargo, curl, bash scripts — anything.\n"+
+			"- Clone repos here, run builds, write output files. Files persist for this workforce.\n"+
+			"- AitherOS platform source is readable (not writable) at `/opt/AitherOS`.\n\n"+
+			"**Credentials** — your team's stored secrets are available via Aither-Tools:\n"+
+			"- `list_secrets()` — discover all available service/key pairs before making authenticated requests\n"+
+			"- `get_secret(\"service\", \"key_name\")` — retrieve a specific credential value\n"+
+			"- If a credential you need is not listed, signal `needs_help` with the exact service and key name.",
+		workspacePath))
+
+	taskParts = append(taskParts, fmt.Sprintf("---\n"+
 		"Execute your subtask now. Produce your output directly.\n\n"+
 		"## Tool Usage — MANDATORY\n"+
 		"You have MCP tools available. Use them aggressively and persistently:\n"+
-		"- **Shell tool first**: use `run_command` to run any shell command — clone repos, execute scripts, grep code, anything.\n"+
-		"  Example: `git clone https://github.com/owner/repo /tmp/aitheros-workspace/repo` then read files via Filesystem tool.\n"+
-		"- **Filesystem tool**: read files directly from `/tmp/aitheros-workspace` (your sandbox) or `/opt/AitherOS` (AitherOS source code).\n"+
-		"- **GitHub API**: use only when you cannot clone locally. If you must use it, call `get_file_contents` per file — directory listings are not enough.\n"+
-		"- If a GitHub tool returns a rate-limit error, the system will automatically retry after 62 seconds — do NOT signal `needs_help` for rate limit errors.\n"+
-		"- You can make as many tool calls as needed — there is NO limit. Keep calling until you have what you need.\n"+
-		"- If a tool call fails or returns partial results, try a different approach or different parameters.\n"+
-		"- **Never give up because a single tool call returned insufficient information.** Try again with more specific inputs.\n\n"+
+		"- **Shell**: `run_command` — git, npm, python, curl, bash. Clone repos to `%s`, run tests, compile, deploy.\n"+
+		"- **Filesystem**: read/write files in your workspace or read `/opt/AitherOS` (AitherOS source, read-only).\n"+
+		"- **Secrets**: call `list_secrets()` before any authenticated request to see what credentials exist.\n"+
+		"- **GitHub rate-limit errors**: automatically retried after 62s — do NOT signal `needs_help` for these.\n"+
+		"- You can make as many tool calls as needed — there is NO limit. Keep going until the subtask is done.\n"+
+		"- If a tool fails or returns partial results, try a different approach or parameters.\n"+
+		"- **Never give up because a single tool call returned insufficient information.**\n\n"+
 		"## Completion Signals\n"+
-		"When your subtask is FULLY complete, you MUST end your response with:\n"+
+		"When your subtask is FULLY complete, end your response with:\n"+
 		"```json\n{\"status\": \"complete\", \"summary\": \"<one-sentence summary of what you did>\"}\n```\n"+
-		"Note: other agents may have additional subtasks — your completion signal only marks YOUR subtask done, not the whole pipeline.\n\n"+
-		"Signal `needs_help` ONLY as a last resort — only if you have exhausted all available tools and genuinely need a human to provide something no tool can fetch:\n"+
-		"```json\n{\"status\": \"needs_help\", \"reason\": \"<exactly what you tried and what specific thing you still need>\"}\n```\n\n"+
-		"If you are blocked by a hard dependency that cannot be resolved with tools:\n"+
+		"Other agents may have additional subtasks — your signal only marks YOUR subtask done.\n\n"+
+		"Signal `needs_help` ONLY as a last resort — exhausted all tools AND need something only a human can provide:\n"+
+		"```json\n{\"status\": \"needs_help\", \"reason\": \"<exactly what you tried and what you still need>\"}\n```\n\n"+
+		"If blocked by a hard dependency no tool can resolve:\n"+
 		"```json\n{\"status\": \"blocked\", \"reason\": \"<what is blocking you>\"}\n```"+
-		peerList)
+		peerList, workspacePath))
 
 	taskMsg := strings.Join(taskParts, "\n\n")
 
