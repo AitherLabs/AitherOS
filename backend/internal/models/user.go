@@ -29,10 +29,19 @@ type User struct {
 }
 
 type RegisterRequest struct {
-	Email       string `json:"email" validate:"required,email"`
-	Username    string `json:"username" validate:"required,min=3,max=100"`
-	Password    string `json:"password" validate:"required,min=8"`
-	DisplayName string `json:"display_name,omitempty"`
+	Email             string `json:"email" validate:"required,email"`
+	Username          string `json:"username" validate:"required,min=3,max=100"`
+	Password          string `json:"password" validate:"required,min=8"`
+	DisplayName       string `json:"display_name,omitempty"`
+	RegistrationToken string `json:"registration_token,omitempty"`
+}
+
+type AdminCreateUserRequest struct {
+	Email       string   `json:"email"`
+	Username    string   `json:"username"`
+	Password    string   `json:"password"`
+	DisplayName string   `json:"display_name,omitempty"`
+	Role        UserRole `json:"role,omitempty"`
 }
 
 type LoginRequest struct {

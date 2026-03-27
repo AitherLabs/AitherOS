@@ -118,7 +118,7 @@ func main() {
 	log.Println("Autonomous scheduler started")
 
 	// Build router
-	router := api.NewRouter(db, orch, eb, reg, jwtMgr, knowledgeMgr, mcpMgr, cfg.CORS.Origins)
+	router := api.NewRouter(db, orch, eb, reg, jwtMgr, knowledgeMgr, mcpMgr, cfg.CORS.Origins, cfg.Registration.Token)
 
 	// Start server
 	server := &http.Server{

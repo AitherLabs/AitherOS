@@ -8,13 +8,14 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Postgres PostgresConfig
-	Redis    RedisConfig
-	JWT      JWTConfig
-	PicoClaw PicoClawConfig
-	LLM      LLMConfig
-	CORS     CORSConfig
+	Server       ServerConfig
+	Postgres     PostgresConfig
+	Redis        RedisConfig
+	JWT          JWTConfig
+	PicoClaw     PicoClawConfig
+	LLM          LLMConfig
+	CORS         CORSConfig
+	Registration RegistrationConfig
 }
 
 type ServerConfig struct {
@@ -56,6 +57,10 @@ type LLMConfig struct {
 
 type CORSConfig struct {
 	Origins string
+}
+
+type RegistrationConfig struct {
+	Token string // REGISTRATION_TOKEN — if set, self-registration requires this token
 }
 
 func Load() (*Config, error) {
@@ -134,6 +139,9 @@ func Load() (*Config, error) {
 		},
 		CORS: CORSConfig{
 			Origins: getEnv("CORS_ORIGINS", "http://localhost:3000"),
+		},
+		Registration: RegistrationConfig{
+			Token: getEnv("REGISTRATION_TOKEN", ""),
 		},
 	}, nil
 }

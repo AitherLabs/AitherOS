@@ -13,7 +13,7 @@ import (
 	"github.com/aitheros/backend/internal/workspace"
 )
 
-func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventBus, reg *engine.ProviderRegistry, jwtMgr *auth.JWTManager, km *knowledge.Manager, mcpMgr *mcp.Manager, corsOrigins string) http.Handler {
+func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventBus, reg *engine.ProviderRegistry, jwtMgr *auth.JWTManager, km *knowledge.Manager, mcpMgr *mcp.Manager, corsOrigins string, registrationToken string) http.Handler {
 	mux := http.NewServeMux()
 
 	agents := NewAgentHandler(s)
@@ -31,6 +31,14 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	agentChat := NewAgentChatHandler(s, km)
 	upload := NewUploadHandler()
 
+	// protect wraps a handler with JWT enforcement (no-op if jwtMgr is nil).
+	protect := func(h http.Handler) http.Handler { return h }
+	adminOnly := func(h http.Handler) http.Handler { return h }
+	if jwtMgr != nil {
+		protect = auth.Middleware(jwtMgr)
+		adminOnly = auth.AdminMiddleware(jwtMgr)
+	}
+
 	// Health (public)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -38,74 +46,79 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 
 	// ── Auth (public) ──────────────────────────────────────
 	if jwtMgr != nil {
-		authH := NewAuthHandler(s, jwtMgr)
+		authH := NewAuthHandler(s, jwtMgr, registrationToken)
 		mux.HandleFunc("POST /api/v1/auth/register", authH.Register)
 		mux.HandleFunc("POST /api/v1/auth/login", authH.Login)
-		mux.HandleFunc("GET /api/v1/auth/me", authH.Me)
-		mux.HandleFunc("PATCH /api/v1/auth/me", authH.UpdateMe)
+		mux.Handle("GET /api/v1/auth/me", protect(http.HandlerFunc(authH.Me)))
+		mux.Handle("PATCH /api/v1/auth/me", protect(http.HandlerFunc(authH.UpdateMe)))
+
+		// ── Admin (admin role required) ────────────────────
+		mux.Handle("GET /api/v1/admin/users", adminOnly(http.HandlerFunc(authH.AdminListUsers)))
+		mux.Handle("POST /api/v1/admin/users", adminOnly(http.HandlerFunc(authH.AdminCreateUser)))
+		mux.Handle("PATCH /api/v1/admin/users/{id}/active", adminOnly(http.HandlerFunc(authH.AdminSetUserActive)))
 	}
 
 	// ── Protected API routes ───────────────────────────────
 
 	// Agents CRUD
-	mux.HandleFunc("POST /api/v1/agents", agents.Create)
-	mux.HandleFunc("GET /api/v1/agents", agents.List)
-	mux.HandleFunc("GET /api/v1/agents/{id}", agents.Get)
-	mux.HandleFunc("PATCH /api/v1/agents/{id}", agents.Update)
-	mux.HandleFunc("DELETE /api/v1/agents/{id}", agents.Delete)
+	mux.Handle("POST /api/v1/agents", protect(http.HandlerFunc(agents.Create)))
+	mux.Handle("GET /api/v1/agents", protect(http.HandlerFunc(agents.List)))
+	mux.Handle("GET /api/v1/agents/{id}", protect(http.HandlerFunc(agents.Get)))
+	mux.Handle("PATCH /api/v1/agents/{id}", protect(http.HandlerFunc(agents.Update)))
+	mux.Handle("DELETE /api/v1/agents/{id}", protect(http.HandlerFunc(agents.Delete)))
 
 	// Agent Debug (single-agent test / preview)
-	mux.HandleFunc("POST /api/v1/agents/{id}/debug", debug.Debug)
+	mux.Handle("POST /api/v1/agents/{id}/debug", protect(http.HandlerFunc(debug.Debug)))
 
-	// Agent Chat History (persistent DB storage, replaces localStorage)
-	mux.HandleFunc("GET /api/v1/agents/{id}/chats", agentChat.List)
-	mux.HandleFunc("POST /api/v1/agents/{id}/chats", agentChat.Create)
-	mux.HandleFunc("DELETE /api/v1/agents/{id}/chats", agentChat.Clear)
+	// Agent Chat History
+	mux.Handle("GET /api/v1/agents/{id}/chats", protect(http.HandlerFunc(agentChat.List)))
+	mux.Handle("POST /api/v1/agents/{id}/chats", protect(http.HandlerFunc(agentChat.Create)))
+	mux.Handle("DELETE /api/v1/agents/{id}/chats", protect(http.HandlerFunc(agentChat.Clear)))
 
 	// Model Providers CRUD
-	mux.HandleFunc("GET /api/v1/providers/schemas", providers.Schemas)
-	mux.HandleFunc("POST /api/v1/providers", providers.Create)
-	mux.HandleFunc("GET /api/v1/providers", providers.List)
-	mux.HandleFunc("GET /api/v1/providers/{id}", providers.Get)
-	mux.HandleFunc("PATCH /api/v1/providers/{id}", providers.Update)
-	mux.HandleFunc("DELETE /api/v1/providers/{id}", providers.Delete)
-	mux.HandleFunc("POST /api/v1/providers/{id}/models", providers.AddModel)
-	mux.HandleFunc("DELETE /api/v1/providers/{id}/models/{modelID}", providers.RemoveModel)
-	mux.HandleFunc("GET /api/v1/providers/{id}/live-models", providers.ProbeModels)
+	mux.Handle("GET /api/v1/providers/schemas", protect(http.HandlerFunc(providers.Schemas)))
+	mux.Handle("POST /api/v1/providers", protect(http.HandlerFunc(providers.Create)))
+	mux.Handle("GET /api/v1/providers", protect(http.HandlerFunc(providers.List)))
+	mux.Handle("GET /api/v1/providers/{id}", protect(http.HandlerFunc(providers.Get)))
+	mux.Handle("PATCH /api/v1/providers/{id}", protect(http.HandlerFunc(providers.Update)))
+	mux.Handle("DELETE /api/v1/providers/{id}", protect(http.HandlerFunc(providers.Delete)))
+	mux.Handle("POST /api/v1/providers/{id}/models", protect(http.HandlerFunc(providers.AddModel)))
+	mux.Handle("DELETE /api/v1/providers/{id}/models/{modelID}", protect(http.HandlerFunc(providers.RemoveModel)))
+	mux.Handle("GET /api/v1/providers/{id}/live-models", protect(http.HandlerFunc(providers.ProbeModels)))
 
 	// WorkForces CRUD
-	mux.HandleFunc("POST /api/v1/workforces", workforces.Create)
-	mux.HandleFunc("GET /api/v1/workforces", workforces.List)
-	mux.HandleFunc("GET /api/v1/workforces/{id}", workforces.Get)
-	mux.HandleFunc("PATCH /api/v1/workforces/{id}", workforces.Update)
-	mux.HandleFunc("DELETE /api/v1/workforces/{id}", workforces.Delete)
-	mux.HandleFunc("POST /api/v1/workforces/{id}/provision", workforces.Provision)
+	mux.Handle("POST /api/v1/workforces", protect(http.HandlerFunc(workforces.Create)))
+	mux.Handle("GET /api/v1/workforces", protect(http.HandlerFunc(workforces.List)))
+	mux.Handle("GET /api/v1/workforces/{id}", protect(http.HandlerFunc(workforces.Get)))
+	mux.Handle("PATCH /api/v1/workforces/{id}", protect(http.HandlerFunc(workforces.Update)))
+	mux.Handle("DELETE /api/v1/workforces/{id}", protect(http.HandlerFunc(workforces.Delete)))
+	mux.Handle("POST /api/v1/workforces/{id}/provision", protect(http.HandlerFunc(workforces.Provision)))
 
 	// Global stats
-	mux.HandleFunc("GET /api/v1/stats", executions.GlobalStats)
+	mux.Handle("GET /api/v1/stats", protect(http.HandlerFunc(executions.GlobalStats)))
 
 	// Executions
-	mux.HandleFunc("GET /api/v1/executions", executions.ListAll)
-	mux.HandleFunc("POST /api/v1/workforces/{id}/executions", executions.Start)
-	mux.HandleFunc("GET /api/v1/workforces/{id}/executions", executions.List)
-	mux.HandleFunc("GET /api/v1/workforces/{id}/executions/{execID}", executions.Get)
-	mux.HandleFunc("GET /api/v1/executions/{execID}", executions.GetDirect)
-	mux.HandleFunc("POST /api/v1/executions/{execID}/approve", executions.Approve)
-	mux.HandleFunc("POST /api/v1/executions/{execID}/halt", executions.Halt)
-	mux.HandleFunc("POST /api/v1/executions/{execID}/resume", executions.Resume)
-	mux.HandleFunc("POST /api/v1/executions/{execID}/intervene", executions.Intervene)
-	mux.HandleFunc("PATCH /api/v1/executions/{execID}/meta", executions.UpdateMeta)
-	mux.HandleFunc("DELETE /api/v1/executions/{execID}", executions.Delete)
-	mux.HandleFunc("GET /api/v1/executions/{execID}/messages", executions.Messages)
-	mux.HandleFunc("GET /api/v1/workforces/{id}/preflight", executions.Preflight)
-	mux.HandleFunc("GET /api/v1/executions/{execID}/discussion", executions.DiscussionMessages)
-	mux.HandleFunc("GET /api/v1/executions/{execID}/review", executions.ReviewMessages)
-	mux.HandleFunc("POST /api/v1/executions/{execID}/qa", executions.AskQA)
-	mux.HandleFunc("GET /api/v1/executions/{execID}/qa", executions.ListQA)
-	mux.HandleFunc("GET /api/v1/executions/{execID}/events", executions.Events)
+	mux.Handle("GET /api/v1/executions", protect(http.HandlerFunc(executions.ListAll)))
+	mux.Handle("POST /api/v1/workforces/{id}/executions", protect(http.HandlerFunc(executions.Start)))
+	mux.Handle("GET /api/v1/workforces/{id}/executions", protect(http.HandlerFunc(executions.List)))
+	mux.Handle("GET /api/v1/workforces/{id}/executions/{execID}", protect(http.HandlerFunc(executions.Get)))
+	mux.Handle("GET /api/v1/executions/{execID}", protect(http.HandlerFunc(executions.GetDirect)))
+	mux.Handle("POST /api/v1/executions/{execID}/approve", protect(http.HandlerFunc(executions.Approve)))
+	mux.Handle("POST /api/v1/executions/{execID}/halt", protect(http.HandlerFunc(executions.Halt)))
+	mux.Handle("POST /api/v1/executions/{execID}/resume", protect(http.HandlerFunc(executions.Resume)))
+	mux.Handle("POST /api/v1/executions/{execID}/intervene", protect(http.HandlerFunc(executions.Intervene)))
+	mux.Handle("PATCH /api/v1/executions/{execID}/meta", protect(http.HandlerFunc(executions.UpdateMeta)))
+	mux.Handle("DELETE /api/v1/executions/{execID}", protect(http.HandlerFunc(executions.Delete)))
+	mux.Handle("GET /api/v1/executions/{execID}/messages", protect(http.HandlerFunc(executions.Messages)))
+	mux.Handle("GET /api/v1/workforces/{id}/preflight", protect(http.HandlerFunc(executions.Preflight)))
+	mux.Handle("GET /api/v1/executions/{execID}/discussion", protect(http.HandlerFunc(executions.DiscussionMessages)))
+	mux.Handle("GET /api/v1/executions/{execID}/review", protect(http.HandlerFunc(executions.ReviewMessages)))
+	mux.Handle("POST /api/v1/executions/{execID}/qa", protect(http.HandlerFunc(executions.AskQA)))
+	mux.Handle("GET /api/v1/executions/{execID}/qa", protect(http.HandlerFunc(executions.ListQA)))
+	mux.Handle("GET /api/v1/executions/{execID}/events", protect(http.HandlerFunc(executions.Events)))
 
 	// File uploads
-	mux.HandleFunc("POST /api/v1/upload", upload.Upload)
+	mux.Handle("POST /api/v1/upload", protect(http.HandlerFunc(upload.Upload)))
 	uploadFS := http.StripPrefix("/uploads/", http.FileServer(http.Dir("/opt/AitherOS/uploads")))
 	mux.Handle("GET /uploads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -114,65 +127,60 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 		uploadFS.ServeHTTP(w, r)
 	}))
 
-	// WebSocket
+	// WebSocket — auth handled per-connection inside handler
 	mux.HandleFunc("GET /ws/executions/{execID}", ws.ServeWS)
 
 	// MCP Servers CRUD
-	mux.HandleFunc("POST /api/v1/mcp/servers", mcp.CreateServer)
-	mux.HandleFunc("GET /api/v1/mcp/servers", mcp.ListServers)
-	mux.HandleFunc("GET /api/v1/mcp/servers/{id}", mcp.GetServer)
-	mux.HandleFunc("PATCH /api/v1/mcp/servers/{id}", mcp.UpdateServer)
-	mux.HandleFunc("DELETE /api/v1/mcp/servers/{id}", mcp.DeleteServer)
-	mux.HandleFunc("GET /api/v1/mcp/servers/{id}/tools", mcp.ListServerTools)
-	mux.HandleFunc("POST /api/v1/mcp/servers/{id}/discover", mcp.DiscoverTools)
+	mux.Handle("POST /api/v1/mcp/servers", protect(http.HandlerFunc(mcp.CreateServer)))
+	mux.Handle("GET /api/v1/mcp/servers", protect(http.HandlerFunc(mcp.ListServers)))
+	mux.Handle("GET /api/v1/mcp/servers/{id}", protect(http.HandlerFunc(mcp.GetServer)))
+	mux.Handle("PATCH /api/v1/mcp/servers/{id}", protect(http.HandlerFunc(mcp.UpdateServer)))
+	mux.Handle("DELETE /api/v1/mcp/servers/{id}", protect(http.HandlerFunc(mcp.DeleteServer)))
+	mux.Handle("GET /api/v1/mcp/servers/{id}/tools", protect(http.HandlerFunc(mcp.ListServerTools)))
+	mux.Handle("POST /api/v1/mcp/servers/{id}/discover", protect(http.HandlerFunc(mcp.DiscoverTools)))
 
 	// Workforce ↔ MCP Server mapping
-	mux.HandleFunc("GET /api/v1/workforces/{id}/mcp", mcp.ListWorkforceServers)
-	mux.HandleFunc("POST /api/v1/workforces/{id}/mcp", mcp.AttachToWorkforce)
-	mux.HandleFunc("DELETE /api/v1/workforces/{id}/mcp/{serverID}", mcp.DetachFromWorkforce)
+	mux.Handle("GET /api/v1/workforces/{id}/mcp", protect(http.HandlerFunc(mcp.ListWorkforceServers)))
+	mux.Handle("POST /api/v1/workforces/{id}/mcp", protect(http.HandlerFunc(mcp.AttachToWorkforce)))
+	mux.Handle("DELETE /api/v1/workforces/{id}/mcp/{serverID}", protect(http.HandlerFunc(mcp.DetachFromWorkforce)))
 
 	// Agent tool permissions
-	mux.HandleFunc("GET /api/v1/agents/{agentID}/mcp-servers", mcp.ListAgentServersWithTools)
-	mux.HandleFunc("POST /api/v1/mcp/agent-tools", mcp.SetAgentTools)
-	mux.HandleFunc("GET /api/v1/mcp/agent-tools/{agentID}/{serverID}", mcp.GetAgentTools)
-	mux.HandleFunc("DELETE /api/v1/mcp/agent-tools/{agentID}/{serverID}", mcp.RemoveAgentTools)
+	mux.Handle("GET /api/v1/agents/{agentID}/mcp-servers", protect(http.HandlerFunc(mcp.ListAgentServersWithTools)))
+	mux.Handle("POST /api/v1/mcp/agent-tools", protect(http.HandlerFunc(mcp.SetAgentTools)))
+	mux.Handle("GET /api/v1/mcp/agent-tools/{agentID}/{serverID}", protect(http.HandlerFunc(mcp.GetAgentTools)))
+	mux.Handle("DELETE /api/v1/mcp/agent-tools/{agentID}/{serverID}", protect(http.HandlerFunc(mcp.RemoveAgentTools)))
 
 	// Credentials (per-workforce, per-service secrets)
-	mux.HandleFunc("GET /api/v1/workforces/{id}/credentials", creds.List)
-	mux.HandleFunc("PUT /api/v1/workforces/{id}/credentials", creds.Upsert)
-	mux.HandleFunc("DELETE /api/v1/workforces/{id}/credentials/{service}/{keyName}", creds.Delete)
+	mux.Handle("GET /api/v1/workforces/{id}/credentials", protect(http.HandlerFunc(creds.List)))
+	mux.Handle("PUT /api/v1/workforces/{id}/credentials", protect(http.HandlerFunc(creds.Upsert)))
+	mux.Handle("DELETE /api/v1/workforces/{id}/credentials/{service}/{keyName}", protect(http.HandlerFunc(creds.Delete)))
 
 	// Kanban
-	mux.HandleFunc("GET /api/v1/workforces/{id}/kanban", kanban.List)
-	mux.HandleFunc("POST /api/v1/workforces/{id}/kanban", kanban.Create)
-	mux.HandleFunc("PATCH /api/v1/kanban/{taskID}", kanban.Update)
-	mux.HandleFunc("DELETE /api/v1/kanban/{taskID}", kanban.Delete)
+	mux.Handle("GET /api/v1/workforces/{id}/kanban", protect(http.HandlerFunc(kanban.List)))
+	mux.Handle("POST /api/v1/workforces/{id}/kanban", protect(http.HandlerFunc(kanban.Create)))
+	mux.Handle("PATCH /api/v1/kanban/{taskID}", protect(http.HandlerFunc(kanban.Update)))
+	mux.Handle("DELETE /api/v1/kanban/{taskID}", protect(http.HandlerFunc(kanban.Delete)))
 
 	// Approvals
-	mux.HandleFunc("POST /api/v1/workforces/{id}/approvals", approvals.Create)
-	mux.HandleFunc("GET /api/v1/workforces/{id}/approvals", approvals.List)
-	mux.HandleFunc("GET /api/v1/workforces/{id}/approvals/pending-count", approvals.CountPending)
-	mux.HandleFunc("GET /api/v1/approvals/{approvalID}", approvals.Get)
-	mux.HandleFunc("POST /api/v1/approvals/{approvalID}/resolve", approvals.Resolve)
+	mux.Handle("POST /api/v1/workforces/{id}/approvals", protect(http.HandlerFunc(approvals.Create)))
+	mux.Handle("GET /api/v1/workforces/{id}/approvals", protect(http.HandlerFunc(approvals.List)))
+	mux.Handle("GET /api/v1/workforces/{id}/approvals/pending-count", protect(http.HandlerFunc(approvals.CountPending)))
+	mux.Handle("GET /api/v1/approvals/{approvalID}", protect(http.HandlerFunc(approvals.Get)))
+	mux.Handle("POST /api/v1/approvals/{approvalID}/resolve", protect(http.HandlerFunc(approvals.Resolve)))
 
 	// Activity Events
-	mux.HandleFunc("GET /api/v1/activity", activity.ListGlobal)
-	mux.HandleFunc("GET /api/v1/workforces/{id}/activity", activity.List)
+	mux.Handle("GET /api/v1/activity", protect(http.HandlerFunc(activity.ListGlobal)))
+	mux.Handle("GET /api/v1/workforces/{id}/activity", protect(http.HandlerFunc(activity.List)))
 
 	// Knowledge Base
-	mux.HandleFunc("GET /api/v1/workforces/{id}/knowledge", kb.List)
-	mux.HandleFunc("POST /api/v1/workforces/{id}/knowledge", kb.Create)
-	mux.HandleFunc("POST /api/v1/workforces/{id}/knowledge/search", kb.Search)
-	mux.HandleFunc("GET /api/v1/workforces/{id}/knowledge/count", kb.Count)
-	mux.HandleFunc("DELETE /api/v1/workforces/{id}/knowledge/{entryID}", kb.Delete)
+	mux.Handle("GET /api/v1/workforces/{id}/knowledge", protect(http.HandlerFunc(kb.List)))
+	mux.Handle("POST /api/v1/workforces/{id}/knowledge", protect(http.HandlerFunc(kb.Create)))
+	mux.Handle("POST /api/v1/workforces/{id}/knowledge/search", protect(http.HandlerFunc(kb.Search)))
+	mux.Handle("GET /api/v1/workforces/{id}/knowledge/count", protect(http.HandlerFunc(kb.Count)))
+	mux.Handle("DELETE /api/v1/workforces/{id}/knowledge/{entryID}", protect(http.HandlerFunc(kb.Delete)))
 
-	// Apply middleware stack
+	// Apply global middleware stack (CORS + logging; auth is per-route above)
 	var handler http.Handler = mux
-	// Auth: use OptionalMiddleware for now (beta) — validates token if present, doesn't block if absent.
-	// Switch to auth.Middleware(jwtMgr) for strict enforcement when ready.
-	if jwtMgr != nil {
-		handler = auth.OptionalMiddleware(jwtMgr)(handler)
-	}
 	handler = CORSMiddleware(corsOrigins)(handler)
 	handler = LoggingMiddleware(handler)
 
