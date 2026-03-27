@@ -32,6 +32,7 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import {
+  IconAlertTriangle,
   IconCheck,
   IconDotsVertical,
   IconLoader2,
@@ -104,6 +105,10 @@ export default function ProvidersPage() {
     is_default: false
   });
 
+  // Embedding status
+  const [embedStatus, setEmbedStatus] = useState<{ ok: boolean; endpoint: string; model: string; dimensions?: number; error?: string } | null>(null);
+  const [checkingEmbed, setCheckingEmbed] = useState(false);
+
   // Add model form
   const [modelName, setModelName] = useState('');
   const [modelType, setModelType] = useState('llm');
@@ -127,6 +132,18 @@ export default function ProvidersPage() {
       setLoading(false);
     }
   }, [session]);
+
+  async function checkEmbedding() {
+    setCheckingEmbed(true);
+    try {
+      const res = await api.embeddingStatus();
+      setEmbedStatus(res.data ?? null);
+    } catch {
+      setEmbedStatus({ ok: false, endpoint: '', model: '', error: 'Failed to reach backend' });
+    } finally {
+      setCheckingEmbed(false);
+    }
+  }
 
   useEffect(() => {
     loadProviders();
@@ -338,6 +355,61 @@ export default function ProvidersPage() {
         </Button>
       </div>
       <Separator />
+
+      {/* Embedding status banner */}
+      <div className='rounded-lg border border-border/50 bg-muted/20 p-4'>
+        <div className='flex items-start justify-between gap-4'>
+          <div className='min-w-0 flex-1'>
+            <p className='mb-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground/60'>Embedding Endpoint</p>
+            {!embedStatus ? (
+              <p className='text-sm text-muted-foreground'>
+                Used for knowledge base / RAG. Click check to verify your current configuration.
+              </p>
+            ) : embedStatus.ok ? (
+              <div className='space-y-0.5'>
+                <div className='flex items-center gap-1.5 text-sm text-[#56D090]'>
+                  <IconCheck className='h-3.5 w-3.5 shrink-0' />
+                  <span className='font-medium'>Connected</span>
+                  {embedStatus.dimensions && (
+                    <span className='text-xs text-muted-foreground'>· {embedStatus.dimensions} dimensions</span>
+                  )}
+                </div>
+                <p className='font-mono text-[11px] text-muted-foreground'>{embedStatus.model} @ {embedStatus.endpoint}</p>
+              </div>
+            ) : (
+              <div className='space-y-1'>
+                <div className='flex items-center gap-1.5 text-sm text-red-400'>
+                  <IconAlertTriangle className='h-3.5 w-3.5 shrink-0' />
+                  <span className='font-medium'>Embedding unavailable — knowledge base disabled</span>
+                </div>
+                <p className='text-xs text-muted-foreground'>{embedStatus.error}</p>
+                {embedStatus.error?.includes('OpenRouter') || embedStatus.error?.includes('404') ? (
+                  <div className='mt-2 rounded border border-amber-500/20 bg-amber-500/10 p-2 text-xs text-amber-400'>
+                    <strong>Suggestion:</strong> Set <code className='font-mono'>EMBEDDING_API_BASE</code> to a provider that supports embeddings:
+                    <ul className='mt-1 space-y-0.5 pl-3'>
+                      <li><code className='font-mono text-[#14FFF7]'>https://api.openai.com/v1</code> + <code className='font-mono text-[#14FFF7]'>text-embedding-3-small</code></li>
+                      <li><code className='font-mono text-[#14FFF7]'>http://localhost:11434/v1</code> + <code className='font-mono text-[#14FFF7]'>nomic-embed-text</code> (Ollama, free &amp; local)</li>
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+          <Button
+            variant='outline'
+            size='sm'
+            className='shrink-0 text-xs'
+            disabled={checkingEmbed}
+            onClick={checkEmbedding}
+          >
+            {checkingEmbed
+              ? <><IconLoader2 className='mr-1 h-3 w-3 animate-spin' />Checking...</>
+              : <><IconRefresh className='mr-1 h-3 w-3' />{embedStatus ? 'Recheck' : 'Check'}</>
+            }
+          </Button>
+        </div>
+      </div>
+
       <div className='grid gap-4 md:grid-cols-2 lg:grid-cols-3'>
         {providers.map((provider) => (
           <Card

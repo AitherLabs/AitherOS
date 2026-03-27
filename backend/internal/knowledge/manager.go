@@ -284,6 +284,11 @@ func (m *Manager) RetrieveEmbedding(ctx context.Context, text string) ([]float32
 	return m.embedder.Embed(ctx, text)
 }
 
+// ProbeEmbedder runs a live connectivity check against the embedding endpoint.
+func (m *Manager) ProbeEmbedder(ctx context.Context) EmbedStatus {
+	return m.embedder.Probe(ctx)
+}
+
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s

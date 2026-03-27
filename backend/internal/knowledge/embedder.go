@@ -63,6 +63,64 @@ func (e *Embedder) Available() bool {
 	return !e.disabled
 }
 
+// EmbedStatus is the result of a live probe against the embedding endpoint.
+type EmbedStatus struct {
+	OK         bool   `json:"ok"`
+	Endpoint   string `json:"endpoint"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// Probe sends a minimal test embedding and returns the live status.
+// It does NOT affect the circuit breaker state.
+func (e *Embedder) Probe(ctx context.Context) EmbedStatus {
+	status := EmbedStatus{Endpoint: e.baseURL, Model: e.model}
+
+	body, _ := json.Marshal(embeddingRequest{Model: e.model, Input: "ping"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.baseURL+"/embeddings", bytes.NewReader(body))
+	if err != nil {
+		status.Error = "failed to build request: " + err.Error()
+		return status
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if e.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		status.Error = "unreachable: " + err.Error()
+		return status
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		status.Error = fmt.Sprintf("authentication failed (HTTP %d) — check EMBEDDING_API_KEY", resp.StatusCode)
+		return status
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		status.Error = "embeddings endpoint not found (HTTP 404) — this provider may not support embeddings (e.g. OpenRouter)"
+		return status
+	}
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		status.Error = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		return status
+	}
+
+	var embResp embeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&embResp); err != nil || len(embResp.Data) == 0 {
+		status.Error = "invalid response from embedding endpoint"
+		return status
+	}
+
+	status.OK = true
+	status.Dimensions = len(embResp.Data[0].Embedding)
+	return status
+}
+
 // Embed generates an embedding vector for the given text.
 func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	e.mu.Lock()

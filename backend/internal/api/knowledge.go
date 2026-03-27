@@ -128,6 +128,13 @@ func (h *KnowledgeHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, "deleted")
 }
 
+// EmbeddingStatus probes the configured embedding endpoint and returns live status.
+// GET /api/v1/knowledge/embedding-status
+func (h *KnowledgeHandler) EmbeddingStatus(w http.ResponseWriter, r *http.Request) {
+	status := h.manager.ProbeEmbedder(r.Context())
+	writeJSON(w, http.StatusOK, status)
+}
+
 // Count returns the number of knowledge entries for a workforce.
 func (h *KnowledgeHandler) Count(w http.ResponseWriter, r *http.Request) {
 	wfID, err := uuid.Parse(r.PathValue("id"))
