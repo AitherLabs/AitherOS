@@ -39,3 +39,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Workforce runtime data — credentials, cloned repos, agent workspace contents
+workforces/*/
+!workforces/.gitkeep
