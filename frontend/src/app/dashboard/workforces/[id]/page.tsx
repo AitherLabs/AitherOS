@@ -138,6 +138,7 @@ export default function WorkforceDetailPage() {
   const [allMcpServers, setAllMcpServers] = useState<MCPServer[]>([]);
   const [agentPerms, setAgentPerms] = useState<Record<string, Record<string, string[]>>>({});
   const [mcpLoading, setMcpLoading] = useState(false);
+  const [discoveringMcp, setDiscoveringMcp] = useState<string | null>(null);
 
   // Knowledge state
   const [knowledgeEntries, setKnowledgeEntries] = useState<KnowledgeEntry[]>([]);
@@ -442,6 +443,18 @@ export default function WorkforceDetailPage() {
       await loadData();
     } catch (err) {
       console.error('Revoke tools failed:', err);
+    }
+  }
+
+  async function handleDiscoverMCPTools(serverId: string) {
+    setDiscoveringMcp(serverId);
+    try {
+      await api.discoverMCPTools(serverId);
+      await loadData();
+    } catch (err) {
+      console.error('Discover tools failed:', err);
+    } finally {
+      setDiscoveringMcp(null);
     }
   }
 
@@ -1106,14 +1119,28 @@ export default function WorkforceDetailPage() {
                             </p>
                           </div>
                         </div>
-                        <Button
-                          variant='ghost'
-                          size='sm'
-                          className='text-xs text-red-400 hover:text-red-400'
-                          onClick={() => handleDetachMCP(srv.id)}
-                        >
-                          <IconLinkOff className='mr-1 h-3 w-3' /> Detach
-                        </Button>
+                        <div className='flex gap-1'>
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            className='text-xs text-muted-foreground hover:text-foreground'
+                            disabled={discoveringMcp === srv.id}
+                            onClick={() => handleDiscoverMCPTools(srv.id)}
+                            title='Re-run tool discovery'
+                          >
+                            {discoveringMcp === srv.id
+                              ? <IconLoader2 className='h-3 w-3 animate-spin' />
+                              : <IconRefresh className='h-3 w-3' />}
+                          </Button>
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            className='text-xs text-red-400 hover:text-red-400'
+                            onClick={() => handleDetachMCP(srv.id)}
+                          >
+                            <IconLinkOff className='mr-1 h-3 w-3' /> Detach
+                          </Button>
+                        </div>
                       </div>
                     </CardHeader>
                     <CardContent className='space-y-3'>
@@ -1447,9 +1474,14 @@ export default function WorkforceDetailPage() {
 
             {/* Add credential form */}
             <div className='mb-4 rounded-xl border border-border/40 bg-[#0A0D11]/60 p-4'>
-              <p className='mb-3 text-xs text-muted-foreground'>
-                Credentials are encrypted at rest and accessible to agents via <code className='text-[#9A66FF]'>get_secret(service, key)</code> in Aither-Tools.
+              <p className='mb-1 text-xs text-muted-foreground'>
+                Credentials are encrypted at rest. Agents access them via Aither-Tools:
               </p>
+              <ul className='mb-3 space-y-0.5 pl-3 text-[11px] text-muted-foreground/70'>
+                <li><code className='text-[#14FFF7]'>list_secrets()</code> — discover all available service/key pairs</li>
+                <li><code className='text-[#14FFF7]'>get_secret("service", "key_name")</code> — retrieve a value at runtime</li>
+                <li className='text-muted-foreground/50'>If a credential is missing, the agent should signal <code>needs_help</code> with the exact service and key name needed.</li>
+              </ul>
               <div className='flex gap-2'>
                 <Input
                   placeholder='Service (e.g. hackerone)'
