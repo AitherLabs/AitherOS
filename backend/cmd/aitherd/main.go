@@ -95,14 +95,13 @@ func main() {
 	log.Println("MCP Manager initialized")
 
 	// Initialize Knowledge Manager (vector KB + RAG)
-	embModel := os.Getenv("EMBEDDING_MODEL")
-	if embModel == "" {
-		embModel = "text-embedding-3-small"
-	}
-	embedder := knowledge.NewEmbedder(cfg.LLM.APIBase, cfg.LLM.APIKey, embModel)
+	// Uses a dedicated embedding endpoint — decoupled from the LLM provider.
+	// Set EMBEDDING_API_BASE + EMBEDDING_API_KEY to use a different provider
+	// (e.g. direct OpenAI) while routing LLM calls through OpenRouter.
+	embedder := knowledge.NewEmbedder(cfg.Embedding.APIBase, cfg.Embedding.APIKey, cfg.Embedding.Model)
 	knowledgeMgr := knowledge.NewManager(db, embedder)
 	orch.SetKnowledgeManager(knowledgeMgr)
-	log.Printf("Knowledge Manager initialized (embedding model: %s)", embModel)
+	log.Printf("Knowledge Manager initialized (embedding model: %s via %s)", cfg.Embedding.Model, cfg.Embedding.APIBase)
 
 	// Initialize JWT auth
 	var jwtMgr *auth.JWTManager
