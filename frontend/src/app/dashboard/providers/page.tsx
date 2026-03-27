@@ -32,8 +32,11 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import {
+  IconCheck,
   IconDotsVertical,
+  IconLoader2,
   IconPencil,
+  IconPlug,
   IconPlus,
   IconRefresh,
   IconTrash,
@@ -43,13 +46,25 @@ import api, { Provider, CreateProviderRequest } from '@/lib/api';
 
 const PROVIDER_TYPES = [
   { value: 'openai', label: 'OpenAI' },
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'gemini', label: 'Google Gemini' },
   { value: 'openai_compatible', label: 'OpenAI Compatible' },
   { value: 'ollama', label: 'Ollama' },
-  { value: 'openrouter', label: 'OpenRouter' },
   { value: 'litellm', label: 'LiteLLM' },
   { value: 'picoclaw', label: 'PicoClaw' },
   { value: 'openclaw', label: 'OpenClaw' }
 ];
+
+const PROVIDER_DEFAULTS: Record<string, { base_url: string; placeholder: string }> = {
+  openai:           { base_url: 'https://api.openai.com/v1',                                   placeholder: 'sk-...' },
+  openrouter:       { base_url: 'https://openrouter.ai/api/v1',                                placeholder: 'sk-or-...' },
+  gemini:           { base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',     placeholder: 'AIza...' },
+  ollama:           { base_url: 'http://localhost:11434/v1',                                   placeholder: '(no key needed)' },
+  litellm:          { base_url: 'http://localhost:4000/v1',                                    placeholder: 'sk-...' },
+  openai_compatible:{ base_url: '',                                                             placeholder: 'API key' },
+  picoclaw:         { base_url: 'http://localhost:55000',                                      placeholder: '(no key needed)' },
+  openclaw:         { base_url: '',                                                             placeholder: 'API key' },
+};
 
 const MODEL_TYPES = [
   { value: 'llm', label: 'LLM' },
@@ -95,6 +110,12 @@ export default function ProvidersPage() {
   const [liveModelsList, setLiveModelsList] = useState<string[]>([]);
   const [fetchingLive, setFetchingLive] = useState(false);
 
+  // Create dialog — connection test state
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
+  const [testError, setTestError] = useState('');
+  const [testModels, setTestModels] = useState<string[]>([]);
+  const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
+
   const loadProviders = useCallback(async () => {
     try {
       if (session?.accessToken) api.setToken(session.accessToken);
@@ -115,11 +136,54 @@ export default function ProvidersPage() {
     setFormData({
       name: '',
       provider_type: 'openai',
-      base_url: '',
+      base_url: PROVIDER_DEFAULTS['openai'].base_url,
       api_key: '',
       is_default: false
     });
+    setTestStatus('idle');
+    setTestError('');
+    setTestModels([]);
+    setSelectedModels(new Set());
     setCreateOpen(true);
+  }
+
+  function handleProviderTypeChange(type: string) {
+    const defaults = PROVIDER_DEFAULTS[type] ?? { base_url: '', placeholder: 'API key' };
+    setFormData((f) => ({ ...f, provider_type: type, base_url: defaults.base_url }));
+    setTestStatus('idle');
+    setTestModels([]);
+    setSelectedModels(new Set());
+  }
+
+  async function handleTestConnection() {
+    if (!formData.base_url) return;
+    setTestStatus('testing');
+    setTestError('');
+    setTestModels([]);
+    setSelectedModels(new Set());
+    try {
+      const res = await api.testProvider({ base_url: formData.base_url, api_key: formData.api_key });
+      if (res.data?.ok) {
+        setTestStatus('ok');
+        const models = res.data.models ?? [];
+        setTestModels(models);
+        setSelectedModels(new Set(models));
+      } else {
+        setTestStatus('error');
+        setTestError(res.data?.error ?? 'Connection failed');
+      }
+    } catch {
+      setTestStatus('error');
+      setTestError('Request failed — check the URL and try again');
+    }
+  }
+
+  function toggleModel(m: string) {
+    setSelectedModels((prev) => {
+      const next = new Set(prev);
+      next.has(m) ? next.delete(m) : next.add(m);
+      return next;
+    });
   }
 
   function openEdit(p: Provider) {
@@ -136,7 +200,14 @@ export default function ProvidersPage() {
   async function handleCreate() {
     setSaving(true);
     try {
-      await api.createProvider(formData);
+      const created = await api.createProvider(formData);
+      if (created.data && selectedModels.size > 0) {
+        await Promise.allSettled(
+          Array.from(selectedModels).map((name) =>
+            api.addProviderModel(created.data!.id, { model_name: name, model_type: 'llm' })
+          )
+        );
+      }
       setCreateOpen(false);
       await loadProviders();
     } catch (err) {
@@ -383,32 +454,25 @@ export default function ProvidersPage() {
 
       {/* Create Provider Dialog */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className='max-w-lg max-h-[90vh] flex flex-col'>
+        <DialogContent className='flex max-h-[90vh] max-w-lg flex-col'>
           <DialogHeader className='shrink-0'>
             <DialogTitle>Add Provider</DialogTitle>
             <DialogDescription>
               Connect a new LLM backend to power your agents.
             </DialogDescription>
           </DialogHeader>
-          <div className='overflow-y-auto flex-1 min-h-0 space-y-4 py-2'>
+          <div className='min-h-0 flex-1 space-y-4 overflow-y-auto py-2'>
             <div className='space-y-2'>
               <Label>Name</Label>
               <Input
                 value={formData.name}
-                onChange={(e) =>
-                  setFormData({ ...formData, name: e.target.value })
-                }
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 placeholder='My OpenAI Key'
               />
             </div>
             <div className='space-y-2'>
               <Label>Provider Type</Label>
-              <Select
-                value={formData.provider_type}
-                onValueChange={(v) =>
-                  setFormData({ ...formData, provider_type: v })
-                }
-              >
+              <Select value={formData.provider_type} onValueChange={handleProviderTypeChange}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -425,29 +489,89 @@ export default function ProvidersPage() {
               <Label>Base URL</Label>
               <Input
                 value={formData.base_url || ''}
-                onChange={(e) =>
-                  setFormData({ ...formData, base_url: e.target.value })
-                }
+                onChange={(e) => {
+                  setFormData({ ...formData, base_url: e.target.value });
+                  setTestStatus('idle');
+                }}
                 placeholder='https://api.openai.com/v1'
               />
             </div>
             <div className='space-y-2'>
-              <Label>API Key</Label>
+              <div className='flex items-center justify-between'>
+                <Label>API Key</Label>
+                {formData.base_url && (
+                  <Button
+                    variant='ghost'
+                    size='sm'
+                    className='h-6 px-2 text-xs text-[#14FFF7] hover:text-[#14FFF7]'
+                    disabled={testStatus === 'testing'}
+                    onClick={handleTestConnection}
+                  >
+                    {testStatus === 'testing' ? (
+                      <><IconLoader2 className='mr-1 h-3 w-3 animate-spin' />Testing...</>
+                    ) : (
+                      <><IconPlug className='mr-1 h-3 w-3' />Test Connection</>
+                    )}
+                  </Button>
+                )}
+              </div>
               <Input
                 type='password'
                 value={formData.api_key || ''}
-                onChange={(e) =>
-                  setFormData({ ...formData, api_key: e.target.value })
-                }
-                placeholder='sk-...'
+                onChange={(e) => {
+                  setFormData({ ...formData, api_key: e.target.value });
+                  setTestStatus('idle');
+                }}
+                placeholder={PROVIDER_DEFAULTS[formData.provider_type]?.placeholder ?? 'API key'}
               />
             </div>
+
+            {/* Test result */}
+            {testStatus === 'ok' && (
+              <div className='rounded-md border border-[#56D090]/30 bg-[#56D090]/10 p-3'>
+                <div className='mb-2 flex items-center gap-2 text-xs font-medium text-[#56D090]'>
+                  <IconCheck className='h-3.5 w-3.5' />
+                  Connected · {testModels.length} model{testModels.length !== 1 ? 's' : ''} available
+                </div>
+                {testModels.length > 0 && (
+                  <>
+                    <p className='mb-2 text-[11px] text-muted-foreground'>
+                      Select models to register (all selected by default):
+                    </p>
+                    <div className='flex flex-wrap gap-1.5'>
+                      {testModels.map((m) => (
+                        <button
+                          key={m}
+                          onClick={() => toggleModel(m)}
+                          className={`rounded px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                            selectedModels.has(m)
+                              ? 'bg-[#14FFF7]/20 text-[#14FFF7] ring-1 ring-[#14FFF7]/40'
+                              : 'bg-muted/50 text-muted-foreground line-through'
+                          }`}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                    <p className='mt-2 text-[10px] text-muted-foreground'>
+                      {selectedModels.size} of {testModels.length} selected
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+            {testStatus === 'error' && (
+              <div className='rounded-md border border-red-500/30 bg-red-500/10 p-3'>
+                <p className='text-xs text-red-400'>
+                  <span className='font-medium'>Connection failed: </span>{testError}
+                </p>
+              </div>
+            )}
+
             <div className='flex items-center gap-2'>
               <Switch
                 checked={formData.is_default || false}
-                onCheckedChange={(v) =>
-                  setFormData({ ...formData, is_default: v })
-                }
+                onCheckedChange={(v) => setFormData({ ...formData, is_default: v })}
               />
               <Label>Set as default provider</Label>
             </div>
@@ -461,7 +585,7 @@ export default function ProvidersPage() {
               disabled={saving || !formData.name || !formData.provider_type}
               className='bg-[#14FFF7] text-[#0A0D11] hover:bg-[#14FFF7]/90'
             >
-              {saving ? 'Creating...' : 'Create'}
+              {saving ? 'Creating...' : selectedModels.size > 0 ? `Create + ${selectedModels.size} model${selectedModels.size !== 1 ? 's' : ''}` : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>

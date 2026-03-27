@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -191,44 +193,95 @@ func (h *ProviderHandler) ProbeModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base := strings.TrimRight(provider.BaseURL, "/")
+	ids, probeErr := probeModelsFromURL(r.Context(), provider.BaseURL, provider.APIKey)
+	if probeErr != "" {
+		writeError(w, http.StatusBadGateway, probeErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, ids)
+}
+
+// TestConnection tests connectivity and key validity without saving a provider.
+// POST /api/v1/providers/test
+func (h *ProviderHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.BaseURL == "" {
+		writeError(w, http.StatusBadRequest, "base_url is required")
+		return
+	}
+
+	models, probeErr := probeModelsFromURL(r.Context(), req.BaseURL, req.APIKey)
+	if probeErr != "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":     false,
+			"models": []string{},
+			"error":  probeErr,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"models": models,
+		"error":  "",
+	})
+}
+
+// probeModelsFromURL is the shared logic for hitting GET /models on a base URL.
+// Returns model IDs and an error string (empty on success).
+func probeModelsFromURL(ctx context.Context, baseURL, apiKey string) ([]string, string) {
+	base := strings.TrimRight(baseURL, "/")
+	// Providers that end with /openai (e.g. Gemini) or /v1 already have the right prefix
 	var modelsURL string
-	if strings.HasSuffix(base, "/v1") {
+	if strings.HasSuffix(base, "/v1") || strings.HasSuffix(base, "/openai") {
 		modelsURL = base + "/models"
 	} else {
 		modelsURL = base + "/v1/models"
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, modelsURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to build request: "+err.Error())
-		return
+		return nil, "failed to build request: " + err.Error()
 	}
-	if provider.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to reach provider: "+err.Error())
-		return
+		return nil, "unreachable — check the base URL: " + err.Error()
 	}
 	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, fmt.Sprintf("authentication failed (HTTP %d) — check your API key", resp.StatusCode)
+	case http.StatusNotFound:
+		return nil, fmt.Sprintf("models endpoint not found (HTTP 404) — check the base URL")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Sprintf("provider returned HTTP %d", resp.StatusCode)
+	}
 
 	var result struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		writeError(w, http.StatusBadGateway, "failed to parse response: "+err.Error())
-		return
+	ids := []string{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
+		for _, m := range result.Data {
+			if m.ID != "" {
+				ids = append(ids, m.ID)
+			}
+		}
 	}
-
-	ids := make([]string, 0, len(result.Data))
-	for _, m := range result.Data {
-		ids = append(ids, m.ID)
-	}
-	writeJSON(w, http.StatusOK, ids)
+	return ids, ""
 }
