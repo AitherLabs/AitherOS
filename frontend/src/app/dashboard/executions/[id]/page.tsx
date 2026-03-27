@@ -659,8 +659,148 @@ interface LiveEvent {
   type: string;
   agent_name?: string;
   content: string;
+  data?: Record<string, any>;
   timestamp: Date;
   isNew?: boolean;
+}
+
+function EventDetail({ ev, dot }: { ev: LiveEvent; dot: string }) {
+  const d = ev.data;
+  if (!d) return null;
+
+  // Tool call: show args + result summary
+  if (ev.type === 'tool_call') {
+    const tool = d.tool as string | undefined;
+    const args = d.args as Record<string, any> | undefined;
+    const resultLen = d.result_length as number | undefined;
+    const round = d.round as number | undefined;
+    return (
+      <div className='mt-1.5 space-y-1'>
+        {tool && (
+          <div className='flex items-center gap-1.5'>
+            <span className='text-[9px] font-semibold uppercase text-muted-foreground/50'>Tool</span>
+            <code className='rounded bg-muted/40 px-1.5 py-0.5 text-[10px] font-mono' style={{ color: dot }}>{tool}</code>
+            {round != null && <span className='text-[9px] text-muted-foreground/35'>round {round}</span>}
+            {resultLen != null && <span className='ml-auto text-[9px] text-muted-foreground/35'>{resultLen} chars returned</span>}
+          </div>
+        )}
+        {args && Object.keys(args).length > 0 && (
+          <div className='rounded bg-muted/20 p-1.5'>
+            <span className='text-[9px] font-semibold uppercase text-muted-foreground/40'>Arguments</span>
+            {Object.entries(args).map(([k, v]) => (
+              <div key={k} className='mt-0.5 flex gap-1.5 text-[10px]'>
+                <span className='shrink-0 text-muted-foreground/50'>{k}:</span>
+                <span className='break-all font-mono text-[#EAEAEA]/70'>
+                  {typeof v === 'string' ? (v.length > 200 ? v.slice(0, 200) + '…' : v) : JSON.stringify(v)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Subtask started/done: show subtask description
+  if (ev.type === 'subtask_started' || ev.type === 'subtask_done') {
+    const subtask = d.subtask as string | undefined;
+    const tokens = d.tokens as number | undefined;
+    return (
+      <div className='mt-1.5 space-y-1'>
+        {subtask && (
+          <p className='break-words text-[10px] leading-relaxed text-[#EAEAEA]/60'>{subtask}</p>
+        )}
+        {tokens != null && (
+          <span className='text-[9px] text-muted-foreground/40'>{tokens.toLocaleString()} tokens</span>
+        )}
+      </div>
+    );
+  }
+
+  // Human required / needs_help: show reason prominently
+  if (ev.type === 'human_required') {
+    const reason = d.reason as string | undefined;
+    return reason ? (
+      <div className='mt-1.5 rounded border border-[#FFBF47]/20 bg-[#FFBF47]/5 p-1.5'>
+        <p className='break-words text-[10px] leading-relaxed text-[#FFBF47]/80'>{reason}</p>
+      </div>
+    ) : null;
+  }
+
+  // Agent error: show full error
+  if (ev.type === 'agent_error') {
+    return (
+      <div className='mt-1.5 rounded bg-red-500/5 p-1.5'>
+        <p className='break-words font-mono text-[10px] leading-relaxed text-red-400/70'>{ev.content}</p>
+      </div>
+    );
+  }
+
+  // Handoff: show from/to
+  if (ev.type === 'agent_handoff') {
+    const from = d.from_agent as string | undefined;
+    const to = d.to_agent as string | undefined;
+    if (from && to) {
+      return (
+        <div className='mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground/50'>
+          <span>{from}</span>
+          <span>→</span>
+          <span style={{ color: dot }}>{to}</span>
+        </div>
+      );
+    }
+  }
+
+  // Discussion turn: show peer/question
+  if (ev.type === 'peer_consultation') {
+    const peer = d.peer as string | undefined;
+    const question = d.question as string | undefined;
+    if (question) {
+      return (
+        <div className='mt-1.5 space-y-0.5'>
+          {peer && <span className='text-[9px] font-semibold uppercase text-muted-foreground/40'>Asking {peer}</span>}
+          <p className='break-words text-[10px] leading-relaxed text-[#EAEAEA]/60'>{question}</p>
+        </div>
+      );
+    }
+  }
+
+  return null;
+}
+
+function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: string }) {
+  const [open, setOpen] = useState(false);
+  const hasDetail = !!ev.data && Object.keys(ev.data).length > 0;
+  return (
+    <div
+      className={`flow-event-enter rounded-md border border-border/20 bg-background/30 ${hasDetail ? 'cursor-pointer' : ''}`}
+      style={{ borderLeftColor: dot + '60', borderLeftWidth: 2 }}
+      onClick={() => hasDetail && setOpen(v => !v)}
+    >
+      <div className='flex items-center gap-1.5 p-2'>
+        <span className='h-1.5 w-1.5 rounded-full shrink-0' style={{ backgroundColor: dot }} />
+        <span className='text-[10px] font-semibold truncate' style={{ color: dot }}>
+          {ev.agent_name ? `${ev.agent_name} · ` : ''}{label}
+        </span>
+        <span className='ml-auto shrink-0 text-[9px] text-muted-foreground/35'>
+          {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        </span>
+        {hasDetail && (
+          <IconChevronRight className={`h-2.5 w-2.5 shrink-0 text-muted-foreground/30 transition-transform duration-150 ${open ? 'rotate-90' : ''}`} />
+        )}
+      </div>
+      {/* Summary line (always visible) */}
+      {ev.type !== 'agent_error' && (
+        <p className='px-2 pb-1.5 break-words text-[10px] leading-relaxed text-muted-foreground/65 line-clamp-2 -mt-1'>{ev.content}</p>
+      )}
+      {/* Expanded detail */}
+      {open && hasDetail && (
+        <div className='border-t border-border/20 px-2 pb-2'>
+          <EventDetail ev={ev} dot={dot} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ToolCallBlock({ calls }: { calls: ToolCallRecord[] }) {
@@ -1148,6 +1288,7 @@ export default function ExecutionDetailPage() {
           type: e.type,
           agent_name: e.agent_name || undefined,
           content: e.message,
+          data: e.data,
           timestamp: new Date(e.timestamp),
           isNew: false,
         }));
@@ -1226,6 +1367,7 @@ export default function ExecutionDetailPage() {
             type: data.type || 'event',
             agent_name: data.agent_name,
             content: data.message || data.content || JSON.stringify(data),
+            data: data.data,
             timestamp: new Date(),
             isNew: true
           };
@@ -1762,24 +1904,7 @@ export default function ExecutionDetailPage() {
                     const evCfg = eventTypeConfig[ev.type];
                     const dot = evCfg?.dot || '#6B7280';
                     const label = evCfg?.label || ev.type.replace(/_/g, ' ');
-                    return (
-                      <div
-                        key={ev.id}
-                        className='flow-event-enter rounded-md border border-border/20 bg-background/30 p-2'
-                        style={{ borderLeftColor: dot + '60', borderLeftWidth: 2 }}
-                      >
-                        <div className='flex items-center gap-1.5 mb-0.5'>
-                          <span className='h-1.5 w-1.5 rounded-full shrink-0' style={{ backgroundColor: dot }} />
-                          <span className='text-[10px] font-semibold truncate' style={{ color: dot }}>
-                            {ev.agent_name ? `${ev.agent_name} · ` : ''}{label}
-                          </span>
-                          <span className='ml-auto shrink-0 text-[9px] text-muted-foreground/35'>
-                            {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                          </span>
-                        </div>
-                        <p className='break-words text-[10px] leading-relaxed text-muted-foreground/65 line-clamp-3'>{ev.content}</p>
-                      </div>
-                    );
+                    return <EventCard key={ev.id} ev={ev} dot={dot} label={label} />;
                   })
                 )}
                 <div ref={eventsEndRef} />
