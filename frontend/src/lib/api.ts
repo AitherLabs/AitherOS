@@ -780,6 +780,7 @@ export interface MCPServer {
   headers: Record<string, string>;
   env_vars: Record<string, string>;
   is_enabled: boolean;
+  icon?: string;
   tools?: MCPToolDefinition[];
   created_at: string;
   updated_at: string;
