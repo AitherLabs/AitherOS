@@ -708,7 +708,7 @@ export default function AgentDetailPage() {
                 {label}
                 {id === 'tools' && mcpTools.length > 0 && (
                   <span className='rounded-full bg-[#9A66FF]/20 px-1.5 py-0 text-[8px] text-[#9A66FF]'>
-                    {mcpTools.reduce((s, e) => s + e.tools.length, 0)}
+                    {mcpTools.reduce((s, e) => s + (e.tools?.length ?? 0), 0)}
                   </span>
                 )}
                 {id === 'memory' && messages.length > 0 && (
@@ -815,7 +815,7 @@ export default function AgentDetailPage() {
                     </div>
                   </div>
                 ) : (
-                  mcpTools.map(({ server, tools: srvTools }) => (
+                  mcpTools.map(({ server, tools: srvToolsRaw }) => { const srvTools = srvToolsRaw ?? []; return (
                     <div key={server.id}>
                       <div className='mb-2 flex items-center gap-2'>
                         <div className='flex h-5 w-5 items-center justify-center rounded bg-[#9A66FF]/15'>
@@ -872,7 +872,7 @@ export default function AgentDetailPage() {
                         })}
                       </div>
                     </div>
-                  ))
+                  ); })
                 )}
                 {tools.length > 0 && (
                   <div>

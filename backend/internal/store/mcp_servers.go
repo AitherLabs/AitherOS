@@ -223,7 +223,7 @@ func (s *Store) ListMCPServerTools(ctx context.Context, serverID uuid.UUID) ([]m
 	}
 	defer rows.Close()
 
-	var tools []models.MCPToolDefinition
+	tools := []models.MCPToolDefinition{}
 	for rows.Next() {
 		t := models.MCPToolDefinition{}
 		var schemaJSON []byte
