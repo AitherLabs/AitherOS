@@ -29,6 +29,7 @@ import {
   IconArrowRight,
   IconBolt,
   IconBrain,
+  IconCheck,
   IconClock,
   IconCoins,
   IconDeviceFloppy,
@@ -52,30 +53,46 @@ import api, { ActivityEvent, Agent, Approval, Credential, Execution, KanbanTask,
 import { AvatarUpload } from '@/components/avatar-upload';
 import { EntityAvatar } from '@/components/entity-avatar';
 
-// Well-known service → suggested key names for the quick-add credential picker
-const CREDENTIAL_CATALOG: Record<string, string[]> = {
-  github:     ['token', 'username'],
-  gitlab:     ['token'],
-  openai:     ['api_key'],
-  anthropic:  ['api_key'],
-  jira:       ['api_key', 'email', 'url'],
-  confluence: ['api_key', 'email', 'url'],
-  linear:     ['api_key'],
-  notion:     ['api_key'],
-  slack:      ['bot_token', 'webhook_url'],
-  discord:    ['bot_token', 'webhook_url'],
-  aws:        ['access_key_id', 'secret_access_key', 'region'],
-  gcp:        ['service_account_json', 'project_id'],
-  azure:      ['client_id', 'client_secret', 'tenant_id'],
-  stripe:     ['secret_key'],
-  sendgrid:   ['api_key'],
-  twilio:     ['account_sid', 'auth_token'],
-  vercel:     ['token'],
-  cloudflare: ['api_token', 'account_id'],
-  datadog:    ['api_key', 'app_key'],
-  pagerduty:  ['api_key'],
-  custom:     [],
+// Per-server credential hints: what each MCP server's tools typically need via get_secret()
+type CredHint = { service: string; key: string; label: string };
+const SERVER_CREDENTIAL_HINTS: Record<string, CredHint[]> = {
+  'Aither-Tools': [
+    { service: 'github',    key: 'token',      label: 'GitHub personal access token — for git_clone and private repos' },
+    { service: 'gitlab',    key: 'token',      label: 'GitLab personal access token — for private GitLab repos' },
+    { service: 'npm',       key: 'token',      label: 'npm auth token — for publishing packages' },
+  ],
+  'GitHub Tools': [
+    { service: 'github',    key: 'token',      label: 'GitHub personal access token' },
+  ],
+  'GitLab Tools': [
+    { service: 'gitlab',    key: 'token',      label: 'GitLab personal access token' },
+  ],
+  'Slack Tools': [
+    { service: 'slack',     key: 'bot_token',  label: 'Slack bot token (xoxb-…)' },
+  ],
+  'Jira Tools': [
+    { service: 'jira',      key: 'api_key',    label: 'Jira API key' },
+    { service: 'jira',      key: 'email',      label: 'Jira account email' },
+    { service: 'jira',      key: 'url',        label: 'Jira instance URL' },
+  ],
 };
+
+// Derive credential hints from a server's env vars (for servers not in the static map).
+// Skips internal AITHER_* vars and already-set non-empty values.
+function envVarCredHints(name: string, envVars: Record<string, string> = {}): CredHint[] {
+  const hints: CredHint[] = [];
+  const credPatterns = ['TOKEN', 'API_KEY', 'SECRET', 'PASSWORD'];
+  for (const [k, v] of Object.entries(envVars)) {
+    if (k.startsWith('AITHER_')) continue;
+    if (v && v !== '') continue; // already configured
+    if (credPatterns.some(p => k.includes(p))) {
+      const svc = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const key = k.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      hints.push({ service: svc, key, label: `${k} — required by ${name}` });
+    }
+  }
+  return hints;
+}
 
 const statusColors: Record<string, { color: string; bg: string; border: string }> = {
   draft: { color: '#FFBF47', bg: '#FFBF4715', border: '#FFBF4730' },
@@ -1996,129 +2013,136 @@ export default function WorkforceDetailPage() {
             </div>
 
             {/* ── Credentials ── */}
-            <div className='rounded-lg border border-border/40 overflow-hidden'>
-              <div className='flex items-center gap-2 px-3 py-2 bg-muted/10 border-b border-border/30'>
-                <IconKey className='h-3.5 w-3.5 text-muted-foreground/60' />
-                <span className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex-1'>Credentials</span>
-                <span className='text-[10px] text-muted-foreground/50'>{credentials.length} stored</span>
-              </div>
+            {(() => {
+              // Compute per-server hints + resolve stored status
+              const storedSet = new Set(credentials.map(c => `${c.service}/${c.key_name}`));
+              const serverHints = mcpServers
+                .filter(s => s.name !== 'Aither-Tools' || true) // include all
+                .map(s => ({
+                  server: s,
+                  hints: SERVER_CREDENTIAL_HINTS[s.name] ?? envVarCredHints(s.name, s.env_vars ?? {}),
+                }))
+                .filter(({ hints }) => hints.length > 0);
+              const allHints = serverHints.flatMap(({ hints }) => hints);
+              const missingCount = allHints.filter(h => !storedSet.has(`${h.service}/${h.key}`)).length;
 
-              {/* Existing credentials grouped by service */}
-              {credentials.length > 0 && (
-                <div className='px-3 py-2 flex flex-wrap gap-1.5 border-b border-border/20'>
-                  {Object.entries(
-                    credentials.reduce<Record<string, string[]>>((acc, c) => {
-                      (acc[c.service] ??= []).push(c.key_name);
-                      return acc;
-                    }, {})
-                  ).map(([svc, keys]) => (
-                    <div key={svc} className='flex items-center gap-1 rounded-md border border-[#56D090]/25 bg-[#56D090]/8 px-2 py-0.5'>
-                      <span className='text-[10px] font-semibold text-[#56D090]'>{svc}</span>
-                      <span className='text-[9px] text-muted-foreground/50'>{keys.join(', ')}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Quick-add form */}
-              <div className='p-3 space-y-2'>
-                <p className='text-[10px] text-muted-foreground/50'>Add a credential your agents will need:</p>
-                <div className='flex gap-1.5'>
-                  {/* Service picker */}
-                  <div className='relative flex-1 min-w-0'>
-                    <select
-                      value={quickCredService}
-                      onChange={e => {
-                        const val = e.target.value;
-                        setQuickCredService(val);
-                        setQuickCredServiceText('');
-                        if (val !== '__custom__') {
-                          const suggested = CREDENTIAL_CATALOG[val]?.[0] ?? '';
-                          setQuickCredKey(suggested);
-                          setQuickCredKeyText('');
-                        } else {
-                          setQuickCredKey('');
-                          setQuickCredKeyText('');
-                        }
-                      }}
-                      className='w-full h-7 rounded-md border border-border/40 bg-background px-2 text-[11px] text-foreground appearance-none focus:outline-none focus:ring-1 focus:ring-ring'
-                    >
-                      <option value=''>Service…</option>
-                      {Object.keys(CREDENTIAL_CATALOG).filter(k => k !== 'custom').map(s => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                      <option value='__custom__'>custom…</option>
-                    </select>
+              return (
+                <div className='rounded-lg border border-border/40 overflow-hidden'>
+                  <div className='flex items-center gap-2 px-3 py-2 bg-muted/10 border-b border-border/30'>
+                    <IconKey className='h-3.5 w-3.5 text-muted-foreground/60' />
+                    <span className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex-1'>Credentials</span>
+                    {missingCount > 0 && (
+                      <span className='text-[10px] text-[#FFBF47]'>{missingCount} missing</span>
+                    )}
+                    {missingCount === 0 && credentials.length > 0 && (
+                      <span className='text-[10px] text-[#56D090]'>all set</span>
+                    )}
+                    <span className='text-[10px] text-muted-foreground/50 ml-1'>{credentials.length} stored</span>
                   </div>
-                  {/* Key name */}
-                  <div className='relative flex-1 min-w-0'>
-                    {quickCredService && quickCredService !== '__custom__' && CREDENTIAL_CATALOG[quickCredService]?.length > 0 ? (
-                      <select
-                        value={quickCredKey}
-                        onChange={e => { setQuickCredKey(e.target.value); setQuickCredKeyText(''); }}
-                        className='w-full h-7 rounded-md border border-border/40 bg-background px-2 text-[11px] text-foreground appearance-none focus:outline-none focus:ring-1 focus:ring-ring'
-                      >
-                        <option value=''>Key…</option>
-                        {CREDENTIAL_CATALOG[quickCredService].map(k => (
-                          <option key={k} value={k}>{k}</option>
-                        ))}
-                        <option value='__custom__'>custom…</option>
-                      </select>
-                    ) : (
+
+                  {/* Per-server credential checklist */}
+                  {serverHints.length > 0 && (
+                    <div className='divide-y divide-border/20 border-b border-border/30'>
+                      {serverHints.map(({ server, hints }) => (
+                        <div key={server.id} className='px-3 py-2 space-y-1'>
+                          <p className='text-[10px] font-semibold text-muted-foreground/70 mb-1'>{server.name}</p>
+                          {hints.map(hint => {
+                            const stored = storedSet.has(`${hint.service}/${hint.key}`);
+                            const isActive = quickCredService === hint.service && quickCredKey === hint.key;
+                            return (
+                              <div
+                                key={`${hint.service}/${hint.key}`}
+                                className={`flex items-center gap-2 rounded-md px-2 py-1 transition-colors ${isActive ? 'bg-[#9A66FF]/10 border border-[#9A66FF]/30' : 'hover:bg-muted/10'}`}
+                              >
+                                <div className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${stored ? 'bg-[#56D090]/15' : 'bg-[#FFBF47]/15'}`}>
+                                  {stored
+                                    ? <IconCheck className='h-2.5 w-2.5 text-[#56D090]' />
+                                    : <IconKey className='h-2.5 w-2.5 text-[#FFBF47]' />
+                                  }
+                                </div>
+                                <div className='flex-1 min-w-0'>
+                                  <span className={`text-[11px] font-mono font-semibold ${stored ? 'text-[#56D090]' : 'text-foreground'}`}>
+                                    {hint.service} / {hint.key}
+                                  </span>
+                                  <p className='text-[9px] text-muted-foreground/50 truncate'>{hint.label}</p>
+                                </div>
+                                {!stored && (
+                                  <Button
+                                    variant='ghost'
+                                    size='sm'
+                                    className='h-5 px-2 text-[10px] text-[#9A66FF] hover:bg-[#9A66FF]/10 shrink-0'
+                                    onClick={() => {
+                                      setQuickCredService(hint.service);
+                                      setQuickCredServiceText('');
+                                      setQuickCredKey(hint.key);
+                                      setQuickCredKeyText('');
+                                      setQuickCredValue('');
+                                    }}
+                                  >
+                                    Add
+                                  </Button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Quick-add form */}
+                  <div className='p-3 space-y-2'>
+                    {(quickCredService || serverHints.length === 0) && (
+                      <p className='text-[10px] text-muted-foreground/50'>
+                        {quickCredService
+                          ? <>Adding <span className='font-mono text-foreground'>{quickCredService} / {quickCredKey || '…'}</span> — enter the value:</>
+                          : 'Add a credential your agents will need:'}
+                      </p>
+                    )}
+                    {!quickCredService && serverHints.length > 0 && (
+                      <p className='text-[10px] text-muted-foreground/40'>Click "Add" above to fill in a credential, or enter one manually:</p>
+                    )}
+                    <div className='flex gap-1.5'>
+                      <Input
+                        value={quickCredService}
+                        onChange={e => { setQuickCredService(e.target.value); setQuickCredServiceText(''); }}
+                        placeholder='service (e.g. github)'
+                        className='h-7 flex-1 text-[11px] font-mono'
+                      />
                       <Input
                         value={quickCredKey}
-                        onChange={e => setQuickCredKey(e.target.value)}
-                        placeholder='key_name'
-                        className='h-7 text-[11px]'
+                        onChange={e => { setQuickCredKey(e.target.value); setQuickCredKeyText(''); }}
+                        placeholder='key (e.g. token)'
+                        className='h-7 flex-1 text-[11px] font-mono'
                       />
-                    )}
+                    </div>
+                    <div className='flex gap-1.5'>
+                      <Input
+                        type='password'
+                        value={quickCredValue}
+                        onChange={e => setQuickCredValue(e.target.value)}
+                        placeholder='Value / secret'
+                        className='h-7 flex-1 text-[11px] font-mono'
+                        onKeyDown={e => e.key === 'Enter' && handleQuickAddCred()}
+                      />
+                      <Button
+                        size='sm'
+                        className='h-7 px-3 text-[11px]'
+                        onClick={handleQuickAddCred}
+                        disabled={
+                          quickCredSaving ||
+                          !(quickCredService === '__custom__' ? quickCredServiceText.trim() : quickCredService.trim()) ||
+                          !(quickCredKey === '__custom__' ? quickCredKeyText.trim() : quickCredKey.trim()) ||
+                          !quickCredValue.trim()
+                        }
+                      >
+                        {quickCredSaving ? <IconLoader2 className='h-3 w-3 animate-spin' /> : 'Save'}
+                      </Button>
+                    </div>
                   </div>
                 </div>
-                {/* Custom service text input */}
-                {quickCredService === '__custom__' && (
-                  <Input
-                    value={quickCredServiceText}
-                    onChange={e => setQuickCredServiceText(e.target.value)}
-                    placeholder='Service name (e.g. github)'
-                    className='h-7 text-[11px]'
-                    autoFocus
-                  />
-                )}
-                {/* Custom key text input */}
-                {quickCredKey === '__custom__' && (
-                  <Input
-                    value={quickCredKeyText}
-                    onChange={e => setQuickCredKeyText(e.target.value)}
-                    placeholder='Key name (e.g. token)'
-                    className='h-7 text-[11px]'
-                    autoFocus
-                  />
-                )}
-                <div className='flex gap-1.5'>
-                  <Input
-                    type='password'
-                    value={quickCredValue}
-                    onChange={e => setQuickCredValue(e.target.value)}
-                    placeholder='Value / secret'
-                    className='h-7 flex-1 text-[11px] font-mono'
-                    onKeyDown={e => e.key === 'Enter' && handleQuickAddCred()}
-                  />
-                  <Button
-                    size='sm'
-                    className='h-7 px-3 text-[11px]'
-                    onClick={handleQuickAddCred}
-                    disabled={
-                      quickCredSaving ||
-                      !(quickCredService === '__custom__' ? quickCredServiceText.trim() : quickCredService.trim()) ||
-                      !(quickCredKey === '__custom__' ? quickCredKeyText.trim() : quickCredKey.trim()) ||
-                      !quickCredValue.trim()
-                    }
-                  >
-                    {quickCredSaving ? <IconLoader2 className='h-3 w-3 animate-spin' /> : 'Save'}
-                  </Button>
-                </div>
-              </div>
-            </div>
+              );
+            })()}
           </div>
           <DialogFooter className='shrink-0'>
             <Button variant='outline' onClick={() => setExecOpen(false)}>Cancel</Button>
