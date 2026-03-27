@@ -20,6 +20,86 @@ import (
 	"github.com/google/uuid"
 )
 
+// virtualSignalTools are injected into every agent's tool list so that LLMs
+// which prefer function-calling over inline JSON can still trigger the
+// completion/halt/peer-consultation flows correctly.
+var virtualSignalTools = []engine.ToolDefinition{
+	{
+		Name:        "signal_complete",
+		Description: "Signal that your subtask is fully complete. Call this instead of writing the JSON block manually.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"summary": map[string]any{"type": "string", "description": "Brief summary of what was accomplished"},
+			},
+			"required": []string{"summary"},
+		},
+	},
+	{
+		Name:        "signal_needs_help",
+		Description: "Signal that you cannot proceed and need human assistance (e.g. missing credentials, ambiguous requirements). Call this instead of writing the JSON block manually.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"reason": map[string]any{"type": "string", "description": "Explain exactly what you need from the human"},
+			},
+			"required": []string{"reason"},
+		},
+	},
+	{
+		Name:        "signal_blocked",
+		Description: "Signal that you are blocked waiting on another task or resource.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"reason": map[string]any{"type": "string", "description": "What is blocking you"},
+			},
+			"required": []string{"reason"},
+		},
+	},
+	{
+		Name:        "signal_ask_peer",
+		Description: "Consult a peer agent with a question before continuing your subtask.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"peer":     map[string]any{"type": "string", "description": "Name of the peer agent to consult"},
+				"question": map[string]any{"type": "string", "description": "The question to ask"},
+			},
+			"required": []string{"peer", "question"},
+		},
+	},
+}
+
+// handleVirtualSignalTool checks whether tc is a virtual signal tool call and,
+// if so, synthesises the equivalent JSON completion signal into resp.Content
+// and returns true (caller should break the tool loop).
+func handleVirtualSignalTool(tc engine.ToolCallInfo, resp *engine.TaskResponse) bool {
+	str := func(v any) string {
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return ""
+	}
+	var sig string
+	switch tc.Name {
+	case "signal_complete":
+		sig = fmt.Sprintf(`{"status":"complete","summary":%q}`, str(tc.Args["summary"]))
+	case "signal_needs_help":
+		sig = fmt.Sprintf(`{"status":"needs_help","reason":%q}`, str(tc.Args["reason"]))
+	case "signal_blocked":
+		sig = fmt.Sprintf(`{"status":"blocked","reason":%q}`, str(tc.Args["reason"]))
+	case "signal_ask_peer":
+		sig = fmt.Sprintf(`{"status":"ask_peer","peer":%q,"question":%q}`,
+			str(tc.Args["peer"]), str(tc.Args["question"]))
+	default:
+		return false
+	}
+	resp.Content = "```json\n" + sig + "\n```"
+	resp.ToolCalls = nil
+	return true
+}
+
 // completionSignal is the structured JSON that agents return to signal their state.
 type completionSignal struct {
 	Status    string `json:"status"`    // "complete", "needs_help", "blocked", "ask_peer", or omit to continue
@@ -866,6 +946,9 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	if o.mcpManager != nil {
 		toolDefs = o.mcpManager.ResolveAgentToolDefs(ctx, p.wf.ID, agent.ID)
 	}
+	// Append virtual signal tools so LLMs that prefer function-calling over
+	// inline JSON can still trigger the completion/halt/peer flows correctly.
+	toolDefs = append(toolDefs, virtualSignalTools...)
 
 	resp, err := eng.Submit(ctx, engine.TaskRequest{
 		AgentID:      agent.ID,
@@ -898,7 +981,17 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	}
 
 	for toolRound := 0; toolRound < maxToolRounds && len(resp.ToolCalls) > 0 && p.mcpSession != nil; toolRound++ {
+		signalled := false
 		for i, tc := range resp.ToolCalls {
+			// Intercept virtual signal tools before dispatching to MCP.
+			if handleVirtualSignalTool(tc, resp) {
+				o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
+					fmt.Sprintf("%s signalled via %s", agent.Name, tc.Name),
+					map[string]any{"tool": tc.Name, "args": tc.Args}))
+				signalled = true
+				break
+			}
+
 			o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
 				fmt.Sprintf("%s is calling tool: %s (round %d)", agent.Name, tc.Name, toolRound+1),
 				map[string]any{"tool": tc.Name, "args": tc.Args, "round": toolRound + 1}))
@@ -926,6 +1019,10 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 					fmt.Sprintf("%s received result from %s (round %d)", agent.Name, tc.Name, toolRound+1),
 					map[string]any{"tool": tc.Name, "result_length": len(result), "round": toolRound + 1}))
 			}
+		}
+
+		if signalled {
+			break
 		}
 
 		allToolCalls = append(allToolCalls, resp.ToolCalls...)
