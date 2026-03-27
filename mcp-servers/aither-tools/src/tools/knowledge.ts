@@ -1,6 +1,6 @@
 import fs   from 'node:fs/promises';
 import path from 'node:path';
-import { WORKFORCE_ID, API_URL, safeResolve } from '../config.js';
+import { WORKFORCE_ID, API_URL, safeResolve, apiHeaders } from '../config.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -12,7 +12,7 @@ async function postKnowledge(title: string, content: string): Promise<string> {
   const url = `${API_URL}/api/v1/workforces/${WORKFORCE_ID}/knowledge`;
   const res = await fetch(url, {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: apiHeaders(),
     body:    JSON.stringify({ title, content }),
   });
 
@@ -44,6 +44,22 @@ export const tools = [
     },
   },
   {
+    name: 'knowledge_search',
+    description:
+      'Search the workforce knowledge base using semantic similarity (RAG). ' +
+      'Returns the most relevant entries matching your query. Use this to actively ' +
+      'recall past findings, decisions, summaries, or any information previously saved ' +
+      'by you or your teammates across all executions.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query:    { type: 'string',  description: 'Natural language search query' },
+        limit:    { type: 'number',  description: 'Max results to return (default: 5, max: 20)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'knowledge_ingest_file',
     description:
       'Read a file from the workspace and add its contents to the workforce knowledge base. ' +
@@ -63,6 +79,33 @@ export const tools = [
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 export const handlers: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
+
+  async knowledge_search(args) {
+    if (!WORKFORCE_ID) throw new Error('AITHER_WORKFORCE_ID is not set — knowledge tools unavailable');
+    const query = (args.query as string).trim();
+    if (!query) throw new Error('query is required');
+    const limit = Math.min(Math.max(1, (args.limit as number) || 5), 20);
+
+    const url = `${API_URL}/api/v1/workforces/${WORKFORCE_ID}/knowledge/search`;
+    const res = await fetch(url, {
+      method:  'POST',
+      headers: apiHeaders(),
+      body:    JSON.stringify({ query, limit }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Knowledge search returned ${res.status}: ${body}`);
+    }
+
+    const entries = await res.json() as Array<{ title: string; content: string; similarity?: number }>;
+    if (!entries || entries.length === 0) return 'No relevant knowledge entries found for that query.';
+
+    return entries.map((e, i) => {
+      const sim = e.similarity != null ? ` (relevance: ${(e.similarity * 100).toFixed(0)}%)` : '';
+      return `### ${i + 1}. ${e.title || 'Untitled'}${sim}\n${e.content}`;
+    }).join('\n\n---\n\n');
+  },
 
   async knowledge_add(args) {
     const content = (args.content as string).trim();

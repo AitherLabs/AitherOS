@@ -94,6 +94,7 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 		"AITHER_WORKFORCE_NAME": wf.Name,
 		"AITHER_WORKFORCE_ID":   wf.ID.String(),
 		"AITHER_API_URL":        internalAPIURL(),
+		"AITHER_API_TOKEN":      os.Getenv("SERVICE_TOKEN"),
 	}
 
 	for _, s := range attached {

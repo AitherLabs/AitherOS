@@ -21,6 +21,14 @@ export const BRAVE_API_KEY  = process.env.AITHER_BRAVE_KEY   || '';
 export const SEARXNG_URL    = process.env.AITHER_SEARXNG_URL || '';
 export const WORKFORCE_ID   = process.env.AITHER_WORKFORCE_ID || '';
 export const API_URL        = process.env.AITHER_API_URL      || 'http://127.0.0.1:8080';
+export const API_TOKEN      = process.env.AITHER_API_TOKEN    || '';
+
+/** Returns auth headers for internal API calls. */
+export function apiHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extra };
+  if (API_TOKEN) headers['Authorization'] = `Bearer ${API_TOKEN}`;
+  return headers;
+}
 
 const ALLOWED_ROOTS = [WORKSPACE, NOTES_DIR, TOOLS_DIR];
 
