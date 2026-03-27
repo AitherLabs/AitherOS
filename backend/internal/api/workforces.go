@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/aitheros/backend/internal/models"
@@ -10,6 +11,16 @@ import (
 	"github.com/aitheros/backend/internal/workspace"
 	"github.com/google/uuid"
 )
+
+// workspacePathIfProvisioned returns the workspace path only if the directory exists on disk.
+// Returns empty string otherwise so the frontend can show a "Provision" button.
+func workspacePathIfProvisioned(wfName string) string {
+	path := workspace.WorkspacePath(wfName)
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
+}
 
 type WorkForceHandler struct {
 	store       *store.Store
@@ -49,7 +60,7 @@ func (h *WorkForceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Provision workspace + Aither-Tools in the background (non-blocking)
 	go h.provisioner.Provision(context.Background(), wf)
 
-	wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
+	wf.WorkspacePath = workspacePathIfProvisioned(wf.Name)
 	writeJSON(w, http.StatusCreated, wf)
 }
 
@@ -69,7 +80,7 @@ func (h *WorkForceHandler) Get(w http.ResponseWriter, r *http.Request) {
 	// Load full agent objects for the response
 	h.store.LoadWorkForceAgents(r.Context(), wf)
 
-	wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
+	wf.WorkspacePath = workspacePathIfProvisioned(wf.Name)
 	writeJSON(w, http.StatusOK, wf)
 }
 
@@ -90,7 +101,7 @@ func (h *WorkForceHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, wf := range workforces {
-		wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
+		wf.WorkspacePath = workspacePathIfProvisioned(wf.Name)
 	}
 	writeJSONList(w, http.StatusOK, workforces, total)
 }
@@ -114,7 +125,7 @@ func (h *WorkForceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wf.WorkspacePath = workspace.WorkspacePath(wf.Name)
+	wf.WorkspacePath = workspacePathIfProvisioned(wf.Name)
 	writeJSON(w, http.StatusOK, wf)
 }
 

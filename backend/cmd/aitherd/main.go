@@ -113,6 +113,10 @@ func main() {
 		log.Println("WARNING: JWT_SECRET not set, auth endpoints disabled")
 	}
 
+	// Start autonomous workforce scheduler
+	go orch.StartScheduler(context.Background())
+	log.Println("Autonomous scheduler started")
+
 	// Build router
 	router := api.NewRouter(db, orch, eb, reg, jwtMgr, knowledgeMgr, mcpMgr, cfg.CORS.Origins)
 

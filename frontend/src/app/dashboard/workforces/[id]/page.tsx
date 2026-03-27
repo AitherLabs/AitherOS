@@ -725,7 +725,22 @@ export default function WorkforceDetailPage() {
                     }`} />
                   </button>
                   {workforce.autonomous_mode && (
-                    <span className='text-xs text-[#9A66FF]'>every {workforce.heartbeat_interval_m}m</span>
+                    <div className='flex items-center gap-1'>
+                      <span className='text-xs text-muted-foreground'>every</span>
+                      <input
+                        type='number'
+                        min={5}
+                        max={1440}
+                        value={workforce.heartbeat_interval_m}
+                        onChange={async (e) => {
+                          const v = Math.max(5, Math.min(1440, parseInt(e.target.value) || 30));
+                          const res = await api.updateWorkforce(wfId, { heartbeat_interval_m: v });
+                          if (res.data) setWorkforce(res.data);
+                        }}
+                        className='w-12 rounded border border-[#9A66FF]/40 bg-transparent px-1 py-0.5 text-center text-xs text-[#9A66FF] focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                      />
+                      <span className='text-xs text-[#9A66FF]'>min</span>
+                    </div>
                   )}
                 </div>
                 <Button

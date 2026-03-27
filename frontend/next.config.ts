@@ -8,10 +8,15 @@ const nextConfig: NextConfig = {
   },
   transpilePackages: ['geist'],
   async rewrites() {
-    // /api/v1/* is handled by src/app/api/v1/[...path]/route.ts at request time.
-    // Rewrites here cover paths that Next.js route handlers can't proxy (WebSocket)
-    // and static assets served directly by the backend.
+    // next.config.ts is evaluated at server startup (pm2 restart), not build time.
+    // /api/v1/* rewrite works immediately; the route handler at
+    // src/app/api/v1/[...path]/route.ts takes over once the frontend is rebuilt
+    // (filesystem routes have priority over afterFiles rewrites).
     return [
+      {
+        source: '/api/v1/:path*',
+        destination: `${BACKEND}/api/v1/:path*`,
+      },
       {
         source: '/ws/:path*',
         destination: `${BACKEND}/ws/:path*`,

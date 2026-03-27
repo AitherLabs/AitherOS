@@ -1360,6 +1360,16 @@ export default function ExecutionDetailPage() {
     }
   }
 
+  async function handleRerun() {
+    if (!execution || !workforce) return;
+    try {
+      const res = await api.startExecution(workforce.id, execution.objective);
+      if (res.data?.id) router.push(`/dashboard/executions/${res.data.id}`);
+    } catch (err) {
+      console.error('Re-run failed:', err);
+    }
+  }
+
   async function handleIntervene() {
     if (!execution || !feedback.trim()) return;
     setIntervening(true);
@@ -1587,18 +1597,48 @@ export default function ExecutionDetailPage() {
           <Badge variant='outline' className={execStatusColors[execution.status] || 'bg-muted text-muted-foreground'}>
             {execution.status}
           </Badge>
-          <div className='flex items-center gap-1.5 text-xs text-muted-foreground'>
+          <div className='flex items-center gap-2 text-xs text-muted-foreground'>
             {(() => {
               const mt = messages.reduce((s, m) => s + (m.tokens_input || 0) + (m.tokens_output || 0), 0);
               const dt = execution.tokens_used > 0 ? execution.tokens_used : mt;
               const mi = messages.length > 0 ? Math.max(...messages.map(m => m.iteration || 0)) : 0;
               const di = execution.iterations > 0 ? execution.iterations : mi;
-              return (<><span>{formatTokens(dt)} tokens</span><span className='text-border'>·</span><span>{di} iter{di !== 1 ? 's' : ''}</span></>);
+              const budgetTokens = workforce?.budget_tokens ?? 0;
+              const budgetTimeS = workforce?.budget_time_s ?? 0;
+              const tokenPct = budgetTokens > 0 ? Math.min(100, (dt / budgetTokens) * 100) : 0;
+              const timePct = budgetTimeS > 0 && execution.elapsed_s > 0 ? Math.min(100, (execution.elapsed_s / budgetTimeS) * 100) : 0;
+              const tokenBarColor = tokenPct > 90 ? '#EF4444' : tokenPct > 70 ? '#FFBF47' : '#9A66FF';
+              const timeBarColor = timePct > 90 ? '#EF4444' : timePct > 70 ? '#FFBF47' : '#14FFF7';
+              return (
+                <>
+                  <span>{formatTokens(dt)} tokens</span>
+                  {budgetTokens > 0 && (
+                    <div
+                      className='w-14 h-1 rounded-full bg-border/40 overflow-hidden'
+                      title={`${formatTokens(dt)} / ${formatTokens(budgetTokens)} token budget (${tokenPct.toFixed(0)}%)`}
+                    >
+                      <div className='h-full rounded-full transition-all duration-500' style={{ width: `${tokenPct}%`, backgroundColor: tokenBarColor }} />
+                    </div>
+                  )}
+                  <span className='text-border'>·</span>
+                  <span>{di} iter{di !== 1 ? 's' : ''}</span>
+                  {execution.elapsed_s > 0 && (
+                    <>
+                      <span className='text-border'>·</span>
+                      <span>{execution.elapsed_s >= 60 ? `${(execution.elapsed_s / 60).toFixed(1)}m` : `${execution.elapsed_s}s`}</span>
+                      {budgetTimeS > 0 && (
+                        <div
+                          className='w-10 h-1 rounded-full bg-border/40 overflow-hidden'
+                          title={`${execution.elapsed_s}s / ${budgetTimeS}s time budget (${timePct.toFixed(0)}%)`}
+                        >
+                          <div className='h-full rounded-full transition-all duration-500' style={{ width: `${timePct}%`, backgroundColor: timeBarColor }} />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              );
             })()}
-            {execution.elapsed_s > 0 && (
-              <><span className='text-border'>·</span>
-              <span>{execution.elapsed_s >= 60 ? `${(execution.elapsed_s / 60).toFixed(1)}m` : `${execution.elapsed_s}s`}</span></>
-            )}
           </div>
           <Button variant='ghost' size='icon' className='h-8 w-8' onClick={handleRefresh} disabled={refreshing}>
             <IconRefresh className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
@@ -1613,6 +1653,17 @@ export default function ExecutionDetailPage() {
             <Button variant='outline' size='sm' className='border-[#56D090]/30 text-[#56D090] hover:bg-[#56D090]/10' onClick={handleResume}>
               <IconPlayerPlay className='mr-1 h-3.5 w-3.5' />
               Resume
+            </Button>
+          )}
+          {(execution.status === 'completed' || execution.status === 'failed') && workforce && (
+            <Button
+              variant='outline' size='sm'
+              className='border-[#9A66FF]/30 text-[#9A66FF] hover:bg-[#9A66FF]/10'
+              onClick={handleRerun}
+              title='Start a new execution with the same objective'
+            >
+              <IconPlayerPlay className='mr-1 h-3.5 w-3.5' />
+              Re-run
             </Button>
           )}
           {!isRunning && execution.status !== 'planning' && (
