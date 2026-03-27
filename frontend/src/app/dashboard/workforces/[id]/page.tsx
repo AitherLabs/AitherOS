@@ -1124,8 +1124,14 @@ export default function WorkforceDetailPage() {
                     <CardHeader className='pb-2'>
                       <div className='flex items-center justify-between'>
                         <div className='flex items-center gap-2'>
-                          <div className='flex h-8 w-8 items-center justify-center rounded-lg bg-[#14FFF7]/10'>
-                            <IconTool className='h-4 w-4 text-[#14FFF7]' />
+                          <div className='flex h-8 w-8 items-center justify-center rounded-lg bg-[#14FFF7]/10 overflow-hidden'>
+                            {srv.icon && (srv.icon.startsWith('/') || srv.icon.startsWith('http')) ? (
+                              <img src={srv.icon} alt={srv.name} className='h-5 w-5 object-contain' />
+                            ) : srv.icon ? (
+                              <span className='text-base leading-none'>{srv.icon}</span>
+                            ) : (
+                              <IconTool className='h-4 w-4 text-[#14FFF7]' />
+                            )}
                           </div>
                           <div>
                             <CardTitle className='text-sm'>{srv.name}</CardTitle>
@@ -1248,7 +1254,7 @@ export default function WorkforceDetailPage() {
             {/* Available servers to attach */}
             {(() => {
               const attachedIds = new Set(mcpServers.map((s) => s.id));
-              const available = allMcpServers.filter((s) => !attachedIds.has(s.id) && s.is_enabled);
+              const available = allMcpServers.filter((s) => !attachedIds.has(s.id) && s.is_enabled && s.name !== 'Aither-Tools');
               if (available.length === 0) return null;
               return (
                 <div className='mt-3'>
