@@ -1569,36 +1569,112 @@ export default function WorkforceDetailPage() {
               </div>
             </div>
 
+            {/* Smart checklist: what each attached server needs */}
+            {(() => {
+              const storedSet = new Set(credentials.map(c => `${c.service}/${c.key_name}`));
+              const serverHints = mcpServers
+                .map(s => ({
+                  server: s,
+                  hints: SERVER_CREDENTIAL_HINTS[s.name] ?? envVarCredHints(s.name, s.env_vars),
+                }))
+                .filter(({ hints }) => hints.length > 0);
+
+              if (serverHints.length === 0) return null;
+
+              return (
+                <div className='mb-4 rounded-xl border border-border/40 bg-[#0A0D11]/60 overflow-hidden'>
+                  <div className='px-4 py-3 border-b border-border/30 flex items-center gap-2'>
+                    <IconKey className='h-3.5 w-3.5 text-muted-foreground/60' />
+                    <span className='text-xs font-semibold text-muted-foreground flex-1'>Detected requirements from attached servers</span>
+                    <span className='text-[10px] text-muted-foreground/50'>
+                      Agents call <code className='text-[#14FFF7]'>get_secret(service, key)</code> at runtime
+                    </span>
+                  </div>
+                  <div className='divide-y divide-border/20'>
+                    {serverHints.map(({ server, hints }) => (
+                      <div key={server.id} className='px-4 py-3 space-y-1.5'>
+                        <p className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-2'>{server.name}</p>
+                        {hints.map(hint => {
+                          const stored = storedSet.has(`${hint.service}/${hint.key}`);
+                          const isEditing = credService === hint.service && credKey === hint.key;
+                          return (
+                            <div
+                              key={`${hint.service}/${hint.key}`}
+                              className={`flex items-center gap-3 rounded-lg px-3 py-2 transition-colors ${isEditing ? 'bg-[#9A66FF]/10 border border-[#9A66FF]/30' : 'bg-card/40 border border-border/20'}`}
+                            >
+                              <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${stored ? 'bg-[#56D090]/15' : 'bg-[#FFBF47]/10'}`}>
+                                {stored
+                                  ? <IconCheck className='h-3.5 w-3.5 text-[#56D090]' />
+                                  : <IconKey className='h-3 w-3 text-[#FFBF47]' />
+                                }
+                              </div>
+                              <div className='flex-1 min-w-0'>
+                                <div className='flex items-center gap-2'>
+                                  <span className={`font-mono text-xs font-semibold ${stored ? 'text-[#56D090]' : 'text-foreground'}`}>
+                                    {hint.service}
+                                  </span>
+                                  <span className='text-muted-foreground/40 text-xs'>/</span>
+                                  <span className={`font-mono text-xs ${stored ? 'text-[#56D090]/80' : 'text-foreground/80'}`}>
+                                    {hint.key}
+                                  </span>
+                                  {stored && <span className='text-[10px] text-[#56D090]/60'>stored ✓</span>}
+                                </div>
+                                <p className='text-[10px] text-muted-foreground/50 truncate mt-0.5'>{hint.label}</p>
+                              </div>
+                              {!stored && (
+                                <Button
+                                  variant='outline'
+                                  size='sm'
+                                  className='h-6 px-3 text-[11px] border-[#9A66FF]/40 text-[#9A66FF] hover:bg-[#9A66FF]/10 shrink-0'
+                                  onClick={() => {
+                                    setCredService(hint.service);
+                                    setCredKey(hint.key);
+                                    setCredValue('');
+                                    setCredShowValue(false);
+                                  }}
+                                >
+                                  Add
+                                </Button>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Add credential form */}
             <div className='mb-4 rounded-xl border border-border/40 bg-[#0A0D11]/60 p-4'>
-              <p className='mb-1 text-xs text-muted-foreground'>
-                Credentials are encrypted at rest. Agents access them via Aither-Tools:
+              <p className='mb-3 text-xs text-muted-foreground'>
+                {credService
+                  ? <>Adding credential <span className='font-mono text-foreground'>{credService} / {credKey}</span> — paste the secret value below:</>
+                  : 'Add a credential manually (or click "Add" on a detected requirement above):'
+                }
               </p>
-              <ul className='mb-3 space-y-0.5 pl-3 text-[11px] text-muted-foreground/70'>
-                <li><code className='text-[#14FFF7]'>list_secrets()</code> — discover all available service/key pairs</li>
-                <li><code className='text-[#14FFF7]'>get_secret("service", "key_name")</code> — retrieve a value at runtime</li>
-                <li className='text-muted-foreground/50'>If a credential is missing, the agent should signal <code>needs_help</code> with the exact service and key name needed.</li>
-              </ul>
               <div className='flex gap-2'>
                 <Input
-                  placeholder='Service (e.g. hackerone)'
+                  placeholder='service (e.g. github)'
                   value={credService}
                   onChange={(e) => setCredService(e.target.value)}
-                  className='h-8 text-xs'
+                  className='h-8 text-xs font-mono'
                 />
                 <Input
-                  placeholder='Key (e.g. api_key)'
+                  placeholder='key (e.g. token)'
                   value={credKey}
                   onChange={(e) => setCredKey(e.target.value)}
-                  className='h-8 text-xs'
+                  className='h-8 text-xs font-mono'
                 />
                 <div className='relative flex-1'>
                   <Input
                     type={credShowValue ? 'text' : 'password'}
-                    placeholder='Value'
+                    placeholder='Value / secret'
                     value={credValue}
                     onChange={(e) => setCredValue(e.target.value)}
-                    className='h-8 pr-8 text-xs'
+                    className='h-8 pr-8 text-xs font-mono'
+                    onKeyDown={e => e.key === 'Enter' && !credSaving && credService.trim() && credKey.trim() && credValue.trim() && document.getElementById('cred-save-btn')?.click()}
                   />
                   <button
                     onClick={() => setCredShowValue(v => !v)}
@@ -1608,6 +1684,7 @@ export default function WorkforceDetailPage() {
                   </button>
                 </div>
                 <Button
+                  id='cred-save-btn'
                   size='sm'
                   className='h-8 bg-[#9A66FF] hover:bg-[#9A66FF]/90'
                   disabled={!credService.trim() || !credKey.trim() || !credValue.trim() || credSaving}
@@ -1639,7 +1716,7 @@ export default function WorkforceDetailPage() {
               </div>
             </div>
 
-            {/* Credentials list grouped by service */}
+            {/* Stored credentials grouped by service */}
             {credentials.length > 0 ? (() => {
               const grouped: Record<string, Credential[]> = {};
               for (const c of credentials) {
@@ -1682,7 +1759,7 @@ export default function WorkforceDetailPage() {
               );
             })() : (
               <div className='flex h-16 items-center justify-center rounded-lg border border-dashed border-border/30'>
-                <p className='text-xs text-muted-foreground/50'>No credentials yet — add your first above</p>
+                <p className='text-xs text-muted-foreground/50'>No credentials stored yet</p>
               </div>
             )}
           </div>
