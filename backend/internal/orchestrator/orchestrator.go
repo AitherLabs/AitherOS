@@ -2274,7 +2274,33 @@ func (o *Orchestrator) Preflight(ctx context.Context, wfID uuid.UUID) PreflightR
 		add("Agent models", true, "All agents have a valid LLM provider")
 	}
 
-	// 5. No active execution already running for this workforce
+	// 5. Credentials configured
+	creds, err := o.store.ListCredentials(ctx, wfID)
+	if err == nil {
+		if len(creds) == 0 {
+			// Check whether any MCP servers are attached — if so, tools likely need creds
+			mcpServers, mcpErr := o.store.ListWorkforceMCPServers(ctx, wfID)
+			if mcpErr == nil && len(mcpServers) > 0 {
+				add("Credentials", false, fmt.Sprintf(
+					"No credentials configured but %d MCP server(s) attached — agents may need API keys/tokens to complete tasks. Add them in the Credentials section below.",
+					len(mcpServers)))
+			} else {
+				add("Credentials", true, "No credentials configured (add them if your tasks need API keys)")
+			}
+		} else {
+			services := make([]string, 0, len(creds))
+			seen := map[string]bool{}
+			for _, c := range creds {
+				if !seen[c.Service] {
+					services = append(services, c.Service)
+					seen[c.Service] = true
+				}
+			}
+			add("Credentials", true, fmt.Sprintf("%d credential(s) ready — services: %s", len(creds), strings.Join(services, ", ")))
+		}
+	}
+
+	// 6. No active execution already running for this workforce
 	execs, _, listErr := o.store.ListExecutions(ctx, wfID, 20, 0)
 	if listErr == nil {
 		for _, ex := range execs {

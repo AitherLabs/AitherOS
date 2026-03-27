@@ -52,6 +52,31 @@ import api, { ActivityEvent, Agent, Approval, Credential, Execution, KanbanTask,
 import { AvatarUpload } from '@/components/avatar-upload';
 import { EntityAvatar } from '@/components/entity-avatar';
 
+// Well-known service → suggested key names for the quick-add credential picker
+const CREDENTIAL_CATALOG: Record<string, string[]> = {
+  github:     ['token', 'username'],
+  gitlab:     ['token'],
+  openai:     ['api_key'],
+  anthropic:  ['api_key'],
+  jira:       ['api_key', 'email', 'url'],
+  confluence: ['api_key', 'email', 'url'],
+  linear:     ['api_key'],
+  notion:     ['api_key'],
+  slack:      ['bot_token', 'webhook_url'],
+  discord:    ['bot_token', 'webhook_url'],
+  aws:        ['access_key_id', 'secret_access_key', 'region'],
+  gcp:        ['service_account_json', 'project_id'],
+  azure:      ['client_id', 'client_secret', 'tenant_id'],
+  stripe:     ['secret_key'],
+  sendgrid:   ['api_key'],
+  twilio:     ['account_sid', 'auth_token'],
+  vercel:     ['token'],
+  cloudflare: ['api_token', 'account_id'],
+  datadog:    ['api_key', 'app_key'],
+  pagerduty:  ['api_key'],
+  custom:     [],
+};
+
 const statusColors: Record<string, { color: string; bg: string; border: string }> = {
   draft: { color: '#FFBF47', bg: '#FFBF4715', border: '#FFBF4730' },
   planning: { color: '#14FFF7', bg: '#14FFF715', border: '#14FFF730' },
@@ -112,6 +137,14 @@ export default function WorkforceDetailPage() {
   const [executions, setExecutions] = useState<Execution[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Credential quick-add in launch dialog
+  const [quickCredService, setQuickCredService] = useState('');       // dropdown value ('__custom__' when custom)
+  const [quickCredServiceText, setQuickCredServiceText] = useState(''); // text when custom service
+  const [quickCredKey, setQuickCredKey] = useState('');               // dropdown/input value ('__custom__' when custom)
+  const [quickCredKeyText, setQuickCredKeyText] = useState('');       // text when custom key
+  const [quickCredValue, setQuickCredValue] = useState('');
+  const [quickCredSaving, setQuickCredSaving] = useState(false);
 
   // Dialogs
   const [execOpen, setExecOpen] = useState(false);
@@ -383,6 +416,32 @@ export default function WorkforceDetailPage() {
       router.push(`/dashboard/executions/${execId}`);
     } finally {
       setRunningTaskId(null);
+    }
+  }
+
+  async function handleQuickAddCred() {
+    const svc = (quickCredService === '__custom__' ? quickCredServiceText : quickCredService).trim().toLowerCase();
+    const key = (quickCredKey === '__custom__' ? quickCredKeyText : quickCredKey).trim().toLowerCase();
+    if (!svc || !key || !quickCredValue.trim()) return;
+    setQuickCredSaving(true);
+    try {
+      const res = await api.upsertCredential(wfId, { service: svc, key_name: key, value: quickCredValue });
+      if (res.data) {
+        setCredentials(prev => {
+          const idx = prev.findIndex(c => c.service === res.data!.service && c.key_name === res.data!.key_name);
+          return idx >= 0 ? prev.map((c, i) => (i === idx ? res.data! : c)) : [...prev, res.data!];
+        });
+      }
+      setQuickCredService('');
+      setQuickCredServiceText('');
+      setQuickCredKey('');
+      setQuickCredKeyText('');
+      setQuickCredValue('');
+      runPreflight();
+    } catch (err) {
+      console.error('Quick add credential failed:', err);
+    } finally {
+      setQuickCredSaving(false);
     }
   }
 
@@ -1933,6 +1992,131 @@ export default function WorkforceDetailPage() {
                 {!preflight && !preflightLoading && (
                   <p className='px-3 py-2 text-[11px] text-muted-foreground/40'>Click Re-run to validate configuration</p>
                 )}
+              </div>
+            </div>
+
+            {/* ── Credentials ── */}
+            <div className='rounded-lg border border-border/40 overflow-hidden'>
+              <div className='flex items-center gap-2 px-3 py-2 bg-muted/10 border-b border-border/30'>
+                <IconKey className='h-3.5 w-3.5 text-muted-foreground/60' />
+                <span className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground flex-1'>Credentials</span>
+                <span className='text-[10px] text-muted-foreground/50'>{credentials.length} stored</span>
+              </div>
+
+              {/* Existing credentials grouped by service */}
+              {credentials.length > 0 && (
+                <div className='px-3 py-2 flex flex-wrap gap-1.5 border-b border-border/20'>
+                  {Object.entries(
+                    credentials.reduce<Record<string, string[]>>((acc, c) => {
+                      (acc[c.service] ??= []).push(c.key_name);
+                      return acc;
+                    }, {})
+                  ).map(([svc, keys]) => (
+                    <div key={svc} className='flex items-center gap-1 rounded-md border border-[#56D090]/25 bg-[#56D090]/8 px-2 py-0.5'>
+                      <span className='text-[10px] font-semibold text-[#56D090]'>{svc}</span>
+                      <span className='text-[9px] text-muted-foreground/50'>{keys.join(', ')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Quick-add form */}
+              <div className='p-3 space-y-2'>
+                <p className='text-[10px] text-muted-foreground/50'>Add a credential your agents will need:</p>
+                <div className='flex gap-1.5'>
+                  {/* Service picker */}
+                  <div className='relative flex-1 min-w-0'>
+                    <select
+                      value={quickCredService}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setQuickCredService(val);
+                        setQuickCredServiceText('');
+                        if (val !== '__custom__') {
+                          const suggested = CREDENTIAL_CATALOG[val]?.[0] ?? '';
+                          setQuickCredKey(suggested);
+                          setQuickCredKeyText('');
+                        } else {
+                          setQuickCredKey('');
+                          setQuickCredKeyText('');
+                        }
+                      }}
+                      className='w-full h-7 rounded-md border border-border/40 bg-background px-2 text-[11px] text-foreground appearance-none focus:outline-none focus:ring-1 focus:ring-ring'
+                    >
+                      <option value=''>Service…</option>
+                      {Object.keys(CREDENTIAL_CATALOG).filter(k => k !== 'custom').map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                      <option value='__custom__'>custom…</option>
+                    </select>
+                  </div>
+                  {/* Key name */}
+                  <div className='relative flex-1 min-w-0'>
+                    {quickCredService && quickCredService !== '__custom__' && CREDENTIAL_CATALOG[quickCredService]?.length > 0 ? (
+                      <select
+                        value={quickCredKey}
+                        onChange={e => { setQuickCredKey(e.target.value); setQuickCredKeyText(''); }}
+                        className='w-full h-7 rounded-md border border-border/40 bg-background px-2 text-[11px] text-foreground appearance-none focus:outline-none focus:ring-1 focus:ring-ring'
+                      >
+                        <option value=''>Key…</option>
+                        {CREDENTIAL_CATALOG[quickCredService].map(k => (
+                          <option key={k} value={k}>{k}</option>
+                        ))}
+                        <option value='__custom__'>custom…</option>
+                      </select>
+                    ) : (
+                      <Input
+                        value={quickCredKey}
+                        onChange={e => setQuickCredKey(e.target.value)}
+                        placeholder='key_name'
+                        className='h-7 text-[11px]'
+                      />
+                    )}
+                  </div>
+                </div>
+                {/* Custom service text input */}
+                {quickCredService === '__custom__' && (
+                  <Input
+                    value={quickCredServiceText}
+                    onChange={e => setQuickCredServiceText(e.target.value)}
+                    placeholder='Service name (e.g. github)'
+                    className='h-7 text-[11px]'
+                    autoFocus
+                  />
+                )}
+                {/* Custom key text input */}
+                {quickCredKey === '__custom__' && (
+                  <Input
+                    value={quickCredKeyText}
+                    onChange={e => setQuickCredKeyText(e.target.value)}
+                    placeholder='Key name (e.g. token)'
+                    className='h-7 text-[11px]'
+                    autoFocus
+                  />
+                )}
+                <div className='flex gap-1.5'>
+                  <Input
+                    type='password'
+                    value={quickCredValue}
+                    onChange={e => setQuickCredValue(e.target.value)}
+                    placeholder='Value / secret'
+                    className='h-7 flex-1 text-[11px] font-mono'
+                    onKeyDown={e => e.key === 'Enter' && handleQuickAddCred()}
+                  />
+                  <Button
+                    size='sm'
+                    className='h-7 px-3 text-[11px]'
+                    onClick={handleQuickAddCred}
+                    disabled={
+                      quickCredSaving ||
+                      !(quickCredService === '__custom__' ? quickCredServiceText.trim() : quickCredService.trim()) ||
+                      !(quickCredKey === '__custom__' ? quickCredKeyText.trim() : quickCredKey.trim()) ||
+                      !quickCredValue.trim()
+                    }
+                  >
+                    {quickCredSaving ? <IconLoader2 className='h-3 w-3 animate-spin' /> : 'Save'}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
