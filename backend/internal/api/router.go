@@ -77,6 +77,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 
 	// Model Providers CRUD
 	mux.Handle("GET /api/v1/providers/schemas", protect(http.HandlerFunc(providers.Schemas)))
+	mux.Handle("POST /api/v1/providers/test", protect(http.HandlerFunc(providers.TestConnection)))
 	mux.Handle("POST /api/v1/providers", protect(http.HandlerFunc(providers.Create)))
 	mux.Handle("GET /api/v1/providers", protect(http.HandlerFunc(providers.List)))
 	mux.Handle("GET /api/v1/providers/{id}", protect(http.HandlerFunc(providers.Get)))
