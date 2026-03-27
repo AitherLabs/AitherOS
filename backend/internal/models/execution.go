@@ -53,6 +53,7 @@ type ExecutionSubtask struct {
 	DependsOn []string      `json:"depends_on"`   // IDs of subtasks that must complete first
 	Status    SubtaskStatus `json:"status"`
 	Output    string        `json:"output"`       // final content produced by the agent
+	ErrorMsg  string        `json:"error_msg,omitempty"` // set when status=blocked; reason for the failure
 }
 
 type Execution struct {

@@ -691,7 +691,7 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		if len(ready) == 0 {
 			// Deadlock: nothing runnable and not all done
 			if !allSubtasksDone(plan) {
-				o.haltExecution(ctx, exec.ID, wf.ID, "Execution deadlock — no runnable subtasks remain")
+				o.haltExecution(ctx, exec.ID, wf.ID, buildDeadlockMessage(plan))
 			}
 			return
 		}
@@ -705,6 +705,7 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 			agent := findAgentByID(agents, subtask.AgentID)
 			if agent == nil {
 				subtask.Status = models.SubtaskBlocked
+				subtask.ErrorMsg = fmt.Sprintf("agent %s not found in this workforce", subtask.AgentID)
 				o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
 				o.eventBus.PublishSystem(ctx, exec.ID,
 					fmt.Sprintf("Agent %s not found for subtask %s — blocked", subtask.AgentID, subtask.ID))
@@ -738,6 +739,7 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 
 			if res.Err != nil {
 				subtask.Status = models.SubtaskBlocked
+				subtask.ErrorMsg = res.Err.Error()
 			} else if res.NeedsHelp {
 				subtask.Status = models.SubtaskNeedsHelp
 				o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &subtask.AgentID, subtask.AgentName,
@@ -967,7 +969,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	}
 
 	// ── Tool call feedback loop ──
-	const maxToolRounds = 25
+	const maxToolRounds = 40
 	var allToolCalls []engine.ToolCallInfo
 	var totalTokensIn, totalTokensOut, totalLatency int64
 
@@ -1056,6 +1058,13 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				fmt.Sprintf("%s tool loop error (round %d): %s", agent.Name, toolRound+1, err.Error()), nil))
 			break
 		}
+	}
+
+	// Warn when tool round limit was reached without a completion signal
+	if len(resp.ToolCalls) > 0 {
+		o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
+			fmt.Sprintf("%s reached the %d-round tool call limit without completing — will attempt to extract result from last response", agent.Name, maxToolRounds),
+			nil))
 	}
 
 	// Guard: if the tool loop broke due to a Submit error, resp could be nil.
@@ -1668,6 +1677,56 @@ func allSubtasksDone(plan []models.ExecutionSubtask) bool {
 		}
 	}
 	return true
+}
+
+// buildDeadlockMessage returns a human-readable explanation of why the execution deadlocked:
+// which subtasks are blocked (with their error), which are stuck waiting on them.
+func buildDeadlockMessage(plan []models.ExecutionSubtask) string {
+	var blocked []models.ExecutionSubtask
+	blockedIDs := map[string]bool{}
+	for _, st := range plan {
+		if st.Status == models.SubtaskBlocked {
+			blocked = append(blocked, st)
+			blockedIDs[st.ID] = true
+		}
+	}
+
+	msg := "Execution deadlock — no runnable subtasks remain.\n\n"
+
+	if len(blocked) > 0 {
+		msg += "Blocked subtasks (root cause):\n"
+		for _, st := range blocked {
+			reason := st.ErrorMsg
+			if reason == "" {
+				reason = "unknown error (check execution events for details)"
+			}
+			msg += fmt.Sprintf("  • [%s] %s — %s: %s\n", st.ID, st.AgentName, truncateStr(st.Subtask, 80), reason)
+		}
+		msg += "\n"
+	}
+
+	var stuck []models.ExecutionSubtask
+	for _, st := range plan {
+		if st.Status != models.SubtaskPending {
+			continue
+		}
+		for _, dep := range st.DependsOn {
+			if blockedIDs[dep] {
+				stuck = append(stuck, st)
+				break
+			}
+		}
+	}
+	if len(stuck) > 0 {
+		msg += "Subtasks stuck behind blocked dependencies:\n"
+		for _, st := range stuck {
+			msg += fmt.Sprintf("  • [%s] %s (%s)\n", st.ID, st.AgentName, truncateStr(st.Subtask, 80))
+		}
+		msg += "\n"
+	}
+
+	msg += "To recover: fix the root cause shown above, then re-launch the execution."
+	return msg
 }
 
 // isRateLimitError returns true if the error looks like a GitHub/API rate-limit response.
