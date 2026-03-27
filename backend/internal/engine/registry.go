@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -92,6 +93,8 @@ func (r *ProviderRegistry) buildOpenAICompatConnector(provider *models.ModelProv
 	if baseURL == "" {
 		baseURL = defaultBaseURL(provider.ProviderType)
 	}
+	// Strip trailing /v1 — the connector appends /v1/chat/completions itself.
+	baseURL = strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
 
 	return &openAICompatConnector{
 		providerName: string(provider.ProviderType),
