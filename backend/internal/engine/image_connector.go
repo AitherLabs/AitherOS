@@ -209,7 +209,8 @@ func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio
 }
 
 func (c *imageConnector) generateOpenAI(ctx context.Context, prompt, aspectRatio string) ([]byte, error) {
-	base := strings.TrimRight(c.baseURL, "/")
+	// Strip trailing /v1 — we append it ourselves (same as the chat connector).
+	base := strings.TrimSuffix(strings.TrimRight(c.baseURL, "/"), "/v1")
 	if base == "" {
 		base = "https://api.openai.com"
 	}
