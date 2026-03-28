@@ -460,7 +460,26 @@ func (o *Orchestrator) generateAndSetTitle(execID uuid.UUID, wf *models.WorkForc
 		}
 	}
 	if eng == nil {
+		log.Printf("orchestrator: generateAndSetTitle: no resolvable text engine for exec %s", execID)
 		return
+	}
+	// Skip media connectors — they can't generate text
+	if engine.IsMediaConnector(eng) {
+		// Try remaining candidates for a text engine
+		eng = nil
+		modelName = ""
+		for _, a := range candidates {
+			e, m, err := o.resolveConnector(ctx, a)
+			if err == nil && !engine.IsMediaConnector(e) {
+				eng = e
+				modelName = m
+				break
+			}
+		}
+		if eng == nil {
+			log.Printf("orchestrator: generateAndSetTitle: no text engine found (only media agents) for exec %s", execID)
+			return
+		}
 	}
 
 	strategySample := strategy
@@ -488,19 +507,33 @@ func (o *Orchestrator) generateAndSetTitle(execID uuid.UUID, wf *models.WorkForc
 		Message:      prompt,
 		Model:        modelName,
 	})
-	if err != nil || resp == nil || strings.TrimSpace(resp.Content) == "" {
+	if err != nil {
+		log.Printf("orchestrator: generateAndSetTitle LLM error (exec %s, model %s): %v", execID, modelName, err)
+		return
+	}
+	if resp == nil || strings.TrimSpace(resp.Content) == "" {
+		log.Printf("orchestrator: generateAndSetTitle empty response (exec %s, model %s)", execID, modelName)
 		return
 	}
 
 	title := strings.TrimSpace(resp.Content)
-	// Strip surrounding quotes if the model added them
-	title = strings.Trim(title, `"'`)
+	// Strip surrounding quotes and markdown bold/italic markers
+	title = strings.Trim(title, `"'*_`)
+	title = strings.TrimSpace(title)
+	// Strip a trailing period
+	title = strings.TrimRight(title, ".")
 	// Hard cap
 	runes := []rune(title)
 	if len(runes) > 80 {
 		title = string(runes[:80])
 	}
 
+	if title == "" {
+		log.Printf("orchestrator: generateAndSetTitle title empty after cleanup (exec %s)", execID)
+		return
+	}
+
+	log.Printf("orchestrator: generated title for exec %s: %q", execID, title)
 	titleStr := title
 	if err := o.store.UpdateExecutionMeta(ctx, execID, models.UpdateExecutionMetaRequest{Title: &titleStr}); err != nil {
 		log.Printf("orchestrator: set auto title: %v", err)
