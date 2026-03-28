@@ -249,7 +249,7 @@ export function OverviewStats() {
                       </div>
                       <div className='flex-1 min-w-0'>
                         <p className='text-xs font-medium line-clamp-1'>
-                          {exec.objective.slice(0, 80)}
+                          {exec.title || exec.objective}
                         </p>
                         <div className='flex items-center gap-2 text-[10px] text-muted-foreground'>
                           <span>{exec.workforce_name}</span>

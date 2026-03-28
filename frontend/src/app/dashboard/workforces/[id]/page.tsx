@@ -2024,7 +2024,7 @@ export default function WorkforceDetailPage() {
                         <IconBolt className='h-4 w-4' style={{ color: es.color }} />
                       </div>
                       <div className='flex-1 min-w-0'>
-                        <p className='text-sm line-clamp-1'>{(exec.objective || '').slice(0, 100)}</p>
+                        <p className='text-sm line-clamp-1'>{exec.title || exec.objective}</p>
                         <div className='mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground'>
                           <span>{formatTokens(exec.tokens_used)} tokens</span>
                           <span className='text-border'>·</span>
