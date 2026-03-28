@@ -161,10 +161,8 @@ func (c *imageConnector) SubmitStream(_ context.Context, req TaskRequest) (<-cha
 
 func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio string) ([]byte, error) {
 	// Google Imagen does not go through LiteLLM or any proxy — always call the
-	// Generative Language API directly. The baseURL stored on the provider is the
-	// LiteLLM/OpenAI-compat endpoint and does not expose generateImages.
-	// If the baseURL already points to googleapis.com we keep it; otherwise we
-	// override with the canonical base.
+	// Generative Language API directly using the :predict endpoint.
+	// imagen-4.0+ uses the Vertex AI-style predict format, not generateImages.
 	base := "https://generativelanguage.googleapis.com"
 	if strings.Contains(c.baseURL, "googleapis.com") {
 		base = strings.TrimRight(c.baseURL, "/")
@@ -173,46 +171,46 @@ func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio
 		}
 	}
 
-	// Model may be stored as "models/imagen-4.0-generate-001" or just "imagen-4.0-generate-001".
-	// Strip the "models/" prefix because the URL already contains /models/.
 	modelID := strings.TrimPrefix(c.model, "models/")
-	apiURL := fmt.Sprintf("%s/v1beta/models/%s:generateImages?key=%s", base, modelID, c.apiKey)
-	log.Printf("image-connector: google generateImages → %s/v1beta/models/%s:generateImages (key len=%d)", base, modelID, len(c.apiKey))
+	apiURL := fmt.Sprintf("%s/v1beta/models/%s:predict?key=%s", base, modelID, c.apiKey)
+	log.Printf("image-connector: google predict → %s/v1beta/models/%s:predict (key len=%d)", base, modelID, len(c.apiKey))
 
 	body, _ := json.Marshal(map[string]any{
-		"prompt":              prompt,
-		"number_of_images":    1,
-		"aspect_ratio":        aspectRatio,
-		"safety_filter_level": "BLOCK_ONLY_HIGH",
-		"person_generation":   "DONT_ALLOW",
+		"instances": []map[string]any{
+			{"prompt": prompt},
+		},
+		"parameters": map[string]any{
+			"sampleCount":       1,
+			"aspectRatio":       aspectRatio,
+			"safetyFilterLevel": "block_only_high",
+			"personGeneration":  "dont_allow",
+		},
 	})
 
 	raw, err := c.post(ctx, apiURL, nil, body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w — body: %s", err, truncateStr(string(raw), 300))
 	}
 
-	// Log raw response for debugging unexpected formats.
 	var data struct {
-		GeneratedImages []struct {
-			Image struct {
-				ImageBytes string `json:"imageBytes"`
-			} `json:"image"`
-			RaiFilteredReason string `json:"raiFilteredReason"`
-		} `json:"generatedImages"`
+		Predictions []struct {
+			BytesBase64Encoded string `json:"bytesBase64Encoded"`
+			MimeType           string `json:"mimeType"`
+			RaiFilteredReason  string `json:"raiFilteredReason"`
+		} `json:"predictions"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return nil, fmt.Errorf("parse response: %w — body: %s", err, truncateStr(string(raw), 300))
 	}
-	if len(data.GeneratedImages) == 0 {
+	if len(data.Predictions) == 0 {
 		return nil, fmt.Errorf("no images returned — body: %s", truncateStr(string(raw), 300))
 	}
-	if r := data.GeneratedImages[0].RaiFilteredReason; r != "" {
+	if r := data.Predictions[0].RaiFilteredReason; r != "" {
 		return nil, fmt.Errorf("content filtered: %s", r)
 	}
-	b64 := data.GeneratedImages[0].Image.ImageBytes
+	b64 := data.Predictions[0].BytesBase64Encoded
 	if b64 == "" {
-		return nil, fmt.Errorf("missing imageBytes in response — body: %s", truncateStr(string(raw), 300))
+		return nil, fmt.Errorf("missing bytesBase64Encoded in response — body: %s", truncateStr(string(raw), 300))
 	}
 	return base64.StdEncoding.DecodeString(b64)
 }
