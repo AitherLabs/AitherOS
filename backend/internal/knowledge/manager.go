@@ -97,7 +97,7 @@ func (m *Manager) IngestAgentMessages(ctx context.Context, workforceID, executio
 			ExecutionID: &executionID,
 			AgentID:     msg.AgentID,
 			SourceType:  models.KnowledgeSourceAgent,
-			Title:       fmt.Sprintf("%s - Iteration %d", msg.AgentName, msg.Iteration),
+			Title:       extractContentTitle(msg.AgentName, msg.Content),
 			Content:     msg.Content,
 			Embedding:   embedding,
 			Metadata: map[string]any{
@@ -222,7 +222,7 @@ func (m *Manager) IngestSingleMessage(ctx context.Context, workforceID, executio
 			ExecutionID: &executionID,
 			AgentID:     agentID,
 			SourceType:  models.KnowledgeSourceAgent,
-			Title:       fmt.Sprintf("%s - Subtask (exec %s)", agentName, executionID.String()[:8]),
+			Title:       extractContentTitle(agentName, content),
 			Content:     content,
 			Embedding:   embedding,
 			Metadata: map[string]any{
@@ -298,4 +298,26 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// extractContentTitle builds a human-readable title for an auto-ingested agent message.
+// It tries to use the first meaningful heading or sentence from the content, falling back
+// to a truncated prefix. The result is prefixed with the agent name.
+func extractContentTitle(agentName, content string) string {
+	const maxTitle = 100
+	for _, line := range strings.SplitN(content, "\n", 8) {
+		line = strings.TrimSpace(line)
+		// Strip markdown heading markers
+		line = strings.TrimLeft(line, "#")
+		line = strings.TrimSpace(line)
+		if len(line) >= 12 && len(line) <= maxTitle {
+			return fmt.Sprintf("%s: %s", agentName, line)
+		}
+	}
+	// Fallback: first maxTitle chars of content
+	snippet := strings.TrimSpace(content)
+	if len(snippet) > maxTitle {
+		snippet = snippet[:maxTitle] + "…"
+	}
+	return fmt.Sprintf("%s: %s", agentName, snippet)
 }

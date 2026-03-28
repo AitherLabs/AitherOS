@@ -142,6 +142,73 @@ function timeAgo(date: string): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+const KB_SOURCE_STYLE: Record<string, { color: string; bg: string; border: string; label: string }> = {
+  execution_result: { color: '#9A66FF', bg: '#9A66FF15', border: '#9A66FF30', label: 'Result' },
+  agent_message:   { color: '#56D090', bg: '#56D09015', border: '#56D09030', label: 'Agent msg' },
+  manual:          { color: '#14FFF7', bg: '#14FFF715', border: '#14FFF730', label: 'Manual' },
+  tool_result:     { color: '#FFBF47', bg: '#FFBF4715', border: '#FFBF4730', label: 'Tool' },
+};
+
+function KnowledgeCard({
+  entry,
+  onDelete,
+}: {
+  entry: KnowledgeEntry;
+  onDelete: (id: string) => void;
+}) {
+  const style = KB_SOURCE_STYLE[entry.source_type] ?? KB_SOURCE_STYLE.agent_message;
+  const agentName = entry.metadata?.agent_name as string | undefined;
+  return (
+    <div className='group rounded-lg border border-border/40 bg-background/50 p-3 hover:border-border/70 transition-colors'>
+      <div className='flex items-start justify-between gap-2'>
+        <div className='min-w-0 flex-1'>
+          <div className='flex flex-wrap items-center gap-1.5'>
+            <p className='text-xs font-medium leading-tight'>{entry.title || 'Untitled'}</p>
+            <Badge
+              variant='outline'
+              className='text-[9px] shrink-0'
+              style={{ backgroundColor: style.bg, borderColor: style.border, color: style.color }}
+            >
+              {style.label}
+            </Badge>
+            {!entry.embedding && (
+              <Badge variant='outline' className='text-[9px] shrink-0' style={{ backgroundColor: '#FFBF4710', borderColor: '#FFBF4730', color: '#FFBF47' }}>
+                no embedding
+              </Badge>
+            )}
+          </div>
+          <p className='mt-1.5 text-[10px] text-muted-foreground line-clamp-3 leading-relaxed'>
+            {(entry.content || '').slice(0, 300)}
+          </p>
+          <div className='mt-1.5 flex items-center gap-3'>
+            <span className='text-[9px] text-muted-foreground/60'>{timeAgo(entry.created_at)}</span>
+            {agentName && (
+              <span className='text-[9px] text-muted-foreground/60'>by {agentName}</span>
+            )}
+            {entry.execution_id && (
+              <a
+                href={`/dashboard/executions/${entry.execution_id}`}
+                className='text-[9px] text-[#9A66FF]/70 hover:text-[#9A66FF] transition-colors flex items-center gap-0.5'
+              >
+                <IconLink className='h-2.5 w-2.5' />
+                View execution
+              </a>
+            )}
+          </div>
+        </div>
+        <Button
+          variant='ghost'
+          size='sm'
+          className='h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-400 shrink-0'
+          onClick={() => onDelete(entry.id)}
+        >
+          <IconTrash className='h-3 w-3' />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function WorkforceDetailPage() {
   const { data: session } = useSession();
   const params = useParams();
@@ -199,6 +266,8 @@ export default function WorkforceDetailPage() {
   const [kbSearchQuery, setKbSearchQuery] = useState('');
   const [kbSearchResults, setKbSearchResults] = useState<KnowledgeEntry[] | null>(null);
   const [kbLoading, setKbLoading] = useState(false);
+  const [kbSourceFilter, setKbSourceFilter] = useState<string>('all');
+  const [kbShowAll, setKbShowAll] = useState(false);
 
   // Approvals state
   const [approvals, setApprovals] = useState<Approval[]>([]);
@@ -1367,7 +1436,7 @@ export default function WorkforceDetailPage() {
 
           {/* Knowledge Base */}
           <div>
-            <div className='mb-4 flex items-center justify-between'>
+            <div className='mb-3 flex items-center justify-between'>
               <h3 className='text-sm font-semibold uppercase tracking-wider text-muted-foreground'>
                 Knowledge Base
                 {knowledgeCount > 0 && (
@@ -1399,32 +1468,62 @@ export default function WorkforceDetailPage() {
                   className='text-xs'
                   onClick={() => setKbAddOpen(true)}
                 >
-                  <IconPlus className='mr-1 h-3 w-3' /> Add Knowledge
+                  <IconPlus className='mr-1 h-3 w-3' /> Add
                 </Button>
               </div>
             </div>
 
-            {/* Search */}
-            <div className='mb-3 flex gap-2'>
-              <Input
-                placeholder='Search knowledge base...'
-                value={kbSearchQuery}
-                onChange={(e) => {
-                  setKbSearchQuery(e.target.value);
-                  if (!e.target.value.trim()) setKbSearchResults(null);
-                }}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearchKnowledge()}
-                className='h-8 text-xs'
-              />
-              <Button
-                size='sm'
-                variant='outline'
-                className='h-8 text-xs'
-                onClick={handleSearchKnowledge}
-                disabled={kbLoading}
-              >
-                {kbLoading ? <IconLoader2 className='h-3 w-3 animate-spin' /> : 'Search'}
-              </Button>
+            {/* Search + source filter */}
+            <div className='mb-3 space-y-2'>
+              <div className='flex gap-2'>
+                <Input
+                  placeholder='Search knowledge base...'
+                  value={kbSearchQuery}
+                  onChange={(e) => {
+                    setKbSearchQuery(e.target.value);
+                    if (!e.target.value.trim()) setKbSearchResults(null);
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearchKnowledge()}
+                  className='h-8 text-xs'
+                />
+                <Button
+                  size='sm'
+                  variant='outline'
+                  className='h-8 text-xs'
+                  onClick={handleSearchKnowledge}
+                  disabled={kbLoading}
+                >
+                  {kbLoading ? <IconLoader2 className='h-3 w-3 animate-spin' /> : 'Search'}
+                </Button>
+              </div>
+              {kbSearchResults === null && knowledgeEntries.length > 0 && (
+                <div className='flex flex-wrap gap-1'>
+                  {(['all', 'execution_result', 'agent_message', 'manual'] as const).map((type) => {
+                    const labels: Record<string, string> = {
+                      all: 'All',
+                      execution_result: 'Results',
+                      agent_message: 'Agent msgs',
+                      manual: 'Manual',
+                    };
+                    const active = kbSourceFilter === type;
+                    return (
+                      <button
+                        key={type}
+                        onClick={() => setKbSourceFilter(type)}
+                        className={`rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                          active
+                            ? 'bg-[#9A66FF] text-white'
+                            : 'bg-muted/50 text-muted-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {labels[type]}
+                        {type === 'all' && ` (${knowledgeEntries.length})`}
+                        {type !== 'all' && ` (${knowledgeEntries.filter((e) => e.source_type === type).length})`}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Search Results */}
@@ -1447,93 +1546,52 @@ export default function WorkforceDetailPage() {
                   <p className='text-xs text-muted-foreground'>No matching entries found.</p>
                 ) : (
                   kbSearchResults.map((entry) => (
-                    <div
+                    <KnowledgeCard
                       key={entry.id}
-                      className='rounded-lg border border-border/40 bg-background/50 p-3'
-                    >
-                      <div className='flex items-start justify-between gap-2'>
-                        <div className='min-w-0 flex-1'>
-                          <div className='flex items-center gap-2'>
-                            <p className='text-xs font-medium'>{entry.title || 'Untitled'}</p>
-                            {entry.similarity !== undefined && (
-                              <Badge variant='outline' className='text-[9px]' style={{
-                                backgroundColor: '#9A66FF15',
-                                borderColor: '#9A66FF30',
-                                color: '#9A66FF'
-                              }}>
-                                {Math.round(entry.similarity * 100)}% match
-                              </Badge>
-                            )}
-                          </div>
-                          <p className='mt-1 text-[10px] text-muted-foreground line-clamp-2'>
-                            {(entry.content || '').slice(0, 200)}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
+                      entry={entry}
+                      onDelete={handleDeleteKnowledge}
+                    />
                   ))
                 )}
               </div>
             )}
 
             {/* Knowledge Entries List */}
-            {kbSearchResults === null && (
-              knowledgeEntries.length === 0 ? (
+            {kbSearchResults === null && (() => {
+              const filtered = kbSourceFilter === 'all'
+                ? knowledgeEntries
+                : knowledgeEntries.filter((e) => e.source_type === kbSourceFilter);
+              const visible = kbShowAll ? filtered : filtered.slice(0, 15);
+              return filtered.length === 0 ? (
                 <div className='flex h-20 items-center justify-center rounded-lg border border-dashed border-border/50'>
                   <p className='text-xs text-muted-foreground'>
-                    No knowledge entries yet. They are auto-created from completed executions.
+                    {knowledgeEntries.length === 0
+                      ? 'No knowledge entries yet. Auto-created from executions.'
+                      : 'No entries match this filter.'}
                   </p>
                 </div>
               ) : (
                 <div className='space-y-2'>
-                  {knowledgeEntries.slice(0, 10).map((entry) => (
-                    <div
+                  {visible.map((entry) => (
+                    <KnowledgeCard
                       key={entry.id}
-                      className='group rounded-lg border border-border/40 bg-background/50 p-3'
-                    >
-                      <div className='flex items-start justify-between gap-2'>
-                        <div className='min-w-0 flex-1'>
-                          <div className='flex items-center gap-2'>
-                            <p className='text-xs font-medium'>{entry.title || 'Untitled'}</p>
-                            <Badge variant='outline' className='text-[9px]' style={{
-                              backgroundColor: entry.source_type === 'manual' ? '#14FFF715' : '#56D09015',
-                              borderColor: entry.source_type === 'manual' ? '#14FFF730' : '#56D09030',
-                              color: entry.source_type === 'manual' ? '#14FFF7' : '#56D090'
-                            }}>
-                              {(entry.source_type || '').replace('_', ' ')}
-                            </Badge>
-                            {!entry.embedding && (
-                              <Badge variant='outline' className='text-[9px]' style={{ backgroundColor: '#FFBF4710', borderColor: '#FFBF4730', color: '#FFBF47' }}>
-                                no embedding
-                              </Badge>
-                            )}
-                          </div>
-                          <p className='mt-1 text-[10px] text-muted-foreground line-clamp-2'>
-                            {(entry.content || '').slice(0, 200)}
-                          </p>
-                          <p className='mt-1 text-[9px] text-muted-foreground/60'>
-                            {timeAgo(entry.created_at)}
-                          </p>
-                        </div>
-                        <Button
-                          variant='ghost'
-                          size='sm'
-                          className='h-6 w-6 p-0 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-400'
-                          onClick={() => handleDeleteKnowledge(entry.id)}
-                        >
-                          <IconTrash className='h-3 w-3' />
-                        </Button>
-                      </div>
-                    </div>
+                      entry={entry}
+                      onDelete={handleDeleteKnowledge}
+                    />
                   ))}
-                  {knowledgeEntries.length > 10 && (
-                    <p className='text-center text-[10px] text-muted-foreground'>
-                      Showing 10 of {knowledgeEntries.length} entries
-                    </p>
+                  {filtered.length > 15 && (
+                    <button
+                      onClick={() => setKbShowAll((v) => !v)}
+                      className='w-full text-center text-[10px] text-muted-foreground hover:text-foreground transition-colors'
+                    >
+                      {kbShowAll
+                        ? 'Show less'
+                        : `Show all ${filtered.length} entries`}
+                    </button>
                   )}
                 </div>
-              )
-            )}
+              );
+            })()}
 
             {/* Add Knowledge Dialog */}
             <Dialog open={kbAddOpen} onOpenChange={setKbAddOpen}>
