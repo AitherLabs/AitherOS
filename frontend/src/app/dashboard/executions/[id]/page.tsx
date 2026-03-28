@@ -75,6 +75,7 @@ const eventTypeConfig: Record<string, { dot: string; label: string }> = {
   peer_consultation:    { dot: '#14FFF7', label: 'Peer Ask' },
   review_started:       { dot: '#F59E0B', label: 'Review' },
   review_complete:      { dot: '#56D090', label: 'Review' },
+  execution_titled:     { dot: '#9A66FF', label: 'Named' },
 };
 
 function PipelinePlanPanel({ plan, agentsMap }: { plan: ExecutionSubtask[]; agentsMap: Record<string, Agent> }) {
@@ -1182,6 +1183,7 @@ export default function ExecutionDetailPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
+  const [titleFlash, setTitleFlash] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -1362,6 +1364,12 @@ export default function ExecutionDetailPage() {
           const data = JSON.parse(ev.data);
           // Skip noise events — same filter as the backend API
           if (['agent_thinking', 'iteration_done', 'system'].includes(data.type)) return;
+          // Handle title assignment — update execution state live
+          if (data.type === 'execution_titled' && data.data?.title) {
+            setExecution(prev => prev ? { ...prev, title: data.data.title } : prev);
+            setTitleFlash(true);
+            setTimeout(() => setTitleFlash(false), 1800);
+          }
           const evt: LiveEvent = {
             id: data.id || Math.random().toString(36).slice(2),
             type: data.type || 'event',
@@ -1695,7 +1703,10 @@ export default function ExecutionDetailPage() {
           </Button>
           <div>
             <div className='flex items-center gap-2'>
-              <h1 className='text-sm font-semibold'>
+              <h1
+                className='text-sm font-semibold transition-colors duration-300'
+                style={titleFlash ? { color: '#9A66FF', textShadow: '0 0 12px #9A66FF88' } : undefined}
+              >
                 {execution.title || workforce?.name || 'Execution'}
               </h1>
               {isRunning && (

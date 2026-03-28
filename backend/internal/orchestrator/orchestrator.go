@@ -302,6 +302,12 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 		exec.Plan = structuredPlan
 	}
 
+	// Generate a short title for the execution in the background so it's ready
+	// before the user sees the approval card. Fires a WS event when done.
+	execIDCopy := exec.ID
+	objectiveCopy := exec.Objective
+	go o.generateAndSetTitle(execIDCopy, wf, agents, strategy, objectiveCopy)
+
 	// If the execution was halted during planning, do not overwrite the halted status
 	select {
 	case <-ctx.Done():
@@ -419,6 +425,91 @@ func (o *Orchestrator) summarizeStrategy(ctx context.Context, wf *models.WorkFor
 		summary = string(runes[:397]) + "..."
 	}
 	return summary
+}
+
+// generateAndSetTitle makes a small LLM call to produce a 4-7 word human-readable
+// title for the execution, persists it, and fires an execution_titled WS event.
+// Runs as a goroutine — uses its own context with a 30s timeout.
+func (o *Orchestrator) generateAndSetTitle(execID uuid.UUID, wf *models.WorkForce, agents []*models.Agent, strategy, objective string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Find the first resolvable engine (same logic as summarizeStrategy)
+	var eng engine.Connector
+	var modelName string
+	candidates := make([]*models.Agent, 0, len(agents))
+	if wf.LeaderAgentID != nil {
+		for _, a := range agents {
+			if a.ID == *wf.LeaderAgentID {
+				candidates = append(candidates, a)
+				break
+			}
+		}
+	}
+	for _, a := range agents {
+		if wf.LeaderAgentID == nil || a.ID != *wf.LeaderAgentID {
+			candidates = append(candidates, a)
+		}
+	}
+	for _, a := range candidates {
+		e, m, err := o.resolveConnector(ctx, a)
+		if err == nil {
+			eng = e
+			modelName = m
+			break
+		}
+	}
+	if eng == nil {
+		return
+	}
+
+	strategySample := strategy
+	if len(strategySample) > 600 {
+		strategySample = strategySample[:600]
+	}
+
+	prompt := fmt.Sprintf(
+		"Generate a short, specific title (4-7 words) for this AI workforce execution.\n\n"+
+			"OBJECTIVE: %s\n\n"+
+			"STRATEGY OVERVIEW:\n%s\n\n"+
+			"Rules:\n"+
+			"- 4-7 words maximum\n"+
+			"- Title Case\n"+
+			"- No punctuation at the end\n"+
+			"- Be specific to the actual task, not generic\n"+
+			"- Good examples: 'Security Audit for GitHub Repo', 'Q2 Market Research Report', 'API Documentation Overhaul'\n\n"+
+			"Output ONLY the title, nothing else.",
+		objective, strategySample,
+	)
+
+	resp, err := eng.Submit(ctx, engine.TaskRequest{
+		AgentName:    "orchestrator",
+		SystemPrompt: "You output only a short title. No explanation, no quotes, no punctuation at the end.",
+		Message:      prompt,
+		Model:        modelName,
+	})
+	if err != nil || strings.TrimSpace(resp.Content) == "" {
+		return
+	}
+
+	title := strings.TrimSpace(resp.Content)
+	// Strip surrounding quotes if the model added them
+	title = strings.Trim(title, `"'`)
+	// Hard cap
+	runes := []rune(title)
+	if len(runes) > 80 {
+		title = string(runes[:80])
+	}
+
+	titleStr := title
+	if err := o.store.UpdateExecutionMeta(ctx, execID, models.UpdateExecutionMetaRequest{Title: &titleStr}); err != nil {
+		log.Printf("orchestrator: set auto title: %v", err)
+		return
+	}
+
+	o.eventBus.Publish(ctx, models.NewEvent(execID, nil, "", models.EventTypeExecutionTitled,
+		fmt.Sprintf("Execution named: %s", title),
+		map[string]any{"title": title}))
 }
 
 // ApproveExecution handles the HitL gate — approving or rejecting the plan.
