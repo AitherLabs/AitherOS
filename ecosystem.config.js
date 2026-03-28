@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'aitheros-backend',
-      script: './backend/bin/aitherd',
+      script: './backend/start.sh',
       cwd: '/opt/AitherOS',
       env: {
         NODE_ENV: 'production',
