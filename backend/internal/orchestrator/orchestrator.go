@@ -488,7 +488,7 @@ func (o *Orchestrator) generateAndSetTitle(execID uuid.UUID, wf *models.WorkForc
 		Message:      prompt,
 		Model:        modelName,
 	})
-	if err != nil || strings.TrimSpace(resp.Content) == "" {
+	if err != nil || resp == nil || strings.TrimSpace(resp.Content) == "" {
 		return
 	}
 
@@ -1162,17 +1162,16 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		}
 	}
 
+	// Guard: if the tool loop broke due to a Submit error, resp is nil — bail out.
+	if resp == nil {
+		return agentResult{AgentID: agentID, AgentName: agent.Name, Err: fmt.Errorf("nil LLM response after tool loop error")}
+	}
+
 	// Warn when tool round limit was reached without a completion signal
 	if len(resp.ToolCalls) > 0 {
 		o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
 			fmt.Sprintf("%s reached the %d-round tool call limit without completing — will attempt to extract result from last response", agent.Name, maxToolRounds),
 			nil))
-	}
-
-	// Guard: if the tool loop broke due to a Submit error, resp could be nil.
-	if resp == nil {
-		log.Printf("orchestrator: %s tool loop produced nil response, returning error", agent.Name)
-		return agentResult{AgentID: agentID, AgentName: agent.Name, Err: fmt.Errorf("nil LLM response after tool loop")}
 	}
 
 	// ── Peer consultation loop (P2) ──
