@@ -65,7 +65,7 @@ func (h *DebugHandler) connectAgentMCPSessions(ctx context.Context, agentID uuid
 	var cleanups []func()
 
 	for _, wfID := range wfIDs {
-		sess, cleanup, err := h.mcpMgr.ConnectWorkforceServers(ctx, wfID)
+		sess, cleanup, err := h.mcpMgr.ConnectWorkforceServers(ctx, wfID, nil)
 		if err != nil {
 			log.Printf("debug: connect MCP for workforce %s: %v", wfID, err)
 			continue

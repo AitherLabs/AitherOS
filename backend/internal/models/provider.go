@@ -28,6 +28,9 @@ const (
 	ModelTypeRerank    ModelType = "rerank"
 	ModelTypeTTS       ModelType = "tts"
 	ModelTypeSTT       ModelType = "stt"
+	ModelTypeImage     ModelType = "image"
+	ModelTypeVideo     ModelType = "video"
+	ModelTypeAudio     ModelType = "audio"
 )
 
 // ModelProvider represents a configured LLM provider (e.g. "My OpenAI Key", "Local Ollama").
