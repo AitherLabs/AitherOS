@@ -51,7 +51,11 @@ async function httpRaw(
       hostname: parsed.hostname,
       port:     parsed.port,
       path:     parsed.pathname + parsed.search,
-      headers:  { ...headers, ...(body ? { 'Content-Length': Buffer.byteLength(body).toString() } : {}) },
+      headers:  {
+        'User-Agent': 'Mozilla/5.0 (compatible; AitherOS/1.0)',
+        ...headers,
+        ...(body ? { 'Content-Length': Buffer.byteLength(body).toString() } : {}),
+      },
       timeout:  timeoutMs,
     };
     const req = mod.request(opts, (res) => {
