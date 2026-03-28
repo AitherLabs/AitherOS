@@ -375,7 +375,7 @@ class ApiClient {
     return this.request<string[]>(`/api/v1/providers/${providerId}/live-models`);
   }
 
-  async testProvider(data: { base_url: string; api_key?: string }) {
+  async testProvider(data: { base_url: string; api_key?: string; provider_type?: string }) {
     return this.request<{ ok: boolean; models: string[]; error: string }>(
       '/api/v1/providers/test',
       { method: 'POST', body: JSON.stringify(data) }
