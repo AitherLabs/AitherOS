@@ -11,10 +11,15 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	maxUploadSize = 10 << 20 // 10 MB
-	uploadDir     = "/opt/AitherOS/uploads"
-)
+const maxUploadSize = 10 << 20 // 10 MB
+
+var uploadDir = func() string {
+	root := os.Getenv("INSTALL_ROOT")
+	if root == "" {
+		root = "/opt/AitherOS"
+	}
+	return root + "/uploads"
+}()
 
 var allowedMIME = map[string]string{
 	"image/jpeg":      ".jpg",

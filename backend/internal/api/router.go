@@ -133,7 +133,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 
 	// File uploads
 	mux.Handle("POST /api/v1/upload", protect(http.HandlerFunc(upload.Upload)))
-	uploadFS := http.StripPrefix("/uploads/", http.FileServer(http.Dir("/opt/AitherOS/uploads")))
+	uploadFS := http.StripPrefix("/uploads/", http.FileServer(http.Dir(uploadDir)))
 	mux.Handle("GET /uploads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")

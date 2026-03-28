@@ -89,51 +89,180 @@ Connect any LLM provider through an OpenAI-compatible interface. Mix models with
 
 - Go 1.22+
 - Node.js 20+
-- PostgreSQL 16+ with the `pgvector` extension
+- PostgreSQL 16+ with the `pgvector` extension (`CREATE EXTENSION vector;`)
 - Redis 7+
-- An LLM provider (OpenAI, Anthropic, Google, or any OpenAI-compatible endpoint)
+- An LLM provider (OpenAI, Anthropic, Google, LiteLLM, or any OpenAI-compatible endpoint)
+- PM2 (`npm install -g pm2`) — for production process management
 
-### Quick Start
+---
+
+### Installation
+
+#### 1. Clone and configure
 
 ```bash
-# 1. Clone
-git clone https://github.com/AitherLabs/AitherOS.git
-cd AitherOS
+git clone https://github.com/AitherLabs/AitherOS.git /opt/AitherOS
+cd /opt/AitherOS
 
-# 2. Configure
+# Backend environment
 cp .env.example .env
-# Edit .env — set POSTGRES_*, REDIS_*, JWT_SECRET, LLM_API_BASE, LLM_API_KEY
+# Fill in: DATABASE_URL, REDIS_URL, JWT_SECRET, ENCRYPTION_KEY,
+#          SERVICE_TOKEN, LLM_API_BASE, LLM_API_KEY
+# Set INSTALL_ROOT if you cloned to a different path (default: /opt/AitherOS)
 
-# 3. Apply database schema
-psql $DATABASE_URL -f scripts/001_init.sql
-# Apply any additional migrations in scripts/002_*.sql … 013_*.sql
-
-# 4. Build the backend
-cd backend && go build -o aitherd ./cmd/aitherd && cd ..
-
-# 5. Build the frontend
-cd frontend && npm install && npm run build && cd ..
-
-# 6. Start
-./backend/aitherd &
-cd frontend && npm start
+# Frontend environment
+cp frontend/.env.example frontend/.env.local
+# Fill in: NEXTAUTH_URL, NEXTAUTH_SECRET, NEXT_PUBLIC_API_URL
 ```
 
-For production, PM2 manages both processes via `ecosystem.config.js`.
+Generate the required secrets:
+
+```bash
+# JWT_SECRET and SERVICE_TOKEN
+openssl rand -hex 32
+
+# ENCRYPTION_KEY and NEXTAUTH_SECRET
+openssl rand -base64 32
+```
+
+#### 2. Database setup
+
+```bash
+# Create database and user
+sudo -u postgres psql -c "CREATE USER aitheros WITH PASSWORD 'your_password';"
+sudo -u postgres psql -c "CREATE DATABASE aitheros OWNER aitheros;"
+sudo -u postgres psql -d aitheros -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# Apply schema and all migrations
+for f in scripts/*.sql; do
+  psql "$DATABASE_URL" -f "$f"
+done
+```
+
+#### 3. Build
+
+```bash
+# Backend
+cd /opt/AitherOS/backend
+go build -o bin/aitherd ./cmd/aitherd/
+
+# Frontend
+cd /opt/AitherOS/frontend
+npm install
+npm run build
+```
+
+#### 4. Aither-Tools MCP server
+
+```bash
+cd /opt/AitherOS/mcp-servers/aither-tools
+npm install
+npm run build
+```
+
+#### 5. Start with PM2
+
+```bash
+cd /opt/AitherOS
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup  # follow printed instructions to enable auto-start on reboot
+```
+
+The `ecosystem.config.js` starts the Go backend (with auto-build on restart) and the Next.js frontend. Logs: `pm2 logs`.
+
+---
+
+### Publishing with Cloudflare Tunnel (recommended)
+
+Cloudflare Tunnel lets you expose your self-hosted instance to the internet without opening firewall ports or setting up a reverse proxy. You need a free Cloudflare account with a domain.
+
+#### Install cloudflared
+
+```bash
+# Debian/Ubuntu
+curl -L https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared bookworm main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
+sudo apt update && sudo apt install cloudflared
+
+# Authenticate with your Cloudflare account
+cloudflared tunnel login
+```
+
+#### Create tunnels
+
+```bash
+# Create a tunnel (once)
+cloudflared tunnel create aitheros
+
+# Configure routing: create /etc/cloudflared/config.yml
+```
+
+`/etc/cloudflared/config.yml`:
+
+```yaml
+tunnel: <your-tunnel-id>
+credentials-file: /root/.cloudflared/<your-tunnel-id>.json
+
+ingress:
+  # Frontend (Next.js — port 3000)
+  - hostname: app.your-domain.com
+    service: http://localhost:3000
+
+  # Backend API (Go — port 8080)
+  - hostname: api.your-domain.com
+    service: http://localhost:8080
+
+  - service: http_status:404
+```
+
+```bash
+# Create DNS records
+cloudflared tunnel route dns aitheros app.your-domain.com
+cloudflared tunnel route dns aitheros api.your-domain.com
+
+# Install as a system service (starts on boot)
+cloudflared service install
+systemctl start cloudflared
+```
+
+Then update your environment:
+
+```bash
+# .env
+CORS_ORIGINS=https://app.your-domain.com
+
+# frontend/.env.local
+NEXTAUTH_URL=https://app.your-domain.com
+NEXT_PUBLIC_API_URL=https://api.your-domain.com
+```
+
+Rebuild the frontend and reload PM2 after updating env files.
+
+#### Internal-only (no public domain)
+
+For private installs accessible only on your LAN, skip cloudflared. Access the frontend at `http://<server-ip>:3000` and set `NEXT_PUBLIC_API_URL=http://<server-ip>:8080`. Update `CORS_ORIGINS` to match.
+
+---
 
 ### Key Environment Variables
 
-| Variable | Description |
-|---|---|
-| `POSTGRES_HOST` / `DATABASE_URL` | PostgreSQL connection |
-| `REDIS_HOST` / `REDIS_URL` | Redis connection |
-| `JWT_SECRET` | HS256 secret for session tokens |
-| `ENCRYPTION_KEY` | 32-byte base64 key for credential vault |
-| `LLM_API_BASE` | OpenAI-compatible LLM endpoint |
-| `LLM_API_KEY` | API key for LLM provider |
-| `EMBEDDING_API_BASE` | Embedding endpoint (for knowledge base RAG) |
-| `NEXTAUTH_SECRET` | NextAuth session secret |
-| `NEXTAUTH_URL` | Frontend public URL |
+| Variable | Required | Description |
+|---|---|---|
+| `INSTALL_ROOT` | No | Path to AitherOS clone (default: `/opt/AitherOS`) |
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `REDIS_URL` | Yes | Redis connection string |
+| `JWT_SECRET` | Yes | HS256 secret for session tokens (`openssl rand -hex 32`) |
+| `ENCRYPTION_KEY` | Yes | AES-256 key for credential vault (`openssl rand -base64 32`) |
+| `SERVICE_TOKEN` | Yes | Internal token for MCP→API calls (`openssl rand -hex 32`) |
+| `LLM_API_BASE` | Yes | OpenAI-compatible LLM endpoint |
+| `LLM_API_KEY` | Yes | API key for LLM provider |
+| `EMBEDDING_API_BASE` | No | Embedding endpoint (enables knowledge base RAG) |
+| `REGISTRATION_TOKEN` | No | Token required to register the first admin user |
+| `CORS_ORIGINS` | Yes | Comma-separated allowed origins for the API |
+| `NEXTAUTH_URL` | Yes | Frontend public URL (must match browser URL) |
+| `NEXTAUTH_SECRET` | Yes | NextAuth session encryption secret |
+| `NEXT_PUBLIC_API_URL` | Yes | Backend API URL (served to browser) |
 
 ---
 
