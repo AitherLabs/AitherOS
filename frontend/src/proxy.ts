@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const publicPaths = ['/auth', '/api/auth', '/_next', '/favicon.ico'];
+const publicPaths = ['/auth', '/api/auth', '/_next', '/favicon.ico', '/assets'];
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -23,12 +23,9 @@ export function proxy(req: NextRequest) {
     return NextResponse.redirect(signInUrl);
   }
 
-  // Redirect root to dashboard if authenticated, sign-in if not
+  // Root is the public landing page — always allow
   if (pathname === '/') {
-    if (token) {
-      return NextResponse.redirect(new URL('/dashboard/overview', req.url));
-    }
-    return NextResponse.redirect(new URL('/auth/sign-in', req.url));
+    return NextResponse.next();
   }
 
   return NextResponse.next();
