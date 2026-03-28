@@ -78,15 +78,21 @@ func (s *Store) CreateAgent(ctx context.Context, req models.CreateAgentRequest) 
 func (s *Store) GetAgent(ctx context.Context, id uuid.UUID) (*models.Agent, error) {
 	agent := &models.Agent{}
 	var varsJSON []byte
+	var modelType *string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, description, system_prompt, instructions, engine_type, engine_config, tools, model,
-			provider_id, variables, strategy, max_iterations, icon, color, avatar_url, status, created_at, updated_at
-		FROM agents WHERE id = $1`, id,
+		SELECT a.id, a.name, a.description, a.system_prompt, a.instructions, a.engine_type, a.engine_config, a.tools, a.model,
+			a.provider_id, a.variables, a.strategy, a.max_iterations, a.icon, a.color, a.avatar_url, a.status, a.created_at, a.updated_at,
+			pm.model_type
+		FROM agents a
+		LEFT JOIN provider_models pm ON pm.provider_id = a.provider_id AND pm.model_name = a.model AND pm.is_enabled = true
+		WHERE a.id = $1
+		LIMIT 1`, id,
 	).Scan(
 		&agent.ID, &agent.Name, &agent.Description, &agent.SystemPrompt, &agent.Instructions,
 		&agent.EngineType, &agent.EngineConfig, &agent.Tools, &agent.Model,
 		&agent.ProviderID, &varsJSON, &agent.Strategy, &agent.MaxIterations, &agent.Icon, &agent.Color, &agent.AvatarURL,
 		&agent.Status, &agent.CreatedAt, &agent.UpdatedAt,
+		&modelType,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -100,7 +106,9 @@ func (s *Store) GetAgent(ctx context.Context, id uuid.UUID) (*models.Agent, erro
 	if agent.Variables == nil {
 		agent.Variables = []models.AgentVariable{}
 	}
-
+	if modelType != nil {
+		agent.ModelType = *modelType
+	}
 	return agent, nil
 }
 
@@ -110,9 +118,12 @@ func (s *Store) GetAgentsBatch(ctx context.Context, ids []uuid.UUID) ([]*models.
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, system_prompt, instructions, engine_type, engine_config, tools, model,
-			provider_id, variables, strategy, max_iterations, icon, color, avatar_url, status, created_at, updated_at
-		FROM agents WHERE id = ANY($1)`, ids)
+		SELECT a.id, a.name, a.description, a.system_prompt, a.instructions, a.engine_type, a.engine_config, a.tools, a.model,
+			a.provider_id, a.variables, a.strategy, a.max_iterations, a.icon, a.color, a.avatar_url, a.status, a.created_at, a.updated_at,
+			pm.model_type
+		FROM agents a
+		LEFT JOIN provider_models pm ON pm.provider_id = a.provider_id AND pm.model_name = a.model AND pm.is_enabled = true
+		WHERE a.id = ANY($1)`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("get agents batch: %w", err)
 	}
@@ -122,11 +133,13 @@ func (s *Store) GetAgentsBatch(ctx context.Context, ids []uuid.UUID) ([]*models.
 	for rows.Next() {
 		agent := &models.Agent{}
 		var varsJSON []byte
+		var modelType *string
 		if err := rows.Scan(
 			&agent.ID, &agent.Name, &agent.Description, &agent.SystemPrompt, &agent.Instructions,
 			&agent.EngineType, &agent.EngineConfig, &agent.Tools, &agent.Model,
 			&agent.ProviderID, &varsJSON, &agent.Strategy, &agent.MaxIterations, &agent.Icon, &agent.Color, &agent.AvatarURL,
 			&agent.Status, &agent.CreatedAt, &agent.UpdatedAt,
+			&modelType,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
@@ -135,6 +148,9 @@ func (s *Store) GetAgentsBatch(ctx context.Context, ids []uuid.UUID) ([]*models.
 		}
 		if agent.Variables == nil {
 			agent.Variables = []models.AgentVariable{}
+		}
+		if modelType != nil {
+			agent.ModelType = *modelType
 		}
 		byID[agent.ID] = agent
 	}
@@ -159,10 +175,13 @@ func (s *Store) ListAgents(ctx context.Context, limit, offset int) ([]*models.Ag
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, system_prompt, instructions, engine_type, engine_config, tools, model,
-			provider_id, variables, strategy, max_iterations, icon, color, avatar_url, status, created_at, updated_at
-		FROM agents WHERE status != 'archived'
-		ORDER BY created_at DESC
+		SELECT a.id, a.name, a.description, a.system_prompt, a.instructions, a.engine_type, a.engine_config, a.tools, a.model,
+			a.provider_id, a.variables, a.strategy, a.max_iterations, a.icon, a.color, a.avatar_url, a.status, a.created_at, a.updated_at,
+			pm.model_type
+		FROM agents a
+		LEFT JOIN provider_models pm ON pm.provider_id = a.provider_id AND pm.model_name = a.model AND pm.is_enabled = true
+		WHERE a.status != 'archived'
+		ORDER BY a.created_at DESC
 		LIMIT $1 OFFSET $2`, limit, offset,
 	)
 	if err != nil {
@@ -174,11 +193,13 @@ func (s *Store) ListAgents(ctx context.Context, limit, offset int) ([]*models.Ag
 	for rows.Next() {
 		a := &models.Agent{}
 		var varsJSON []byte
+		var modelType *string
 		if err := rows.Scan(
 			&a.ID, &a.Name, &a.Description, &a.SystemPrompt, &a.Instructions,
 			&a.EngineType, &a.EngineConfig, &a.Tools, &a.Model,
 			&a.ProviderID, &varsJSON, &a.Strategy, &a.MaxIterations, &a.Icon, &a.Color, &a.AvatarURL,
 			&a.Status, &a.CreatedAt, &a.UpdatedAt,
+			&modelType,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan agent: %w", err)
 		}
@@ -187,6 +208,9 @@ func (s *Store) ListAgents(ctx context.Context, limit, offset int) ([]*models.Ag
 		}
 		if a.Variables == nil {
 			a.Variables = []models.AgentVariable{}
+		}
+		if modelType != nil {
+			a.ModelType = *modelType
 		}
 		agents = append(agents, a)
 	}

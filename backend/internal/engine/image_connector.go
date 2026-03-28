@@ -35,8 +35,15 @@ func newImageConnector(providerType, baseURL, apiKey, model string) *imageConnec
 	}
 }
 
-func (c *imageConnector) Name() string      { return "image:" + c.providerType }
-func (c *imageConnector) HealthCheck(_ context.Context) error { return nil }
+func (c *imageConnector) Name() string                         { return "image:" + c.providerType }
+func (c *imageConnector) HealthCheck(_ context.Context) error  { return nil }
+
+// IsMediaConnector returns true if the connector is an image/video/audio generator.
+// Used by the orchestrator to skip the discussion/strategy phase for media agents.
+func IsMediaConnector(conn Connector) bool {
+	_, ok := conn.(*imageConnector)
+	return ok
+}
 
 // imageSpec is parsed from the subtask message passed to the image agent.
 // The message may be plain JSON or prose — JSON is tried first.
