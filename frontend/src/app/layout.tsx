@@ -16,7 +16,7 @@ const META_THEME_COLORS = {
 };
 
 export const metadata: Metadata = {
-  title: 'AitherOS — Autonomous AI Workforce',
+  title: 'AitherOS — The Operating System for Autonomous AI Teams',
   description:
     'Orchestrate autonomous AI agent teams. Plan, execute, and observe multi-agent workflows in real time.',
   icons: {

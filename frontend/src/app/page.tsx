@@ -76,7 +76,7 @@ function StarField() {
 
 /* ─── Typewriter effect ─── */
 const HEADLINES = [
-  'Deploy an AI Workforce.',
+  'The Operating System for Autonomous AI Teams.',
   'Coordinate Autonomous Agents.',
   'Ship Smarter, Not Harder.',
   'Orchestrate Intelligence at Scale.',
@@ -535,9 +535,9 @@ export default function LandingPage() {
               maxWidth: 900,
             }}
           >
-            Your company,
+            The Operating System
             <br />
-            powered by an{' '}
+            for{' '}
             <span
               style={{
                 background: `linear-gradient(135deg, ${C.purple} 0%, ${C.cyan} 100%)`,
@@ -545,7 +545,7 @@ export default function LandingPage() {
                 WebkitTextFillColor: 'transparent',
               }}
             >
-              AI Workforce
+              Autonomous AI Teams
             </span>
           </motion.h1>
 
@@ -1509,7 +1509,7 @@ export default function LandingPage() {
               lineHeight: 1.05,
             }}
           >
-            The future of work
+            The Operating System
             <br />
             <span
               style={{
@@ -1518,7 +1518,7 @@ export default function LandingPage() {
                 WebkitTextFillColor: 'transparent',
               }}
             >
-              is autonomous.
+              for Autonomous AI Teams
             </span>
           </h2>
 
@@ -1629,7 +1629,7 @@ export default function LandingPage() {
           </div>
           <span style={{ fontWeight: 700, color: C.text }}>AitherOS</span>
           <span style={{ color: C.muted, fontSize: '0.85rem', marginLeft: 8 }}>
-            Autonomous AI Workforce Platform
+            The Operating System for Autonomous AI Teams
           </span>
         </div>
 
