@@ -1114,7 +1114,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			"- Full read/write access. Create, edit, delete files freely.\n"+
 			"- Use `run_command` to run git, npm, python, cargo, curl, bash scripts — anything.\n"+
 			"- Clone repos here, run builds, write output files. Files persist for this workforce.\n"+
-			"- AitherOS platform source is readable (not writable) at `/opt/AitherOS`.\n\n"+
+			"- To read AitherOS source code or docs, fetch from GitHub: https://raw.githubusercontent.com/AitherLabs/AitherOS/main/<path>\n\n"+
 			"**Credentials** — your team's stored secrets are available via Aither-Tools:\n"+
 			"- `list_secrets()` — discover all available service/key pairs before making authenticated requests\n"+
 			"- `get_secret(\"service\", \"key_name\")` — retrieve a specific credential value\n"+
@@ -1126,7 +1126,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		"## Tool Usage — MANDATORY\n"+
 		"You have MCP tools available. Use them aggressively and persistently:\n"+
 		"- **Shell**: `run_command` — git, npm, python, curl, bash. Clone repos to `%s`, run tests, compile, deploy.\n"+
-		"- **Filesystem**: read/write files in your workspace or read `/opt/AitherOS` (AitherOS source, read-only).\n"+
+		"- **Filesystem**: read/write files in your workspace. For AitherOS source/docs, use web_fetch on https://raw.githubusercontent.com/AitherLabs/AitherOS/main/<path>\n"+
 		"- **Secrets**: call `list_secrets()` before any authenticated request to see what credentials exist.\n"+
 		"- **Kanban board**: `kanban_list_tasks()` — see all tasks on this workforce's board. `kanban_create_task(title, description, priority)` — add a new task (status will be 'open'). Use these to populate or inspect the team's task board.\n"+
 		"- **GitHub rate-limit errors**: automatically retried after 62s — do NOT signal `needs_help` for these.\n"+
