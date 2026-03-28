@@ -152,18 +152,27 @@ func (c *imageConnector) SubmitStream(_ context.Context, req TaskRequest) (<-cha
 // ── Provider implementations ──────────────────────────────────────────────────
 
 func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio string) ([]byte, error) {
-	base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimRight(c.baseURL, "/"), "/openai"), "/v1beta")
-	if base == "" {
-		base = "https://generativelanguage.googleapis.com/v1beta"
+	// Strip any path suffix so we always reconstruct with the correct /v1beta path.
+	base := c.baseURL
+	base = strings.TrimRight(base, "/")
+	for _, suffix := range []string{"/openai", "/v1beta", "/v1"} {
+		base = strings.TrimSuffix(base, suffix)
 	}
-	url := fmt.Sprintf("%s/models/%s:generateImages?key=%s", base, c.model, c.apiKey)
+	if base == "" {
+		base = "https://generativelanguage.googleapis.com"
+	}
+
+	// Model may be stored as "models/imagen-4.0-generate-001" or just "imagen-4.0-generate-001".
+	// Strip the "models/" prefix because the URL already contains /models/.
+	modelID := strings.TrimPrefix(c.model, "models/")
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateImages?key=%s", base, modelID, c.apiKey)
 
 	body, _ := json.Marshal(map[string]any{
-		"prompt":            prompt,
-		"number_of_images":  1,
-		"aspect_ratio":      aspectRatio,
-		"safetyFilterLevel": "BLOCK_ONLY_HIGH",
-		"personGeneration":  "DONT_ALLOW",
+		"prompt":              prompt,
+		"number_of_images":    1,
+		"aspect_ratio":        aspectRatio,
+		"safety_filter_level": "BLOCK_ONLY_HIGH",
+		"person_generation":   "DONT_ALLOW",
 	})
 
 	raw, err := c.post(ctx, url, nil, body)
@@ -171,24 +180,27 @@ func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio
 		return nil, err
 	}
 
+	// Log raw response for debugging unexpected formats.
 	var data struct {
 		GeneratedImages []struct {
-			Image             struct{ ImageBytes string `json:"imageBytes"` } `json:"image"`
+			Image struct {
+				ImageBytes string `json:"imageBytes"`
+			} `json:"image"`
 			RaiFilteredReason string `json:"raiFilteredReason"`
 		} `json:"generatedImages"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
+		return nil, fmt.Errorf("parse response: %w — body: %s", err, truncateStr(string(raw), 300))
 	}
 	if len(data.GeneratedImages) == 0 {
-		return nil, fmt.Errorf("no images returned")
+		return nil, fmt.Errorf("no images returned — body: %s", truncateStr(string(raw), 300))
 	}
 	if r := data.GeneratedImages[0].RaiFilteredReason; r != "" {
 		return nil, fmt.Errorf("content filtered: %s", r)
 	}
 	b64 := data.GeneratedImages[0].Image.ImageBytes
 	if b64 == "" {
-		return nil, fmt.Errorf("missing imageBytes in response")
+		return nil, fmt.Errorf("missing imageBytes in response — body: %s", truncateStr(string(raw), 300))
 	}
 	return base64.StdEncoding.DecodeString(b64)
 }
