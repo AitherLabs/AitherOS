@@ -525,9 +525,9 @@ export default function AgentDetailPage() {
                   setProviderId(newId);
                   markChanged();
                   const pv = providers.find((p) => p.id === newId);
-                  const llmModels = pv?.models?.filter((m) => m.model_type === 'llm') ?? [];
-                  if (llmModels.length > 0 && !llmModels.some((m) => m.model_name === model)) {
-                    setModel(llmModels[0].model_name);
+                  const enabledModels = pv?.models?.filter((m) => m.is_enabled) ?? [];
+                  if (enabledModels.length > 0 && !enabledModels.some((m) => m.model_name === model)) {
+                    setModel(enabledModels[0].model_name);
                   }
                 }}>
                   <SelectTrigger className='h-7 text-xs'><SelectValue placeholder='Auto-detect' /></SelectTrigger>
@@ -543,15 +543,16 @@ export default function AgentDetailPage() {
                 <Label className='text-[10px]'>Model</Label>
                 {(() => {
                   const selectedProvider = providers.find((p) => p.id === providerId);
-                  const llmModels = selectedProvider?.models?.filter((m) => m.model_type === 'llm') ?? [];
-                  if (llmModels.length === 0) {
+                  const allModels = selectedProvider?.models?.filter((m) => m.is_enabled) ?? [];
+                  if (allModels.length === 0) {
                     return (
                       <Input value={model} onChange={(e) => { setModel(e.target.value); markChanged(); }} placeholder='gpt-4o' className='h-7 font-mono text-xs' />
                     );
                   }
-                  // model is "custom" if it's non-empty and not in the registered list
-                  const isCustom = model !== '' && !llmModels.some((m) => m.model_name === model);
+                  const isCustom = model !== '' && !allModels.some((m) => m.model_name === model);
                   const dropdownVal = isCustom ? '_custom' : (model || '');
+                  const mediaTypes = ['image', 'video', 'audio'];
+                  const mediaColor: Record<string, string> = { image: '#9A66FF', video: '#14FFF7', audio: '#56D090' };
                   return (
                     <>
                       <Select
@@ -563,9 +564,16 @@ export default function AgentDetailPage() {
                       >
                         <SelectTrigger className='h-7 font-mono text-xs'><SelectValue placeholder='Select model...' /></SelectTrigger>
                         <SelectContent>
-                          {llmModels.map((m) => (
+                          {allModels.map((m) => (
                             <SelectItem key={m.id} value={m.model_name} className='font-mono text-xs'>
-                              {m.model_name}
+                              <span className='flex items-center gap-1.5'>
+                                {m.model_name}
+                                {mediaTypes.includes(m.model_type) && (
+                                  <span className='rounded px-1 py-0.5 text-[8px] font-black tracking-widest uppercase leading-none' style={{ background: (mediaColor[m.model_type] || '#9A66FF') + '22', color: mediaColor[m.model_type] || '#9A66FF', border: `1px solid ${mediaColor[m.model_type] || '#9A66FF'}44` }}>
+                                    {m.model_type}
+                                  </span>
+                                )}
+                              </span>
                             </SelectItem>
                           ))}
                           <SelectItem value='_custom' className='font-mono text-xs italic text-muted-foreground'>
