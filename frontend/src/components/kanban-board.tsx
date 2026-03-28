@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import {
@@ -16,6 +16,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
   IconBolt,
+  IconEdit,
+  IconExternalLink,
   IconLoader2,
   IconPlayerPlay,
   IconPlus,
@@ -34,8 +36,20 @@ const COLUMNS: { status: KanbanStatus; label: string; color: string }[] = [
   { status: 'done',        label: 'Done',        color: '#56D090' },
 ];
 
-const PRIORITY_LABEL = ['Low', 'Normal', 'High', 'Urgent'];
-const PRIORITY_COLOR = ['#6B7280', '#14FFF7', '#FFBF47', '#EF4444'];
+function priorityLabel(p: number): string {
+  if (p >= 9) return 'Critical';
+  if (p >= 7) return 'High';
+  if (p >= 5) return 'Medium';
+  if (p >= 3) return 'Normal';
+  return 'Low';
+}
+function priorityColor(p: number): string {
+  if (p >= 9) return '#EF4444';
+  if (p >= 7) return '#FFBF47';
+  if (p >= 5) return '#14FFF7';
+  if (p >= 3) return '#9A66FF';
+  return '#6B7280';
+}
 
 function timeAgo(date: string): string {
   const diff = Date.now() - new Date(date).getTime();
@@ -75,6 +89,17 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   const [movingId, setMovingId] = useState<string | null>(null);
   const [runningId, setRunningId] = useState<string | null>(null);
   const [autonomousToggling, setAutonomousToggling] = useState(false);
+
+  // Task detail / edit dialog
+  const [selectedTask, setSelectedTask] = useState<KanbanTask | null>(null);
+  const [editingTask, setEditingTask] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editPriority, setEditPriority] = useState(0);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // Drag detection — prevents detail dialog opening when dragging
+  const didDragRef = useRef(false);
 
   // Add task dialog
   const [addOpen, setAddOpen] = useState(false);
@@ -187,9 +212,37 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
     }
   }
 
+  function openDetail(task: KanbanTask) {
+    setSelectedTask(task);
+    setEditingTask(false);
+    setEditTitle(task.title);
+    setEditDesc(task.description || '');
+    setEditPriority(task.priority);
+  }
+
+  async function saveEdit() {
+    if (!selectedTask) return;
+    setSavingEdit(true);
+    try {
+      const res = await api.updateKanbanTask(selectedTask.id, {
+        title: editTitle.trim(),
+        description: editDesc.trim(),
+        priority: editPriority,
+      });
+      if (res.data) {
+        setTasks(prev => prev.map(t => t.id === selectedTask.id ? res.data! : t));
+        setSelectedTask(res.data);
+      }
+      setEditingTask(false);
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
   // ── Drag-and-drop handlers ─────────────────────────────────────────────────
 
   function onDragStart(e: React.DragEvent, taskId: string) {
+    didDragRef.current = true;
     setDraggingId(taskId);
     e.dataTransfer.setData('taskId', taskId);
     e.dataTransfer.effectAllowed = 'move';
@@ -198,6 +251,8 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   function onDragEnd() {
     setDraggingId(null);
     setDragOverCol(null);
+    // Reset after a tick so the click handler (which fires after dragend) can check it
+    setTimeout(() => { didDragRef.current = false; }, 50);
   }
 
   function onDragOverColumn(e: React.DragEvent, status: KanbanStatus) {
@@ -374,16 +429,17 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                       draggable
                       onDragStart={e => onDragStart(e, task.id)}
                       onDragEnd={onDragEnd}
+                      onClick={() => { if (!didDragRef.current) openDetail(task); }}
                       className={`group relative select-none rounded-lg border border-border/30 bg-card/80 p-3 transition-all ${
                         isDragging
                           ? 'cursor-grabbing opacity-40 scale-95'
-                          : 'cursor-grab hover:border-border/60 hover:shadow-sm'
+                          : 'cursor-pointer hover:border-border/60 hover:shadow-sm'
                       } ${isMoving || isRunning ? 'opacity-50' : ''}`}
-                      style={{ borderLeft: `3px solid ${PRIORITY_COLOR[task.priority] ?? '#6B7280'}` }}
+                      style={{ borderLeft: `3px solid ${priorityColor(task.priority)}` }}
                     >
                       {/* Delete */}
                       <button
-                        onClick={() => deleteTask(task)}
+                        onClick={e => { e.stopPropagation(); deleteTask(task); }}
                         className='absolute right-2 top-2 hidden rounded p-0.5 text-muted-foreground hover:text-destructive group-hover:block'
                       >
                         <IconX className='h-3 w-3' />
@@ -406,11 +462,11 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                         <span
                           className='rounded px-1.5 py-0.5 text-[10px] font-medium'
                           style={{
-                            background: `${PRIORITY_COLOR[task.priority]}20`,
-                            color: PRIORITY_COLOR[task.priority],
+                            background: `${priorityColor(task.priority)}20`,
+                            color: priorityColor(task.priority),
                           }}
                         >
-                          {PRIORITY_LABEL[task.priority]}
+                          {priorityLabel(task.priority)}
                         </span>
 
                         {assignedAgent && (
@@ -478,7 +534,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                         <div className='mt-2 flex flex-wrap gap-1'>
                           {task.status === 'todo' && (
                             <button
-                              onClick={() => runTask(task)}
+                              onClick={e => { e.stopPropagation(); runTask(task); }}
                               disabled={runningId !== null}
                               className='flex items-center gap-0.5 rounded bg-[#9A66FF]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[#9A66FF] hover:bg-[#9A66FF]/25 disabled:opacity-40'
                             >
@@ -488,7 +544,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                           )}
                           {task.status === 'in_progress' && (
                             <button
-                              onClick={() => requestMove(task, 'blocked')}
+                              onClick={e => { e.stopPropagation(); requestMove(task, 'blocked'); }}
                               className='rounded px-1.5 py-0.5 text-[10px] font-medium text-[#FFBF47] hover:bg-[#FFBF47]/10'
                             >
                               ⚠ Blocked
@@ -496,7 +552,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                           )}
                           {task.status === 'blocked' && (
                             <button
-                              onClick={() => requestMove(task, 'todo')}
+                              onClick={e => { e.stopPropagation(); requestMove(task, 'todo'); }}
                               className='rounded px-1.5 py-0.5 text-[10px] font-medium text-[#14FFF7] hover:bg-[#14FFF7]/10'
                             >
                               ↩ Unblock
@@ -582,6 +638,215 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
               Move to To Do
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Task Detail Dialog ──────────────────────────────────────────── */}
+      <Dialog
+        open={selectedTask !== null}
+        onOpenChange={o => { if (!o) { setSelectedTask(null); setEditingTask(false); } }}
+      >
+        <DialogContent className='max-w-xl max-h-[85vh] overflow-y-auto'>
+          {selectedTask && (() => {
+            const col = COLUMNS.find(c => c.status === selectedTask.status);
+            const assignedAgent = agents.find(a => a.id === selectedTask.assigned_to);
+            const notes = selectedTask.notes
+              ? selectedTask.notes.split('\n').filter(Boolean)
+              : [];
+            return (
+              <>
+                <DialogHeader>
+                  <div className='flex items-start gap-2 pr-6'>
+                    <div className='mt-0.5 h-3 w-1.5 flex-shrink-0 rounded-full' style={{ backgroundColor: priorityColor(selectedTask.priority) }} />
+                    {editingTask ? (
+                      <input
+                        className='flex-1 rounded border border-border/50 bg-background px-2 py-1 text-base font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                        value={editTitle}
+                        onChange={e => setEditTitle(e.target.value)}
+                        autoFocus
+                      />
+                    ) : (
+                      <DialogTitle className='text-base leading-snug'>{selectedTask.title}</DialogTitle>
+                    )}
+                  </div>
+                  <div className='flex flex-wrap items-center gap-1.5 pl-5 pt-1'>
+                    {/* Status */}
+                    <span className='rounded-full px-2 py-0.5 text-[10px] font-semibold' style={{ background: `${col?.color}20`, color: col?.color }}>
+                      {col?.label}
+                    </span>
+                    {/* Priority */}
+                    <span className='rounded-full px-2 py-0.5 text-[10px] font-semibold' style={{ background: `${priorityColor(selectedTask.priority)}20`, color: priorityColor(selectedTask.priority) }}>
+                      P{selectedTask.priority} · {priorityLabel(selectedTask.priority)}
+                    </span>
+                    {/* Assigned agent */}
+                    {assignedAgent && (
+                      <span className='flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]' style={{ background: `${assignedAgent.color}15`, color: assignedAgent.color }}>
+                        {assignedAgent.icon} {assignedAgent.name}
+                      </span>
+                    )}
+                    {/* Created by */}
+                    {selectedTask.created_by !== 'human' && (
+                      <span className='rounded-full bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground/60'>
+                        by {selectedTask.created_by}
+                      </span>
+                    )}
+                    {/* Execution link */}
+                    {selectedTask.execution_id && (
+                      <a
+                        href={`/dashboard/executions/${selectedTask.execution_id}`}
+                        className='flex items-center gap-1 rounded-full bg-[#9A66FF]/10 px-2 py-0.5 text-[10px] text-[#9A66FF] hover:underline'
+                        onClick={e => e.stopPropagation()}
+                      >
+                        <IconBolt className='h-2.5 w-2.5' />
+                        View Execution
+                        <IconExternalLink className='h-2.5 w-2.5' />
+                      </a>
+                    )}
+                  </div>
+                </DialogHeader>
+
+                <div className='space-y-4 py-2'>
+                  {/* Description */}
+                  <div className='space-y-1.5'>
+                    <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Description</p>
+                    {editingTask ? (
+                      <Textarea
+                        value={editDesc}
+                        onChange={e => setEditDesc(e.target.value)}
+                        rows={8}
+                        className='font-mono text-xs'
+                        placeholder='Task description, acceptance criteria, specs…'
+                      />
+                    ) : selectedTask.description ? (
+                      <div className='rounded-lg bg-muted/10 px-3 py-2.5'>
+                        <pre className='whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/90'>
+                          {selectedTask.description}
+                        </pre>
+                      </div>
+                    ) : (
+                      <p className='text-sm italic text-muted-foreground/40'>No description</p>
+                    )}
+                  </div>
+
+                  {/* Priority selector (edit mode) */}
+                  {editingTask && (
+                    <div className='space-y-1.5'>
+                      <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Priority (0–10)</p>
+                      <div className='flex items-center gap-3'>
+                        <input
+                          type='range' min={0} max={10} value={editPriority}
+                          onChange={e => setEditPriority(Number(e.target.value))}
+                          className='flex-1 accent-[#9A66FF]'
+                        />
+                        <span className='w-20 text-right text-sm font-semibold' style={{ color: priorityColor(editPriority) }}>
+                          {editPriority} · {priorityLabel(editPriority)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* QA Status */}
+                  {selectedTask.qa_status && selectedTask.qa_status !== 'pending' && selectedTask.qa_status !== 'skipped' && (
+                    <div className='space-y-1.5'>
+                      <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>QA Review</p>
+                      <div className='rounded-lg p-3' style={{
+                        background: selectedTask.qa_status === 'passed' ? '#56D09010' : '#FFBF4710',
+                        border: `1px solid ${selectedTask.qa_status === 'passed' ? '#56D09030' : '#FFBF4730'}`,
+                      }}>
+                        <p className='mb-1 text-xs font-semibold' style={{ color: selectedTask.qa_status === 'passed' ? '#56D090' : '#FFBF47' }}>
+                          {selectedTask.qa_status === 'passed' ? '✓ QA Passed' : '⚠ QA Review Needed'}
+                        </p>
+                        {selectedTask.qa_notes && (
+                          <p className='text-xs text-muted-foreground'>{selectedTask.qa_notes}</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Audit trail */}
+                  {notes.length > 0 && (
+                    <div className='space-y-1.5'>
+                      <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Activity</p>
+                      <div className='space-y-1 rounded-lg bg-muted/10 px-3 py-2.5'>
+                        {notes.map((note, i) => (
+                          <p key={i} className='font-mono text-[11px] text-muted-foreground/60'>{note}</p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Timestamps */}
+                  <p className='text-[10px] text-muted-foreground/30'>
+                    Created {new Date(selectedTask.created_at).toLocaleString()} · Updated {timeAgo(selectedTask.updated_at)}
+                  </p>
+                </div>
+
+                <DialogFooter className='flex-wrap gap-2'>
+                  {editingTask ? (
+                    <>
+                      <Button variant='outline' onClick={() => setEditingTask(false)}>Cancel</Button>
+                      <Button
+                        disabled={!editTitle.trim() || savingEdit}
+                        className='bg-[#9A66FF] hover:bg-[#9A66FF]/90'
+                        onClick={saveEdit}
+                      >
+                        {savingEdit ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : null}
+                        Save Changes
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button variant='outline' size='sm' onClick={() => setEditingTask(true)}>
+                        <IconEdit className='mr-1 h-3.5 w-3.5' />
+                        Edit
+                      </Button>
+
+                      {selectedTask.status === 'open' && (
+                        <Button
+                          size='sm'
+                          className='border border-[#14FFF7]/30 bg-[#14FFF7]/10 text-[#14FFF7] hover:bg-[#14FFF7]/20'
+                          onClick={() => {
+                            setSelectedTask(null);
+                            requestMove(selectedTask, 'todo');
+                          }}
+                        >
+                          → Move to To Do
+                        </Button>
+                      )}
+
+                      {selectedTask.status === 'todo' && (
+                        <Button
+                          size='sm'
+                          className='border border-[#9A66FF]/30 bg-[#9A66FF]/10 text-[#9A66FF] hover:bg-[#9A66FF]/20'
+                          disabled={runningId !== null}
+                          onClick={() => {
+                            setSelectedTask(null);
+                            runTask(selectedTask);
+                          }}
+                        >
+                          <IconPlayerPlay className='mr-1 h-3.5 w-3.5' />
+                          Run Task
+                        </Button>
+                      )}
+
+                      {selectedTask.status === 'blocked' && (
+                        <Button
+                          size='sm'
+                          className='border border-[#14FFF7]/30 bg-[#14FFF7]/10 text-[#14FFF7] hover:bg-[#14FFF7]/20'
+                          onClick={() => {
+                            setSelectedTask(null);
+                            requestMove(selectedTask, 'todo');
+                          }}
+                        >
+                          ↩ Unblock
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </DialogFooter>
+              </>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
