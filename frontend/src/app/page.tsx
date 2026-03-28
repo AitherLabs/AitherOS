@@ -393,22 +393,7 @@ export default function LandingPage() {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              background: `linear-gradient(135deg, ${C.purple}, ${C.cyan})`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 16,
-              fontWeight: 800,
-              color: '#fff',
-            }}
-          >
-            A
-          </div>
+          <img src='/assets/favicon.png' alt='AitherOS' style={{ width: 32, height: 32, borderRadius: 8 }} />
           <span style={{ fontWeight: 700, fontSize: '1.1rem', letterSpacing: '-0.02em' }}>
             AitherOS
           </span>
@@ -1611,22 +1596,7 @@ export default function LandingPage() {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 7,
-              background: `linear-gradient(135deg, ${C.purple}, ${C.cyan})`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 14,
-              fontWeight: 800,
-              color: '#fff',
-            }}
-          >
-            A
-          </div>
+          <img src='/assets/favicon.png' alt='AitherOS' style={{ width: 28, height: 28, borderRadius: 7 }} />
           <span style={{ fontWeight: 700, color: C.text }}>AitherOS</span>
           <span style={{ color: C.muted, fontSize: '0.85rem', marginLeft: 8 }}>
             The Operating System for Autonomous AI Teams
