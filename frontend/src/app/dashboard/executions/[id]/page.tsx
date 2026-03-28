@@ -790,9 +790,9 @@ function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: stri
         )}
       </div>
       {/* Summary line (always visible) */}
-      {ev.type !== 'agent_error' && (
-        <p className='px-2 pb-1.5 break-words text-[10px] leading-relaxed text-muted-foreground/65 line-clamp-2 -mt-1'>{ev.content}</p>
-      )}
+      <p className={`px-2 pb-1.5 break-words text-[10px] leading-relaxed line-clamp-2 -mt-1 ${ev.type === 'agent_error' ? 'text-red-400/80' : 'text-muted-foreground/65'}`}>
+        {ev.content}
+      </p>
       {/* Expanded detail */}
       {open && hasDetail && (
         <div className='border-t border-border/20 px-2 pb-2'>
