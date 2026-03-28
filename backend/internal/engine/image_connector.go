@@ -288,8 +288,11 @@ func (c *imageConnector) generateCloudflare(ctx context.Context, prompt string) 
 	apiURL := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai/run/%s", accountID, model)
 	log.Printf("image-connector: cloudflare workers-ai → account=%s model=%s", accountID, model)
 
+	// Cloudflare enforces a 2048-character limit on the prompt field.
+	cfPrompt := truncateStr(prompt, 2048)
+
 	body, _ := json.Marshal(map[string]any{
-		"prompt": prompt,
+		"prompt": cfPrompt,
 		"steps":  4, // FLUX default; ignored by models that don't support it
 	})
 
