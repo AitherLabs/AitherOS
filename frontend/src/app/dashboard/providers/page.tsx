@@ -52,17 +52,19 @@ const PROVIDER_TYPES = [
   { value: 'openai_compatible', label: 'OpenAI Compatible' },
   { value: 'ollama', label: 'Ollama' },
   { value: 'litellm', label: 'LiteLLM' },
+  { value: 'cloudflare', label: 'Cloudflare Workers AI' },
   { value: 'picoclaw', label: 'PicoClaw' },
   { value: 'openclaw', label: 'OpenClaw' }
 ];
 
-const PROVIDER_DEFAULTS: Record<string, { base_url: string; placeholder: string }> = {
+const PROVIDER_DEFAULTS: Record<string, { base_url: string; placeholder: string; base_url_label?: string; api_key_label?: string }> = {
   openai:           { base_url: 'https://api.openai.com/v1',                                   placeholder: 'sk-...' },
   openrouter:       { base_url: 'https://openrouter.ai/api/v1',                                placeholder: 'sk-or-...' },
   gemini:           { base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',     placeholder: 'AIza...' },
   ollama:           { base_url: 'http://localhost:11434/v1',                                   placeholder: '(no key needed)' },
   litellm:          { base_url: 'http://localhost:4000/v1',                                    placeholder: 'sk-...' },
   openai_compatible:{ base_url: '',                                                             placeholder: 'API key' },
+  cloudflare:       { base_url: '',                                                             placeholder: 'cfut_...', base_url_label: 'Account ID', api_key_label: 'API Token' },
   picoclaw:         { base_url: 'http://localhost:55000',                                      placeholder: '(no key needed)' },
   openclaw:         { base_url: '',                                                             placeholder: 'API key' },
 };
@@ -561,19 +563,19 @@ export default function ProvidersPage() {
               </Select>
             </div>
             <div className='space-y-2'>
-              <Label>Base URL</Label>
+              <Label>{PROVIDER_DEFAULTS[formData.provider_type]?.base_url_label ?? 'Base URL'}</Label>
               <Input
                 value={formData.base_url || ''}
                 onChange={(e) => {
                   setFormData({ ...formData, base_url: e.target.value });
                   setTestStatus('idle');
                 }}
-                placeholder='https://api.openai.com/v1'
+                placeholder={formData.provider_type === 'cloudflare' ? 'a1b2c3d4... (from dash.cloudflare.com)' : 'https://api.openai.com/v1'}
               />
             </div>
             <div className='space-y-2'>
               <div className='flex items-center justify-between'>
-                <Label>API Key</Label>
+                <Label>{PROVIDER_DEFAULTS[formData.provider_type]?.api_key_label ?? 'API Key'}</Label>
                 {formData.base_url && (
                   <Button
                     variant='ghost'
@@ -690,7 +692,7 @@ export default function ProvidersPage() {
               />
             </div>
             <div className='space-y-2'>
-              <Label>Base URL</Label>
+              <Label>{PROVIDER_DEFAULTS[editProvider?.provider_type ?? '']?.base_url_label ?? 'Base URL'}</Label>
               <Input
                 value={editData.base_url}
                 onChange={(e) =>
@@ -699,7 +701,7 @@ export default function ProvidersPage() {
               />
             </div>
             <div className='space-y-2'>
-              <Label>API Key (leave blank to keep existing)</Label>
+              <Label>{(PROVIDER_DEFAULTS[editProvider?.provider_type ?? '']?.api_key_label ?? 'API Key')} (leave blank to keep existing)</Label>
               <Input
                 type='password'
                 value={editData.api_key}
