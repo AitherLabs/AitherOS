@@ -1564,6 +1564,20 @@ func (o *Orchestrator) haltExecution(ctx context.Context, execID, wfID uuid.UUID
 		Summary:      "Execution halted: " + reason,
 		Metadata:     map[string]any{"reason": reason, "workforce_name": wfName, "execution_title": execTitle},
 	})
+
+	// Partial knowledge ingestion: embed agent messages even if execution didn't complete
+	if o.knowledgeManager != nil {
+		go func() {
+			bgCtx := context.Background()
+			msgs, err := o.store.GetRecentMessages(bgCtx, execID, 50)
+			if err != nil {
+				log.Printf("knowledge: get messages for halted exec %s: %v", execID, err)
+				return
+			}
+			o.knowledgeManager.IngestAgentMessages(bgCtx, wfID, execID, msgs)
+			log.Printf("knowledge: embedded agent messages for halted execution %s", execID)
+		}()
+	}
 }
 
 func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.UUID, result string, tokensUsed int64, iterations int) {
