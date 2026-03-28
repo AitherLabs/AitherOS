@@ -52,6 +52,7 @@ import {
 import api, { ActivityEvent, Agent, Approval, Credential, Execution, KanbanTask, KanbanStatus, KnowledgeEntry, MCPServer, MCPToolDefinition, Workforce } from '@/lib/api';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { EntityAvatar } from '@/components/entity-avatar';
+import { KanbanBoard } from '@/components/kanban-board';
 
 // Per-server credential hints: what each MCP server's tools typically need via get_secret()
 type CredHint = { service: string; key: string; label: string };
@@ -289,18 +290,7 @@ export default function WorkforceDetailPage() {
   const [credShowValue, setCredShowValue] = useState(false);
   const [credError, setCredError] = useState('');
 
-  // Kanban state
-  const [kanbanTasks, setKanbanTasks] = useState<KanbanTask[]>([]);
-  const [kanbanLoading, setKanbanLoading] = useState(false);
-  const [addTaskOpen, setAddTaskOpen] = useState(false);
-  const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [newTaskDesc, setNewTaskDesc] = useState('');
-  const [newTaskPriority, setNewTaskPriority] = useState(1);
-  const [newTaskAssignee, setNewTaskAssignee] = useState('');
-  const [addingTask, setAddingTask] = useState(false);
-  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
-  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
-  const [autonomousToggling, setAutonomousToggling] = useState(false);
+  // Kanban tasks are managed inside <KanbanBoard />
 
   const loadData = useCallback(async () => {
     try {
@@ -395,14 +385,6 @@ export default function WorkforceDetailPage() {
         setActivityEvents([]);
       }
 
-      // Load kanban tasks
-      try {
-        const kbRes = await api.listKanbanTasks(wfId);
-        setKanbanTasks(kbRes.data || []);
-      } catch {
-        setKanbanTasks([]);
-      }
-
       // Load credentials
       try {
         const credsRes = await api.listCredentials(wfId);
@@ -467,42 +449,6 @@ export default function WorkforceDetailPage() {
       if (res.data) setPreflight(res.data);
     } catch { /* ignore */ } finally {
       setPreflightLoading(false);
-    }
-  }
-
-  async function moveKanbanTask(task: KanbanTask, status: KanbanStatus) {
-    setMovingTaskId(task.id);
-    try {
-      const res = await api.updateKanbanTask(task.id, { status });
-      if (res.data) setKanbanTasks(prev => prev.map(t => t.id === task.id ? res.data! : t));
-    } finally {
-      setMovingTaskId(null);
-    }
-  }
-
-  async function deleteKanbanTask(task: KanbanTask) {
-    await api.deleteKanbanTask(task.id);
-    setKanbanTasks(prev => prev.filter(t => t.id !== task.id));
-  }
-
-  async function runKanbanTask(task: KanbanTask) {
-    setRunningTaskId(task.id);
-    try {
-      const objective = task.description
-        ? `${task.title}\n\n${task.description}`
-        : task.title;
-      const execRes = await api.startExecution(wfId, objective);
-      if (!execRes.data?.id) return;
-      const execId = execRes.data.id;
-      // Link the task to the execution and move it to in_progress
-      const updated = await api.updateKanbanTask(task.id, {
-        status: 'in_progress',
-        execution_id: execId,
-      });
-      if (updated.data) setKanbanTasks(prev => prev.map(t => t.id === task.id ? updated.data! : t));
-      router.push(`/dashboard/executions/${execId}`);
-    } finally {
-      setRunningTaskId(null);
     }
   }
 
@@ -841,222 +787,12 @@ export default function WorkforceDetailPage() {
           <Separator />
 
           {/* ── Task Board ─────────────────────────────────────── */}
-          <div>
-            <div className='mb-4 flex items-center justify-between'>
-              <h3 className='text-sm font-semibold uppercase tracking-wider text-muted-foreground'>
-                Task Board
-              </h3>
-              <div className='flex items-center gap-3'>
-                {/* Autonomous mode toggle */}
-                <div className='flex items-center gap-2 rounded-lg border border-border/50 bg-card/50 px-3 py-1.5'>
-                  <IconRobot className={`h-3.5 w-3.5 ${workforce.autonomous_mode ? 'text-[#9A66FF]' : 'text-muted-foreground'}`} />
-                  <span className='text-xs text-muted-foreground'>Autonomous</span>
-                  <button
-                    onClick={async () => {
-                      setAutonomousToggling(true);
-                      try {
-                        const res = await api.updateWorkforce(wfId, { autonomous_mode: !workforce.autonomous_mode });
-                        if (res.data) setWorkforce(res.data);
-                      } finally {
-                        setAutonomousToggling(false);
-                      }
-                    }}
-                    disabled={autonomousToggling}
-                    className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer items-center rounded-full transition-colors focus:outline-none ${
-                      workforce.autonomous_mode ? 'bg-[#9A66FF]' : 'bg-border'
-                    } ${autonomousToggling ? 'opacity-50' : ''}`}
-                  >
-                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                      workforce.autonomous_mode ? 'translate-x-4' : 'translate-x-0.5'
-                    }`} />
-                  </button>
-                  {workforce.autonomous_mode && (
-                    <div className='flex items-center gap-1'>
-                      <span className='text-xs text-muted-foreground'>every</span>
-                      <input
-                        type='number'
-                        min={5}
-                        max={1440}
-                        value={workforce.heartbeat_interval_m}
-                        onChange={async (e) => {
-                          const v = Math.max(5, Math.min(1440, parseInt(e.target.value) || 30));
-                          const res = await api.updateWorkforce(wfId, { heartbeat_interval_m: v });
-                          if (res.data) setWorkforce(res.data);
-                        }}
-                        className='w-12 rounded border border-[#9A66FF]/40 bg-transparent px-1 py-0.5 text-center text-xs text-[#9A66FF] focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
-                      />
-                      <span className='text-xs text-[#9A66FF]'>min</span>
-                    </div>
-                  )}
-                </div>
-                <Button
-                  size='sm'
-                  variant='outline'
-                  className='border-[#9A66FF]/40 text-[#9A66FF] hover:bg-[#9A66FF]/10'
-                  onClick={() => setAddTaskOpen(true)}
-                >
-                  <IconPlus className='mr-1 h-3.5 w-3.5' />
-                  Add Task
-                </Button>
-              </div>
-            </div>
-
-            {/* Board columns */}
-            {(() => {
-              const columns: { status: KanbanStatus; label: string; color: string; bg: string }[] = [
-                { status: 'open',        label: 'Open',        color: '#6B7280', bg: '#6B728015' },
-                { status: 'todo',        label: 'To Do',       color: '#14FFF7', bg: '#14FFF715' },
-                { status: 'in_progress', label: 'In Progress', color: '#9A66FF', bg: '#9A66FF15' },
-                { status: 'blocked',     label: 'Blocked',     color: '#FFBF47', bg: '#FFBF4715' },
-                { status: 'done',        label: 'Done',        color: '#56D090', bg: '#56D09015' },
-              ];
-              const priorityLabel = ['Low', 'Normal', 'High', 'Urgent'];
-              const priorityColor = ['#6B7280', '#14FFF7', '#FFBF47', '#EF4444'];
-
-              const nextStatus: Partial<Record<KanbanStatus, KanbanStatus>> = {
-                open: 'todo',
-                todo: 'in_progress',
-                in_progress: 'done',
-                blocked: 'todo',
-              };
-              const prevStatus: Partial<Record<KanbanStatus, KanbanStatus>> = {
-                todo: 'open',
-                in_progress: 'todo',
-                done: 'in_progress',
-              };
-
-              return (
-                <div className='flex gap-3 overflow-x-auto pb-2'>
-                  {columns.map(col => {
-                    const colTasks = kanbanTasks.filter(t => t.status === col.status);
-                    return (
-                      <div key={col.status} className='flex w-64 flex-shrink-0 flex-col rounded-xl border border-border/40 bg-[#0A0D11]/60'>
-                        {/* Column header */}
-                        <div className='flex items-center justify-between px-3 py-2.5' style={{ borderBottom: `1px solid ${col.color}20` }}>
-                          <div className='flex items-center gap-2'>
-                            <div className='h-2 w-2 rounded-full' style={{ backgroundColor: col.color }} />
-                            <span className='text-xs font-semibold' style={{ color: col.color }}>{col.label}</span>
-                          </div>
-                          <span className='rounded-full px-1.5 py-0.5 text-[10px] font-medium' style={{ background: col.bg, color: col.color }}>
-                            {colTasks.length}
-                          </span>
-                        </div>
-
-                        {/* Cards */}
-                        <div className='flex flex-col gap-2 p-2'>
-                          {colTasks.map(task => {
-                            const assignedAgent = agents.find(a => a.id === task.assigned_to);
-                            const isMoving = movingTaskId === task.id;
-                            const next = nextStatus[task.status];
-                            const prev = prevStatus[task.status];
-                            return (
-                              <div
-                                key={task.id}
-                                className={`group relative rounded-lg border border-border/40 bg-card/80 p-3 transition-opacity ${isMoving ? 'opacity-50' : ''}`}
-                                style={{ borderLeft: `3px solid ${priorityColor[task.priority] || '#6B7280'}` }}
-                              >
-                                {/* Delete button */}
-                                <button
-                                  onClick={() => deleteKanbanTask(task)}
-                                  className='absolute right-2 top-2 hidden rounded p-0.5 text-muted-foreground hover:text-destructive group-hover:block'
-                                >
-                                  <IconX className='h-3 w-3' />
-                                </button>
-
-                                <p className='mb-1 pr-4 text-sm font-medium leading-snug text-foreground line-clamp-2'>
-                                  {task.title}
-                                </p>
-                                {task.description && (
-                                  <p className='mb-2 text-xs text-muted-foreground line-clamp-2'>{task.description}</p>
-                                )}
-
-                                <div className='flex flex-wrap items-center gap-1.5'>
-                                  <span className='rounded px-1.5 py-0.5 text-[10px] font-medium' style={{ background: `${priorityColor[task.priority]}20`, color: priorityColor[task.priority] }}>
-                                    {priorityLabel[task.priority]}
-                                  </span>
-                                  {assignedAgent && (
-                                    <span className='flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]' style={{ background: `${assignedAgent.color}15`, color: assignedAgent.color }}>
-                                      <span>{assignedAgent.icon}</span>
-                                      <span>{assignedAgent.name}</span>
-                                    </span>
-                                  )}
-                                  {task.created_by !== 'human' && (
-                                    <span className='rounded px-1.5 py-0.5 text-[10px] text-muted-foreground'>by {task.created_by}</span>
-                                  )}
-                                  {task.execution_id && (
-                                    <a
-                                      href={`/dashboard/executions/${task.execution_id}`}
-                                      className='flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-[#9A66FF] hover:underline'
-                                    >
-                                      <IconBolt className='h-2.5 w-2.5' />
-                                      View run
-                                    </a>
-                                  )}
-                                </div>
-
-                                {/* Action buttons */}
-                                {!isMoving && (
-                                  <div className='mt-2.5 flex flex-wrap gap-1'>
-                                    {prev && (
-                                      <button
-                                        onClick={() => moveKanbanTask(task, prev)}
-                                        className='rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent/50'
-                                      >
-                                        ← Back
-                                      </button>
-                                    )}
-                                    {task.status === 'todo' && (
-                                      <button
-                                        onClick={() => runKanbanTask(task)}
-                                        disabled={runningTaskId === task.id}
-                                        className='flex items-center gap-0.5 rounded bg-[#9A66FF]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[#9A66FF] hover:bg-[#9A66FF]/25 disabled:opacity-50'
-                                      >
-                                        {runningTaskId === task.id
-                                          ? <IconLoader2 className='h-2.5 w-2.5 animate-spin' />
-                                          : <IconPlayerPlay className='h-2.5 w-2.5' />}
-                                        Run
-                                      </button>
-                                    )}
-                                    {next && task.status !== 'todo' && (
-                                      <button
-                                        onClick={() => moveKanbanTask(task, next)}
-                                        className='rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-accent/50'
-                                        style={{ color: columns.find(c => c.status === next)?.color }}
-                                      >
-                                        → {columns.find(c => c.status === next)?.label}
-                                      </button>
-                                    )}
-                                    {task.status === 'in_progress' && (
-                                      <button
-                                        onClick={() => moveKanbanTask(task, 'blocked')}
-                                        className='rounded px-1.5 py-0.5 text-[10px] font-medium text-[#FFBF47] hover:bg-[#FFBF47]/10'
-                                      >
-                                        ⚠ Blocked
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
-                                {isMoving && (
-                                  <div className='mt-2 flex justify-center'>
-                                    <IconLoader2 className='h-3.5 w-3.5 animate-spin text-muted-foreground' />
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                          {colTasks.length === 0 && (
-                            <div className='flex h-16 items-center justify-center rounded-lg border border-dashed border-border/30'>
-                              <p className='text-[11px] text-muted-foreground/50'>Empty</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-          </div>
+          <KanbanBoard
+            workforceId={wfId}
+            agents={agents}
+            workforce={workforce}
+            onWorkforceUpdate={setWorkforce}
+          />
 
           <Separator />
 
@@ -2430,95 +2166,6 @@ export default function WorkforceDetailPage() {
             <Button onClick={handleSave} disabled={saving} className='bg-[#9A66FF] hover:bg-[#9A66FF]/90'>
               {saving ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : <IconDeviceFloppy className='mr-1 h-4 w-4' />}
               {saving ? 'Saving...' : 'Save'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Add Task Dialog */}
-      <Dialog open={addTaskOpen} onOpenChange={(o) => { setAddTaskOpen(o); if (!o) { setNewTaskTitle(''); setNewTaskDesc(''); setNewTaskPriority(1); setNewTaskAssignee(''); } }}>
-        <DialogContent className='max-w-md'>
-          <DialogHeader>
-            <DialogTitle>New Task</DialogTitle>
-            <DialogDescription>Add a task to the Open backlog. You can move it to To Do when ready to action.</DialogDescription>
-          </DialogHeader>
-          <div className='space-y-4 py-2'>
-            <div className='space-y-1.5'>
-              <Label>Title <span className='text-destructive'>*</span></Label>
-              <Input
-                placeholder='What needs to be done?'
-                value={newTaskTitle}
-                onChange={(e) => setNewTaskTitle(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) e.preventDefault(); }}
-              />
-            </div>
-            <div className='space-y-1.5'>
-              <Label>Description</Label>
-              <Textarea
-                placeholder='Context, acceptance criteria, links...'
-                value={newTaskDesc}
-                onChange={(e) => setNewTaskDesc(e.target.value)}
-                rows={3}
-              />
-            </div>
-            <div className='grid grid-cols-2 gap-3'>
-              <div className='space-y-1.5'>
-                <Label>Priority</Label>
-                <select
-                  value={newTaskPriority}
-                  onChange={(e) => setNewTaskPriority(Number(e.target.value))}
-                  className='w-full rounded-md border border-border/50 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
-                >
-                  <option value={0}>Low</option>
-                  <option value={1}>Normal</option>
-                  <option value={2}>High</option>
-                  <option value={3}>Urgent</option>
-                </select>
-              </div>
-              <div className='space-y-1.5'>
-                <Label>Assign to</Label>
-                <select
-                  value={newTaskAssignee}
-                  onChange={(e) => setNewTaskAssignee(e.target.value)}
-                  className='w-full rounded-md border border-border/50 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
-                >
-                  <option value=''>Unassigned</option>
-                  {agents.map(a => (
-                    <option key={a.id} value={a.id}>{a.icon} {a.name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant='outline' onClick={() => setAddTaskOpen(false)}>Cancel</Button>
-            <Button
-              disabled={!newTaskTitle.trim() || addingTask}
-              className='bg-[#9A66FF] hover:bg-[#9A66FF]/90'
-              onClick={async () => {
-                if (!newTaskTitle.trim()) return;
-                setAddingTask(true);
-                try {
-                  const res = await api.createKanbanTask(wfId, {
-                    title: newTaskTitle.trim(),
-                    description: newTaskDesc.trim(),
-                    priority: newTaskPriority,
-                    assigned_to: newTaskAssignee || undefined,
-                    created_by: 'human',
-                  });
-                  if (res.data) setKanbanTasks(prev => [...prev, res.data!]);
-                  setAddTaskOpen(false);
-                  setNewTaskTitle('');
-                  setNewTaskDesc('');
-                  setNewTaskPriority(1);
-                  setNewTaskAssignee('');
-                } finally {
-                  setAddingTask(false);
-                }
-              }}
-            >
-              {addingTask ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : <IconPlus className='mr-1 h-4 w-4' />}
-              Add Task
             </Button>
           </DialogFooter>
         </DialogContent>
