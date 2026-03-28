@@ -7,79 +7,239 @@
 
   <p>
     <a href="https://github.com/AitherLabs/AitherOS/releases"><img src="https://img.shields.io/github/v/release/AitherLabs/AitherOS?color=9A66FF&label=version&style=flat-square" alt="Version" /></a>
+    <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=flat-square" alt="License: AGPL v3" /></a>
     <img src="https://img.shields.io/badge/self--hosted-yes-56D090?style=flat-square" alt="Self-hosted" />
     <img src="https://img.shields.io/badge/stack-Go%20%2B%20Next.js-FFBF47?style=flat-square" alt="Stack" />
     <img src="https://img.shields.io/badge/real--time-WebSocket-14FFF7?style=flat-square" alt="Real-time" />
+    <img src="https://img.shields.io/github/stars/AitherLabs/AitherOS?style=flat-square&color=9A66FF" alt="Stars" />
   </p>
 </div>
 
 ---
 
-AitherOS lets you build and run **autonomous AI teams** — not just chatbots, not just API wrappers. Real teams of specialized agents that plan together, share memory, use tools, and produce results through genuine coordination.
+AitherOS is a **self-hosted platform for building and running autonomous multi-agent AI teams**. Compose specialized agents into workforces that plan together, share long-term memory, use tools via the Model Context Protocol (MCP), and produce results through genuine coordination — not just sequential chaining or parallel API calls.
 
-You define the team. They do the work.
+If you've outgrown single-agent prompting and need a real **LLM orchestration layer** with a live dashboard, human-in-the-loop controls, credential management, and a task board — AitherOS is built for that.
+
+> Looking for an open-source AutoGen alternative? A self-hosted CrewAI alternative with a UI? A LangGraph alternative that handles memory, tools, and real-time visibility out of the box? That's exactly what AitherOS is.
+
+---
+
+## Why AitherOS
+
+Most agent frameworks give you a library. AitherOS gives you a running system — with a UI, a database, a tool layer, a credential vault, and an event bus, all wired together.
+
+| Feature | AitherOS | AutoGen | CrewAI | LangGraph |
+|---|:---:|:---:|:---:|:---:|
+| Self-hosted web UI | ✅ | ❌ | ❌ | ❌ |
+| Real-time execution visibility | ✅ | ❌ | ❌ | ❌ |
+| Built-in MCP tool layer (50+ tools) | ✅ | ❌ | ❌ | ❌ |
+| Long-term memory / RAG per team | ✅ | ❌ | Partial | ❌ |
+| Human-in-the-loop intervention | ✅ | Partial | Partial | ✅ |
+| Encrypted credential vault | ✅ | ❌ | ❌ | ❌ |
+| Kanban task board + autonomous loop | ✅ | ❌ | ❌ | ❌ |
+| Native image generation | ✅ | ❌ | ❌ | ❌ |
+| Mix providers within one team | ✅ | ✅ | ✅ | ✅ |
+| Backend language | Go | Python | Python | Python |
+
+**Coordination-first design.** The core insight behind AitherOS is that agent quality comes from structured coordination, not just better prompts. Each execution goes through a planning phase, a discussion where agents debate strategy, coordinated execution rounds where agents can consult peers mid-task, a synthesis step where results are assembled, and a QA review that checks the output against the task's acceptance criteria. This produces more coherent, higher-quality results than routing agents through a graph or chaining them in sequence.
 
 ---
 
 ## What it looks like
 
-**The Floor** — a live virtual workspace showing every agent, what they're doing right now, and how they're connecting to each other. Not a log viewer. Not a dashboard full of charts. A room you can walk into and read at a glance.
+**The Floor** — a live virtual workspace showing every agent in your system, their current status, and live connections between them. Not a log file. Not a metrics dashboard. A room you can read at a glance while agents are working.
 
-**Workforces** — groups of agents with shared goals, shared tools, and shared memory. Each workforce gets its own isolated workspace, credential vault, task board, and knowledge base. Everything a real team needs.
+**Workforces** — isolated AI teams, each with their own workspace directory, credential vault, MCP tool server, knowledge base, kanban board, and execution history. Add agents to a workforce, define the objective, and let them work.
 
-**Executions** — missions with a planning phase, coordinated agent rounds, peer consultation, and a synthesis step. The orchestrator drives the agents; you watch it unfold in real time. Step in when you need to, let it run when you don't.
+**Executions** — missions with a full lifecycle: planning → discussion → execution rounds → peer consultation → synthesis → QA review → knowledge ingestion. You can watch every agent message and tool call in real time, halt and guide at any point, and resume where you left off.
+
+**Kanban Board** — agents populate an Open backlog with tasks. You drag tasks from Open to To Do (with an optional reason recorded for audit). The autonomous scheduler picks up To Do tasks sequentially, runs a full execution for each, and routes them to Done (QA passed) or Blocked (QA flagged issues for human review).
+
+**Knowledge Base** — after every execution, the result and agent messages are automatically embedded into the workforce's vector knowledge base using pgvector cosine similarity search. The next execution draws on everything the team has learned. Memory compounds across missions.
 
 ---
 
 ## Core Capabilities
 
 ### Multi-Agent Orchestration
-Agents operate in coordinated rounds with a shared plan. The orchestrator handles scheduling, token budgets, deadlock detection, and synthesis — so agents can focus on their specialization instead of workflow management.
 
-### Long-Term Memory
-Every execution writes to a per-workforce vector knowledge base. The next time an agent runs, it draws on everything the team has learned. Memory compounds. Teams get smarter over time.
+Agents run in coordinated rounds against a shared structured plan. The orchestrator handles subtask assignment, round-robin execution scheduling, token budget enforcement, deadlock detection (agents stuck in tool loops), and final synthesis.
 
-### MCP Tool Ecosystem
-Every workforce ships with **Aither-Tools** — a built-in MCP server with 50+ tools covering filesystem, shell, git, web search, networking, secrets, kanban, and image generation. Add your own MCP servers alongside it. All provisioned automatically when a workforce is created.
+This is not a pipeline. Agents share execution context and can trigger **peer consultations** mid-task — asking another agent a specific question and waiting for the answer before continuing. The leader agent drives the discussion and synthesis phases; specialist agents focus on their domain.
 
-### Image Generation
-Agents can generate images natively — not by switching models, but by calling a `generate_image` tool that works with Google Imagen, OpenAI DALL-E, fal.ai, or any compatible provider. The orchestrator injects credentials from your provider configuration automatically.
+Key orchestration concepts implemented:
+- Structured plan generation with per-agent subtask decomposition
+- Coordinated execution rounds with context propagation
+- Peer-to-peer consultation protocol (agent-to-agent questions mid-execution)
+- Deadlock detection and automatic recovery
+- Human intervention injection without restarting the execution
+- Halt / resume with subtask state preservation
 
-### Real-Time Collaboration
-The frontend connects via WebSocket. Every agent message, tool call, and status change appears live. Human-in-the-loop intervention — guidance, corrections, halts — is a first-class feature, not an afterthought.
+### Long-Term Memory (Retrieval-Augmented Generation)
 
-### Secure Credential Vault
-Per-workforce AES-256-GCM encrypted secrets. Agents access credentials through the `get_secret` tool at runtime — no hardcoded keys, no shared environment variables leaking across teams.
+Every workforce has an isolated vector knowledge base backed by PostgreSQL + pgvector. After each execution completes, the final result and significant agent messages are automatically embedded using your configured embedding endpoint (any OpenAI-compatible embeddings API).
 
-### Provider Flexibility
-Connect any LLM provider through an OpenAI-compatible interface. Mix models within a single workforce — one agent on GPT-4o, another on Claude 3.5, a third on a local Mistral. Supports text, embedding, image, video, and audio model types.
+At execution time, the top-3 semantically similar knowledge entries (cosine similarity ≥ 0.3) are injected into each agent's subtask context as `## Your Long-Term Memory`. Teams accumulate institutional knowledge. A research team that ran 50 reports develops a corpus of findings. A coding team that shipped 20 features retains architectural decisions.
+
+### Model Context Protocol (MCP) Tool Layer
+
+Every workforce automatically provisions an isolated instance of **Aither-Tools** — a built-in MCP server that gives agents access to 50+ tools across categories:
+
+| Category | Tools |
+|---|---|
+| Filesystem | read, write, list, copy, move, delete, find, search |
+| Shell | execute commands, background processes, environment |
+| Git | clone, commit, branch, diff, log, status |
+| Web | HTTP requests, web search, scraping, link extraction |
+| Network | ping, DNS lookup, port scan, HTTP health check |
+| Knowledge | search long-term memory, write to knowledge base |
+| Kanban | list tasks, create tasks, update status |
+| Secrets | `get_secret(service, key)` — reads from encrypted vault |
+| Media | `generate_image` — calls image generation APIs |
+| System | processes, system info, disk usage |
+
+MCP (Model Context Protocol) is the emerging standard for connecting LLMs to tools and external systems, developed by Anthropic and now adopted across the industry. AitherOS implements MCP over stdio transport with full session management — you can attach any MCP-compatible server to a workforce alongside Aither-Tools.
+
+Each agent has a configurable **tool permission matrix**: grant all tools, or restrict to a specific subset. Tool permissions are enforced at the session level.
+
+### Autonomous Task Loop
+
+The kanban board is the interface between human judgment and autonomous execution:
+
+1. **Agent populates backlog** — the leader agent runs a planning execution and creates kanban tasks in the Open column with titles, descriptions (acceptance criteria), and priorities
+2. **Human approves** — drag tasks from Open to To Do. An optional reason is recorded with a timestamp in the task's audit trail
+3. **Autonomous scheduler** — when autonomous mode is on, the scheduler picks the highest-priority To Do task every N minutes, starts a full execution from it, links the execution to the task, and moves it to In Progress
+4. **Post-execution QA** — after completion, an LLM reviews the execution output against the task's acceptance criteria. Passes → Done. Flags issues → Blocked for human review
+
+Toggle autonomous mode off at any point. The current execution completes, then the loop pauses. Resume by toggling it back on.
+
+### Real-Time Execution Visibility
+
+The frontend connects over WebSocket. The event bus (Redis pub/sub + in-process Go channels) streams every event — agent messages, tool calls, tool results, peer consultations, status changes, approval requests — to all connected clients within milliseconds.
+
+You can:
+- Watch every LLM response and tool call as it happens
+- **Intervene** — inject a guidance message into a running execution without halting it
+- **Halt** — pause execution mid-round with full state preservation
+- **Resume** — continue from the exact subtask that was interrupted
+- **Approve/reject** the strategy before execution begins
+- Provide human answers when agents request help
+
+### Multi-Provider LLM Support
+
+Connect any LLM through an OpenAI-compatible interface. AitherOS resolves the right connector per-agent at runtime based on the agent's provider configuration.
+
+Supported provider types:
+- **OpenAI** — GPT-4o, GPT-4 Turbo, o1, o3-mini, etc.
+- **Anthropic (via LiteLLM)** — Claude 3.5 Sonnet, Claude 3 Opus, Haiku
+- **Google** — Gemini 1.5 Pro/Flash, Imagen 4.0 (image generation)
+- **Cloudflare Workers AI** — Llama 3, Mistral, Flux.1 Schnell (image), Whisper (audio)
+- **fal.ai** — Flux, SDXL, and other image/video models
+- **LiteLLM** — proxy for 100+ models behind a single OpenAI-compatible endpoint
+- **Any OpenAI-compatible endpoint** — Ollama, vLLM, Together, Groq, etc.
+
+Mix providers within a single workforce: one agent on GPT-4o for reasoning, another on Gemini for code, a media agent on Imagen for image generation. Model type detection (text / embedding / image / video / audio) determines which connector is used.
+
+### Encrypted Credential Vault
+
+Per-workforce secrets encrypted at rest using AES-256-GCM with a per-installation encryption key. Agents call `get_secret("github", "token")` at runtime through Aither-Tools — the MCP server fetches and decrypts on demand. No credentials in environment variables, no shared secrets leaking between teams, no plaintext in the database.
+
+### Native Image Generation
+
+The `generate_image(prompt, output_path, aspect_ratio)` tool in Aither-Tools calls the image generation API configured for the workforce's media agent. Supports:
+
+- **Google Imagen 4.0** — `:predict` endpoint with Vertex AI body format
+- **Google Gemini image models** — `generateContent` with `responseModalities: ["IMAGE"]`
+- **OpenAI DALL-E 3** — via OpenAI images API
+- **Cloudflare Workers AI** — Flux.1 Schnell, Stable Diffusion, and any `@cf/` image model (auto-synced from your account)
+- **fal.ai** — Flux, SDXL, and other models via fal.run
+
+The orchestrator injects image provider credentials from your provider configuration into each workforce's MCP environment automatically.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│                  Frontend                    │
-│         Next.js · WebSocket · Real-time      │
-└───────────────────┬─────────────────────────┘
-                    │ HTTP + WebSocket
-┌───────────────────▼─────────────────────────┐
-│                  Backend (Go)                │
-│  Orchestrator · Event Bus · Knowledge (RAG)  │
-│  MCP Manager · Provider Registry · Store     │
-└──────┬──────────────┬───────────────┬────────┘
-       │              │               │
-  PostgreSQL       Redis           MCP Servers
-  + pgvector      pub/sub         (Aither-Tools
-                                   + custom)
+┌─────────────────────────────────────────────────────────────┐
+│                     Browser / Operator                       │
+│              Next.js 16 · React 19 · WebSocket              │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ HTTPS + WSS
+┌──────────────────────────▼──────────────────────────────────┐
+│                    AitherOS Backend (Go)                     │
+│                                                             │
+│  ┌──────────────────┐  ┌────────────────┐  ┌─────────────┐ │
+│  │   Orchestrator   │  │   Event Bus    │  │  Knowledge  │ │
+│  │                  │  │                │  │    (RAG)    │ │
+│  │  Planning        │  │  Redis pub/sub │  │             │ │
+│  │  Discussion      │  │  + in-process  │  │  pgvector   │ │
+│  │  Exec rounds     │  │  channels      │  │  cosine sim │ │
+│  │  Peer consult    │  │                │  │  auto-embed │ │
+│  │  Synthesis       │  └────────────────┘  └─────────────┘ │
+│  │  QA review       │                                       │
+│  │  Auto scheduler  │  ┌────────────────┐  ┌─────────────┐ │
+│  └──────┬───────────┘  │  MCP Manager   │  │  Provider   │ │
+│         │              │                │  │  Registry   │ │
+│         │              │  stdio/SSE     │  │             │ │
+│         │              │  session pool  │  │  LLM/embed/ │ │
+│         │              │  tool dispatch │  │  image/audio│ │
+│         │              └────────────────┘  └─────────────┘ │
+└─────────┼───────────────────┬─────────────────────────────┘
+          │                   │
+     LLM / Image APIs    ┌────▼──────────────────────────────┐
+  (OpenAI · Anthropic    │    MCP Servers (per-workforce)    │
+   Google · Cloudflare   │  Aither-Tools: filesystem, shell, │
+   fal.ai · LiteLLM      │  git, web, kanban, secrets, media │
+   any OpenAI-compat)    │  + user-defined custom servers    │
+                         └───────────────────────────────────┘
+          │
+┌─────────▼──────────────────┐   ┌───────────────────────────┐
+│   PostgreSQL 16 + pgvector │   │        Redis 7+           │
+│   Agents · Workforces      │   │   Execution event streams │
+│   Executions · Messages    │   │   WebSocket fan-out       │
+│   Knowledge · Kanban       │   │   Pub/sub coordination    │
+└────────────────────────────┘   └───────────────────────────┘
 ```
 
-**Go backend** — orchestrator, API, event bus, RAG pipeline, MCP session management
-**Next.js frontend** — live execution view, workforce management, agent debug console
-**PostgreSQL + pgvector** — persistent state + vector similarity search for knowledge retrieval
-**Redis** — real-time event pub/sub between orchestrator goroutines and WebSocket connections
-**MCP (Model Context Protocol)** — tool layer; every workforce runs its own isolated tool server
+### Execution lifecycle
+
+```
+Objective
+    │
+    ▼
+[Planning]          leader agent decomposes into per-agent subtasks
+    │
+    ▼
+[Discussion]        agents debate approach, reach consensus strategy
+    │               (skipped for single-agent or media-only workforces)
+    ▼
+  Human approves strategy  ──► (or auto-approved)
+    │
+    ▼
+[Execution Rounds]  coordinated round-robin subtask execution
+    │    └──────────► [Peer Consultation]  agent asks peer mid-task
+    │                                      peer responds, agent continues
+    ▼
+[Synthesis]         leader assembles final output from all subtask results
+    │
+    ▼
+[QA Review]         LLM checks output against kanban task acceptance criteria
+    │               passed → Done  /  flagged → Blocked for human review
+    ▼
+[Knowledge Ingest]  execution result + messages embedded into vector KB
+```
+
+**Go backend** — single binary, goroutine-per-execution concurrency model, context cancellation for clean shutdown, structured logging, graceful halt/resume.
+
+**Next.js frontend** — server-side rendered with client-side WebSocket for real-time updates. No polling. Status transitions, tool calls, and agent messages stream directly to the browser.
+
+**PostgreSQL + pgvector** — all persistent state in a single relational database. The `vector` extension enables cosine similarity search for knowledge retrieval without a separate vector database.
+
+**Redis** — pub/sub event bus between orchestrator goroutines and WebSocket handlers. Also supports multi-instance deployments where execution events need to fan out across backend replicas.
+
+**MCP (Model Context Protocol)** — each workforce runs its own Aither-Tools process over stdio. The MCP manager maintains the session, dispatches tool calls, and injects workforce-specific environment variables (workspace path, API token, workforce ID).
 
 ---
 
@@ -91,7 +251,7 @@ Connect any LLM provider through an OpenAI-compatible interface. Mix models with
 - Node.js 20+
 - PostgreSQL 16+ with the `pgvector` extension (`CREATE EXTENSION vector;`)
 - Redis 7+
-- An LLM provider (OpenAI, Anthropic, Google, LiteLLM, or any OpenAI-compatible endpoint)
+- An LLM provider (OpenAI, Anthropic via LiteLLM, Google, Cloudflare, or any OpenAI-compatible endpoint)
 - PM2 (`npm install -g pm2`) — for production process management
 
 ---
@@ -175,7 +335,7 @@ The `ecosystem.config.js` starts the Go backend (with auto-build on restart) and
 
 ### Publishing with Cloudflare Tunnel (recommended)
 
-Cloudflare Tunnel lets you expose your self-hosted instance to the internet without opening firewall ports or setting up a reverse proxy. You need a free Cloudflare account with a domain.
+Cloudflare Tunnel exposes your self-hosted instance to the internet without opening firewall ports or configuring a reverse proxy. Requires a free Cloudflare account with a domain.
 
 #### Install cloudflared
 
@@ -185,17 +345,13 @@ curl -L https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/key
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared bookworm main" | sudo tee /etc/apt/sources.list.d/cloudflared.list
 sudo apt update && sudo apt install cloudflared
 
-# Authenticate with your Cloudflare account
 cloudflared tunnel login
 ```
 
 #### Create tunnels
 
 ```bash
-# Create a tunnel (once)
 cloudflared tunnel create aitheros
-
-# Configure routing: create /etc/cloudflared/config.yml
 ```
 
 `/etc/cloudflared/config.yml`:
@@ -205,11 +361,9 @@ tunnel: <your-tunnel-id>
 credentials-file: /root/.cloudflared/<your-tunnel-id>.json
 
 ingress:
-  # Frontend (Next.js — port 3000)
   - hostname: app.your-domain.com
     service: http://localhost:3000
 
-  # Backend API (Go — port 8080)
   - hostname: api.your-domain.com
     service: http://localhost:8080
 
@@ -217,16 +371,14 @@ ingress:
 ```
 
 ```bash
-# Create DNS records
 cloudflared tunnel route dns aitheros app.your-domain.com
 cloudflared tunnel route dns aitheros api.your-domain.com
 
-# Install as a system service (starts on boot)
 cloudflared service install
 systemctl start cloudflared
 ```
 
-Then update your environment:
+Update your environment:
 
 ```bash
 # .env
@@ -237,11 +389,9 @@ NEXTAUTH_URL=https://app.your-domain.com
 NEXT_PUBLIC_API_URL=https://api.your-domain.com
 ```
 
-Rebuild the frontend and reload PM2 after updating env files.
+#### Internal-only (LAN access)
 
-#### Internal-only (no public domain)
-
-For private installs accessible only on your LAN, skip cloudflared. Access the frontend at `http://<server-ip>:3000` and set `NEXT_PUBLIC_API_URL=http://<server-ip>:8080`. Update `CORS_ORIGINS` to match.
+Skip cloudflared. Access at `http://<server-ip>:3000`, set `NEXT_PUBLIC_API_URL=http://<server-ip>:8080`, update `CORS_ORIGINS` to match.
 
 ---
 
@@ -262,38 +412,72 @@ For private installs accessible only on your LAN, skip cloudflared. Access the f
 | `CORS_ORIGINS` | Yes | Comma-separated allowed origins for the API |
 | `NEXTAUTH_URL` | Yes | Frontend public URL (must match browser URL) |
 | `NEXTAUTH_SECRET` | Yes | NextAuth session encryption secret |
-| `NEXT_PUBLIC_API_URL` | Yes | Backend API URL (served to browser) |
+| `NEXT_PUBLIC_API_URL` | Yes | Backend API URL (served to the browser) |
 
 ---
 
-## What Teams Are Already Doing With It
+## Use Cases
 
-- **Research teams** — agents that search, read, synthesize, and write reports across dozens of sources in parallel
-- **Development squads** — planner, coder, reviewer, and tester agents that iterate on a codebase autonomously
-- **Content studios** — writer, art director, and asset generator agents that produce campaigns end to end, including generated images
-- **Data pipelines** — extract, transform, analyze, and summarize data from live sources
-- **Support operations** — agents that triage, investigate, and draft responses with access to internal knowledge bases
+### Research & Intelligence
+Compose a researcher, an analyst, and a writer agent. The researcher uses web search and HTTP tools to gather sources; the analyst cross-references and synthesizes findings; the writer produces the final report. Long-term memory means the team retains everything it has learned across missions — ask the same team to update a report three months later and it already has context.
+
+### Software Engineering
+Architect, coder, reviewer, and tester agents with real shell access, git operations, and filesystem tools. The kanban board tracks features and bugs through the full development cycle. The architect decomposes work into kanban tasks; you approve them one by one; the autonomous loop runs each through a full development execution. QA review checks output against acceptance criteria before marking done.
+
+### Creative Production
+Art director, copywriter, and asset generator agents. The art director runs a planning execution that populates the kanban with every asset needed for a campaign — hero images, social cards, copy variants. You approve the task list. The autonomous loop runs each asset generation, checks the output, and routes failures back for review. Native image generation (Google Imagen, DALL-E, Cloudflare Flux.1) means no external tools needed.
+
+### Data Operations
+Extractor, transformer, and analyzer agents with network and shell tools. The credential vault stores API keys for data sources. Agents run ETL pipelines, generate reports, and write findings to the knowledge base for future reference.
+
+### Enterprise Automation
+Any multi-step business process that requires judgment, tool use, and human oversight at defined checkpoints. AitherOS provides the execution backbone, the audit trail (every message and tool call logged), and the intervention layer (halt, guide, resume at any point).
 
 ---
 
 ## Roadmap
 
-- **Virtual Office** — Gather.town-style 2D workspace where agent sprites move between rooms, animate when active, and show conversations as speech bubbles
-- **Scheduled executions** — Autonomous mode with cron-triggered leadership reviews and recurring missions
-- **Agent-to-agent messaging** — Direct peer consultation channels outside of execution rounds
-- **Execution templates** — Save and reuse workforce configurations, plans, and playbooks
-- **Webhooks & triggers** — Start executions from external events, Slack messages, or API calls
+- ✅ Multi-agent orchestration with peer consultation
+- ✅ Long-term memory with pgvector RAG
+- ✅ MCP tool layer (Aither-Tools, 50+ tools)
+- ✅ Image generation (Google Imagen 4, DALL-E, Cloudflare Workers AI, fal.ai)
+- ✅ Autonomous kanban loop with post-execution LLM QA review
+- ✅ Cloudflare Workers AI provider with model catalog sync
+- ✅ Self-hosting guide with Cloudflare Tunnel
+- 🔜 **Virtual Office** — 2D workspace with agent sprites, real-time movement, speech bubbles
+- 🔜 **Webhooks & external triggers** — start executions from Slack messages, GitHub events, cron schedules, or HTTP webhooks
+- 🔜 **Execution templates** — save and replay workforce configurations, plans, and task sequences
+- 🔜 **Agent marketplace** — community-published agent configurations and workforce blueprints
+- 🔜 **Multi-tenant deployment** — isolated workspaces per organization on a shared infrastructure
+
+---
+
+## License
+
+AitherOS is licensed under the **GNU Affero General Public License v3.0 (AGPLv3)**.
+
+**What this means:**
+
+- ✅ Free to use, modify, and self-host for personal projects and internal business use
+- ✅ Free to build on and redistribute, as long as derivative works are also released under AGPLv3
+- ✅ If you run AitherOS as a network service (SaaS), you must publish your full source code under AGPLv3 — this is the core copyleft provision of the AGPL
+- ❌ You may **not** incorporate AitherOS into a proprietary product or service without a commercial license
+
+**Commercial License:** Companies that want to build proprietary products on AitherOS, offer it as a managed service without open-sourcing their code, or embed it in commercial applications need a commercial license. Contact us at **[labs@aitheros.io](mailto:labs@aitheros.io)**.
+
+See [LICENSE](./LICENSE) for the complete license text.
 
 ---
 
 ## Links
 
 - **Website**: [aitheros.io](https://aitheros.io)
-- **Issues**: [github.com/AitherLabs/AitherOS/issues](https://github.com/AitherLabs/AitherOS/issues)
+- **Issues & Discussions**: [github.com/AitherLabs/AitherOS/issues](https://github.com/AitherLabs/AitherOS/issues)
 - **Releases**: [github.com/AitherLabs/AitherOS/releases](https://github.com/AitherLabs/AitherOS/releases)
+- **Commercial licensing**: [labs@aitheros.io](mailto:labs@aitheros.io)
 
 ---
 
 <div align="center">
-  <sub>Built by <a href="https://aitheros.io">AitherLabs</a> · Self-hosted · Open Source</sub>
+  <sub>Built by <a href="https://aitheros.io">AitherLabs</a> · Licensed under AGPLv3 · Commercial licenses available at labs@aitheros.io</sub>
 </div>
