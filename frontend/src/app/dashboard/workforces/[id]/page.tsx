@@ -1473,72 +1473,84 @@ export default function WorkforceDetailPage() {
             <div className='mb-4 rounded-xl border border-border/40 bg-[#0A0D11]/60 p-4'>
               <p className='mb-3 text-xs text-muted-foreground'>
                 {credService
-                  ? <>Adding credential <span className='font-mono text-foreground'>{credService} / {credKey}</span> — paste the secret value below:</>
-                  : 'Add a credential manually (or click "Add" on a detected requirement above):'
+                  ? <>Adding <span className='font-mono text-foreground'>{credService} / {credKey}</span> — paste the value below:</>
+                  : 'Add a credential manually, or click "Add" on a detected requirement above:'
                 }
               </p>
-              <div className='flex gap-2'>
-                <Input
-                  placeholder='service (e.g. github)'
-                  value={credService}
-                  onChange={(e) => setCredService(e.target.value)}
-                  className='h-8 text-xs font-mono'
-                />
-                <Input
-                  placeholder='key (e.g. token)'
-                  value={credKey}
-                  onChange={(e) => setCredKey(e.target.value)}
-                  className='h-8 text-xs font-mono'
-                />
-                <div className='relative flex-1'>
+              <div className='space-y-2'>
+                {/* Row 1: service + key */}
+                <div className='flex gap-2'>
                   <Input
-                    type={credShowValue ? 'text' : 'password'}
-                    placeholder='Value / secret'
-                    value={credValue}
-                    onChange={(e) => setCredValue(e.target.value)}
-                    className='h-8 pr-8 text-xs font-mono'
-                    onKeyDown={e => e.key === 'Enter' && !credSaving && credService.trim() && credKey.trim() && credValue.trim() && document.getElementById('cred-save-btn')?.click()}
+                    placeholder='service  (e.g. devto)'
+                    value={credService}
+                    onChange={e => setCredService(e.target.value)}
+                    className='h-8 text-xs font-mono'
                   />
-                  <button
-                    onClick={() => setCredShowValue(v => !v)}
-                    className='absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground'
-                  >
-                    {credShowValue ? <IconEyeOff className='h-3.5 w-3.5' /> : <IconEye className='h-3.5 w-3.5' />}
-                  </button>
+                  <Input
+                    placeholder='key  (e.g. api_key)'
+                    value={credKey}
+                    onChange={e => setCredKey(e.target.value)}
+                    className='h-8 text-xs font-mono'
+                  />
                 </div>
-                <Button
-                  size='sm'
-                  className='h-8 bg-[#9A66FF] hover:bg-[#9A66FF]/90'
-                  disabled={!credService.trim() || !credKey.trim() || !credValue.trim() || credSaving}
-                  onClick={async () => {
-                    if (session?.accessToken) api.setToken(session.accessToken);
-                    setCredSaving(true);
-                    setCredError('');
-                    try {
-                      const res = await api.upsertCredential(wfId, {
-                        service: credService.trim().toLowerCase(),
-                        key_name: credKey.trim().toLowerCase(),
-                        value: credValue,
-                      });
-                      if (res.data) {
-                        setCredentials(prev => {
-                          const filtered = prev.filter(c => !(c.service === res.data!.service && c.key_name === res.data!.key_name));
-                          return [...filtered, res.data!].sort((a, b) => a.service.localeCompare(b.service) || a.key_name.localeCompare(b.key_name));
+                {/* Row 2: value + save */}
+                <div className='flex gap-2'>
+                  <div className='relative flex-1'>
+                    <Input
+                      id='cred-value-input'
+                      type={credShowValue ? 'text' : 'password'}
+                      placeholder='Secret value'
+                      value={credValue}
+                      onChange={e => setCredValue(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !credSaving && credService.trim() && credKey.trim() && credValue.trim())
+                          document.getElementById('cred-save-btn')?.click();
+                      }}
+                      className='h-8 pr-8 text-xs font-mono'
+                    />
+                    <button
+                      type='button'
+                      onClick={() => setCredShowValue(v => !v)}
+                      className='absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground'
+                    >
+                      {credShowValue ? <IconEyeOff className='h-3.5 w-3.5' /> : <IconEye className='h-3.5 w-3.5' />}
+                    </button>
+                  </div>
+                  <Button
+                    id='cred-save-btn'
+                    size='sm'
+                    className='h-8 shrink-0 bg-[#9A66FF] hover:bg-[#9A66FF]/90'
+                    disabled={!credService.trim() || !credKey.trim() || !credValue.trim() || credSaving}
+                    onClick={async () => {
+                      if (session?.accessToken) api.setToken(session.accessToken);
+                      setCredSaving(true);
+                      setCredError('');
+                      try {
+                        const res = await api.upsertCredential(wfId, {
+                          service: credService.trim().toLowerCase(),
+                          key_name: credKey.trim().toLowerCase(),
+                          value: credValue,
                         });
-                        setCredService('');
-                        setCredKey('');
-                        setCredValue('');
+                        if (res.data) {
+                          setCredentials(prev => {
+                            const filtered = prev.filter(c => !(c.service === res.data!.service && c.key_name === res.data!.key_name));
+                            return [...filtered, res.data!].sort((a, b) => a.service.localeCompare(b.service) || a.key_name.localeCompare(b.key_name));
+                          });
+                          setCredService('');
+                          setCredKey('');
+                          setCredValue('');
+                        }
+                      } catch (err: any) {
+                        setCredError(err.message || 'Failed to save credential');
+                      } finally {
+                        setCredSaving(false);
                       }
-                    } catch (err: any) {
-                      setCredError(err.message || 'Failed to save credential');
-                    } finally {
-                      setCredSaving(false);
-                    }
-                  }}
-                >
-                  {credSaving ? <IconLoader2 className='h-3.5 w-3.5 animate-spin' /> : <IconKey className='h-3.5 w-3.5' />}
-                  <span className='ml-1'>Save</span>
-                </Button>
+                    }}
+                  >
+                    {credSaving ? <IconLoader2 className='h-3.5 w-3.5 animate-spin' /> : <IconKey className='h-3.5 w-3.5' />}
+                    <span className='ml-1'>Save</span>
+                  </Button>
+                </div>
               </div>
               {credError && (
                 <p className='mt-2 text-xs text-red-400'>{credError}</p>
