@@ -159,9 +159,24 @@ func (h *WorkForceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fetch before deleting so we have the name to derive the workspace path.
+	wf, err := h.store.GetWorkForce(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
 	if err := h.store.DeleteWorkForce(r.Context(), id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
+	}
+
+	// Clean up the workforce directory from disk (workspace, notes, logs, tools).
+	// Non-fatal: log but don't fail the response if removal hits a permission issue.
+	rootDir := workspace.WorkforceRoot(wf.Name)
+	if rmErr := os.RemoveAll(rootDir); rmErr != nil {
+		// Log but don't fail — DB record is gone, that's the important part.
+		_ = rmErr
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "workforce deleted"})
