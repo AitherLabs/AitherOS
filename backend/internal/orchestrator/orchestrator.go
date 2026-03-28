@@ -1519,6 +1519,13 @@ func (o *Orchestrator) failExecution(ctx context.Context, execID, wfID uuid.UUID
 		blocked := models.KanbanStatusBlocked
 		o.store.UpdateKanbanTask(ctx, task.ID, models.UpdateKanbanTaskRequest{Status: &blocked})
 	}
+	var wfName, execTitle string
+	if wf, err := o.store.GetWorkForce(ctx, wfID); err == nil {
+		wfName = wf.Name
+	}
+	if exec, err := o.store.GetExecution(ctx, execID); err == nil && exec.Title != "" {
+		execTitle = exec.Title
+	}
 	o.eventBus.Publish(ctx, models.NewEvent(execID, nil, "", models.EventTypeExecutionDone,
 		fmt.Sprintf("Execution failed: %s", errMsg), map[string]any{"error": errMsg}))
 	o.recordActivity(ctx, &models.ActivityEvent{
@@ -1530,13 +1537,20 @@ func (o *Orchestrator) failExecution(ctx context.Context, execID, wfID uuid.UUID
 		ResourceType: "execution",
 		ResourceID:   execID.String(),
 		Summary:      "Execution failed: " + errMsg,
-		Metadata:     map[string]any{"error": errMsg},
+		Metadata:     map[string]any{"error": errMsg, "workforce_name": wfName, "execution_title": execTitle},
 	})
 }
 
 func (o *Orchestrator) haltExecution(ctx context.Context, execID, wfID uuid.UUID, reason string) {
 	o.store.UpdateExecutionStatus(ctx, execID, models.ExecutionStatusHalted)
 	o.store.UpdateWorkForceStatus(ctx, wfID, models.WorkForceStatusHalted)
+	var wfName, execTitle string
+	if wf, err := o.store.GetWorkForce(ctx, wfID); err == nil {
+		wfName = wf.Name
+	}
+	if exec, err := o.store.GetExecution(ctx, execID); err == nil && exec.Title != "" {
+		execTitle = exec.Title
+	}
 	o.eventBus.Publish(ctx, models.NewEvent(execID, nil, "", models.EventTypeExecutionHalted,
 		fmt.Sprintf("Execution halted: %s", reason), nil))
 	o.recordActivity(ctx, &models.ActivityEvent{
@@ -1548,7 +1562,7 @@ func (o *Orchestrator) haltExecution(ctx context.Context, execID, wfID uuid.UUID
 		ResourceType: "execution",
 		ResourceID:   execID.String(),
 		Summary:      "Execution halted: " + reason,
-		Metadata:     map[string]any{"reason": reason},
+		Metadata:     map[string]any{"reason": reason, "workforce_name": wfName, "execution_title": execTitle},
 	})
 }
 
@@ -1556,6 +1570,15 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 	o.store.UpdateExecutionResult(ctx, execID, result, tokensUsed, iterations)
 	o.store.UpdateExecutionStatus(ctx, execID, models.ExecutionStatusCompleted)
 	o.store.UpdateWorkForceStatus(ctx, wfID, models.WorkForceStatusCompleted)
+
+	// Enrich activity metadata with human-readable names and title
+	var wfName, execTitle string
+	if wf, err := o.store.GetWorkForce(ctx, wfID); err == nil {
+		wfName = wf.Name
+	}
+	if exec, err := o.store.GetExecution(ctx, execID); err == nil && exec.Title != "" {
+		execTitle = exec.Title
+	}
 	// If this execution was linked to a kanban task, mark it done
 	if task, _ := o.store.FindKanbanTaskByExecutionID(ctx, execID); task != nil {
 		done := models.KanbanStatusDone
@@ -1574,7 +1597,12 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 		ResourceType: "execution",
 		ResourceID:   execID.String(),
 		Summary:      fmt.Sprintf("Execution completed: %d iterations, %d tokens", iterations, tokensUsed),
-		Metadata:     map[string]any{"tokens_used": tokensUsed, "iterations": iterations},
+		Metadata: map[string]any{
+			"tokens_used":     tokensUsed,
+			"iterations":      iterations,
+			"workforce_name":  wfName,
+			"execution_title": execTitle,
+		},
 	})
 
 	// Auto-embed execution result + agent messages into workforce knowledge base
