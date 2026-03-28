@@ -636,10 +636,11 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		log.Printf("orchestrator: update wf status: %v", err)
 	}
 
-	// Connect MCP servers for this workforce
+	// Connect MCP servers for this workforce, injecting media provider credentials
 	var mcpSession *mcp.Session
 	if o.mcpManager != nil {
-		sess, mcpCleanup, mcpErr := o.mcpManager.ConnectWorkforceServers(ctx, wf.ID)
+		imageEnv := o.resolveImageProviderEnv(ctx, agents)
+		sess, mcpCleanup, mcpErr := o.mcpManager.ConnectWorkforceServers(ctx, wf.ID, imageEnv)
 		if mcpErr != nil {
 			log.Printf("orchestrator: MCP connect: %v", mcpErr)
 		}
@@ -1645,6 +1646,43 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 			log.Printf("knowledge: embedded agent messages for execution %s", execID)
 		}()
 	}
+}
+
+// resolveImageProviderEnv scans the agents' providers for any model of type "image"
+// and returns env vars that will be injected into every MCP server for this execution.
+// The generate_image tool in Aither-Tools reads these to call the right image API.
+func (o *Orchestrator) resolveImageProviderEnv(ctx context.Context, agents []*models.Agent) map[string]string {
+	if o.registry == nil {
+		return nil
+	}
+	for _, agent := range agents {
+		if agent.ProviderID == nil {
+			continue
+		}
+		provider, err := o.store.GetProvider(ctx, *agent.ProviderID)
+		if err != nil || provider == nil {
+			continue
+		}
+		for _, m := range provider.Models {
+			if !m.IsEnabled || m.ModelType != models.ModelTypeImage {
+				continue
+			}
+			// Found an image-capable model on this provider — inject env vars
+			baseURL := provider.BaseURL
+			if baseURL == "" {
+				baseURL = "https://generativelanguage.googleapis.com/v1beta"
+			}
+			env := map[string]string{
+				"AITHER_IMAGE_API_KEY":  provider.APIKey,
+				"AITHER_IMAGE_BASE_URL": baseURL,
+				"AITHER_IMAGE_MODEL":    m.ModelName,
+				"AITHER_IMAGE_PROVIDER": string(provider.ProviderType),
+			}
+			log.Printf("orchestrator: injecting image provider env (provider=%s model=%s)", provider.Name, m.ModelName)
+			return env
+		}
+	}
+	return nil
 }
 
 // recordActivity is a fire-and-forget helper that logs an activity event.

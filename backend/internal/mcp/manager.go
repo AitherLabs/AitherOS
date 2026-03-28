@@ -33,7 +33,9 @@ type Session struct {
 // ConnectWorkforceServers creates a new Session with connections to all enabled
 // MCP servers attached to a workforce. The returned cleanup function MUST be
 // called when the execution finishes to close all connections.
-func (m *Manager) ConnectWorkforceServers(ctx context.Context, workforceID uuid.UUID) (*Session, func(), error) {
+// extraEnv is merged into every MCP server's environment (used to inject
+// provider credentials such as AITHER_IMAGE_API_KEY for media generation tools).
+func (m *Manager) ConnectWorkforceServers(ctx context.Context, workforceID uuid.UUID, extraEnv map[string]string) (*Session, func(), error) {
 	servers, err := m.store.ListWorkforceMCPServers(ctx, workforceID)
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("list workforce MCP servers: %w", err)
@@ -48,6 +50,18 @@ func (m *Manager) ConnectWorkforceServers(ctx context.Context, workforceID uuid.
 	for _, srv := range servers {
 		if !srv.IsEnabled {
 			continue
+		}
+
+		// Merge extra env vars (e.g. image provider credentials) into the server env
+		if len(extraEnv) > 0 {
+			merged := make(map[string]string, len(srv.EnvVars)+len(extraEnv))
+			for k, v := range srv.EnvVars {
+				merged[k] = v
+			}
+			for k, v := range extraEnv {
+				merged[k] = v
+			}
+			srv.EnvVars = merged
 		}
 
 		client, err := Connect(srv)
