@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -95,7 +96,14 @@ func (c *imageConnector) Submit(ctx context.Context, req TaskRequest) (*TaskResp
 		return nil, fmt.Errorf("image agent: mkdir: %w", err)
 	}
 
-	isGoogle := c.providerType == "google" || strings.Contains(c.baseURL, "googleapis.com")
+	// Detect provider backend.
+	// Google: explicit type, or googleapis.com in URL, or model name follows Google's format.
+	// Imagen models are named "imagen-*" or stored with a "models/" prefix from AI Studio.
+	modelLower := strings.ToLower(c.model)
+	isGoogle := c.providerType == "google" ||
+		strings.Contains(c.baseURL, "googleapis.com") ||
+		strings.HasPrefix(modelLower, "imagen") ||
+		strings.HasPrefix(modelLower, "models/imagen")
 	isFal := c.providerType == "fal" || strings.Contains(c.baseURL, "fal.run") || strings.Contains(c.baseURL, "fal.ai")
 
 	var imgBytes []byte
@@ -169,6 +177,7 @@ func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio
 	// Strip the "models/" prefix because the URL already contains /models/.
 	modelID := strings.TrimPrefix(c.model, "models/")
 	apiURL := fmt.Sprintf("%s/v1beta/models/%s:generateImages?key=%s", base, modelID, c.apiKey)
+	log.Printf("image-connector: google generateImages → %s/v1beta/models/%s:generateImages (key len=%d)", base, modelID, len(c.apiKey))
 
 	body, _ := json.Marshal(map[string]any{
 		"prompt":              prompt,
