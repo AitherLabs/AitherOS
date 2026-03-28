@@ -666,10 +666,13 @@ interface LiveEvent {
   isNew?: boolean;
 }
 
+// EventDetailBody renders structured extra info for the dialog — things that
+// are NOT already shown as ev.content in the dialog header. Returns null if
+// there's nothing additional to display.
 function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
   const d = ev.data;
 
-  // Tool call: show args (full, no truncation)
+  // Tool call: show tool name + full args (no truncation)
   if (ev.type === 'tool_call') {
     const tool = d?.tool as string | undefined;
     const args = d?.args as Record<string, any> | undefined;
@@ -701,73 +704,90 @@ function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
     );
   }
 
-  // Subtask started/done
-  if (ev.type === 'subtask_started' || ev.type === 'subtask_done') {
-    const subtask = d?.subtask as string | undefined;
-    const tokens = d?.tokens as number | undefined;
-    return (
-      <div className='space-y-2'>
-        {subtask && <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/80'>{subtask}</p>}
-        {tokens != null && <span className='text-xs text-muted-foreground/50'>{tokens.toLocaleString()} tokens used</span>}
-      </div>
-    );
+  // Discussion turn: show the full content the agent wrote (d.content is the full text,
+  // ev.content is just the short status line like "Art Director has shared their perspective.")
+  if (ev.type === 'discussion_turn') {
+    const content = d?.content as string | undefined;
+    if (content) {
+      return (
+        <div className='rounded-lg bg-muted/10 p-3 border border-border/20'>
+          <span className='text-[10px] font-semibold uppercase text-muted-foreground/40 block mb-1.5'>Full Message</span>
+          <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/85'>{content}</p>
+        </div>
+      );
+    }
+    return null;
   }
 
-  // Human required
-  if (ev.type === 'human_required') {
-    const reason = d?.reason as string | undefined;
-    return reason ? (
-      <div className='rounded-lg border border-[#FFBF47]/20 bg-[#FFBF47]/5 p-3'>
-        <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#FFBF47]/80'>{reason}</p>
+  // Plan proposed: show the full plan text
+  if (ev.type === 'plan_proposed') {
+    const plan = d?.plan as string | undefined;
+    const strategy = d?.strategy as string | undefined;
+    return plan ? (
+      <div className='space-y-2'>
+        {strategy && <span className='text-[10px] font-semibold uppercase text-muted-foreground/40'>Strategy: {strategy}</span>}
+        <pre className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/85 bg-muted/10 rounded p-3 border border-border/20'>{plan}</pre>
       </div>
     ) : null;
   }
 
-  // Agent error
-  if (ev.type === 'agent_error') {
-    return (
-      <div className='rounded-lg bg-red-500/5 p-3'>
-        <pre className='whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-red-400/80'>{ev.content}</pre>
-      </div>
-    );
-  }
-
-  // Handoff
-  if (ev.type === 'agent_handoff') {
-    const from = d?.from_agent as string | undefined;
-    const to = d?.to_agent as string | undefined;
-    if (from && to) {
-      return (
-        <div className='flex items-center gap-2 text-sm text-muted-foreground/70'>
-          <span>{from}</span><span>→</span><span style={{ color: dot }}>{to}</span>
+  // Discussion started: show the participants
+  if (ev.type === 'discussion_started') {
+    const agents = d?.agents as string[] | undefined;
+    const leader = d?.leader as string | undefined;
+    return agents?.length ? (
+      <div className='space-y-1.5'>
+        {leader && <div className='text-xs text-muted-foreground/60'>Leader: <span style={{ color: dot }}>{leader}</span></div>}
+        <div className='flex flex-wrap gap-1.5'>
+          {agents.map(a => (
+            <span key={a} className='rounded bg-muted/30 px-2 py-0.5 text-xs text-[#EAEAEA]/70'>{a}</span>
+          ))}
         </div>
-      );
-    }
+      </div>
+    ) : null;
   }
 
-  // Peer consultation
+  // Subtask started/done: description is already ev.content, tokens are extra
+  if (ev.type === 'subtask_started' || ev.type === 'subtask_done') {
+    const tokens = d?.tokens as number | undefined;
+    return tokens != null ? (
+      <span className='text-xs text-muted-foreground/50'>{tokens.toLocaleString()} tokens used</span>
+    ) : null;
+  }
+
+  // Human required: reason is already shown as ev.content
+  if (ev.type === 'human_required') {
+    return null;
+  }
+
+  // Agent error: already shown as ev.content
+  if (ev.type === 'agent_error') {
+    return null;
+  }
+
+  // Peer consultation: question is the primary content
   if (ev.type === 'peer_consultation') {
     const peer = d?.peer as string | undefined;
     const question = d?.question as string | undefined;
-    if (question) {
-      return (
-        <div className='space-y-1.5'>
-          {peer && <span className='text-[10px] font-semibold uppercase text-muted-foreground/50'>Asking {peer}</span>}
-          <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/80'>{question}</p>
-        </div>
-      );
-    }
+    return question ? (
+      <div className='space-y-1.5'>
+        {peer && <div className='text-[10px] font-semibold uppercase text-muted-foreground/40'>Asking {peer}</div>}
+        <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/85'>{question}</p>
+      </div>
+    ) : null;
   }
 
-  // Fallback: show full content
-  return ev.content ? (
-    <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/80'>{ev.content}</p>
-  ) : null;
+  return null;
 }
 
 function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: string }) {
   const [open, setOpen] = useState(false);
-  const hasDetail = !!ev.data && Object.keys(ev.data).length > 0 || ev.content.length > 80;
+  // Clickable if there's structured data with content, or the text itself is long enough to warrant a modal
+  const hasExtra = !!(ev.data && (
+    ev.data.content || ev.data.args || ev.data.plan || ev.data.question ||
+    ev.data.agents || ev.data.subtask
+  ));
+  const hasDetail = hasExtra || ev.content.length > 100;
   return (
     <>
       <div
@@ -807,16 +827,14 @@ function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: stri
           </DialogHeader>
           <ScrollArea className='flex-1 min-h-0 pr-1'>
             <div className='space-y-3 pb-2'>
-              {/* Full content text */}
+              {/* Summary / status line */}
               {ev.content && (
-                <p className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${ev.type === 'agent_error' ? 'text-red-400/80' : 'text-[#EAEAEA]/80'}`}>
+                <p className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${ev.type === 'agent_error' ? 'text-red-400/80' : 'text-[#EAEAEA]/70'}`}>
                   {ev.content}
                 </p>
               )}
-              {/* Structured detail */}
-              {ev.data && Object.keys(ev.data).length > 0 && (
-                <EventDetailBody ev={ev} dot={dot} />
-              )}
+              {/* Structured detail — extra info beyond ev.content */}
+              <EventDetailBody ev={ev} dot={dot} />
             </div>
           </ScrollArea>
         </DialogContent>
@@ -2025,6 +2043,46 @@ export default function ExecutionDetailPage() {
             reviewMessages={reviewMessages}
             leaderAgentId={workforce?.leader_agent_id}
           />
+
+          {/* Token usage per agent */}
+          {(() => {
+            const agentToks = orderedAgents.map(a => {
+              const agentMsgs = messages.filter(m => m.agent_id === a.id && m.role === 'assistant');
+              const tokIn = agentMsgs.reduce((s, m) => s + (m.tokens_input || 0), 0);
+              const tokOut = agentMsgs.reduce((s, m) => s + (m.tokens_output || 0), 0);
+              return { agent: a, tokIn, tokOut, total: tokIn + tokOut, calls: agentMsgs.length };
+            }).filter(r => r.total > 0);
+            if (agentToks.length === 0) return null;
+            const grandTotal = agentToks.reduce((s, r) => s + r.total, 0);
+            return (
+              <div className='border-t border-border/50 shrink-0'>
+                <div className='px-3 py-2 border-b border-border/30'>
+                  <p className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground'>Token Usage</p>
+                </div>
+                <div className='px-3 py-2 space-y-1.5'>
+                  {agentToks.map(r => {
+                    const pct = grandTotal > 0 ? (r.total / grandTotal) * 100 : 0;
+                    const agentColor = r.agent.color || '#9A66FF';
+                    return (
+                      <div key={r.agent.id} className='space-y-0.5'>
+                        <div className='flex items-center justify-between'>
+                          <span className='text-[10px] truncate text-muted-foreground/70' style={{ maxWidth: '60%' }}>{r.agent.name}</span>
+                          <span className='text-[10px] font-mono text-muted-foreground/60 shrink-0'>{formatTokens(r.total)}</span>
+                        </div>
+                        <div className='h-1 rounded-full bg-border/30 overflow-hidden'>
+                          <div className='h-full rounded-full' style={{ width: `${pct}%`, backgroundColor: agentColor + 'cc' }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className='flex justify-between pt-0.5 border-t border-border/20'>
+                    <span className='text-[9px] text-muted-foreground/40'>Total</span>
+                    <span className='text-[10px] font-mono text-muted-foreground/60'>{formatTokens(grandTotal)}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Flow Events — live, newest at bottom, animated */}
           <div className='flex max-h-56 flex-col border-t border-border/50'>

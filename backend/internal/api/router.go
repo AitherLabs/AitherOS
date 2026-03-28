@@ -110,6 +110,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 
 	// Global stats
 	mux.Handle("GET /api/v1/stats", protect(http.HandlerFunc(executions.GlobalStats)))
+	mux.Handle("GET /api/v1/stats/tokens", protect(http.HandlerFunc(executions.TokenBreakdown)))
 
 	// Executions
 	mux.Handle("GET /api/v1/executions", protect(http.HandlerFunc(executions.ListAll)))

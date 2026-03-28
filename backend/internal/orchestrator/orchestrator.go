@@ -196,7 +196,15 @@ type completionSignal struct {
 }
 
 // maxConversationMemory is the number of recent messages to include as context.
-const maxConversationMemory = 20
+const maxConversationMemory = 10
+
+// maxHandoffChars is the max chars from a single upstream agent's output to include in handoff context.
+const maxHandoffChars = 3000
+
+// maxToolResultHistoryChars caps tool results stored in the chat history to avoid
+// multi-round context blowup (the full result is still returned to the agent in the
+// current round — only subsequent rounds see the truncated version).
+const maxToolResultHistoryChars = 4000
 
 type Orchestrator struct {
 	store            *store.Store
@@ -1121,27 +1129,14 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			"- If a credential you need is not listed, signal `needs_help` with the exact service and key name.",
 		workspacePath))
 
-	taskParts = append(taskParts, fmt.Sprintf("---\n"+
-		"Execute your subtask now. Produce your output directly.\n\n"+
-		"## Tool Usage — MANDATORY\n"+
-		"You have MCP tools available. Use them aggressively and persistently:\n"+
-		"- **Shell**: `run_command` — git, npm, python, curl, bash. Clone repos to `%s`, run tests, compile, deploy.\n"+
-		"- **Filesystem**: read/write files in your workspace. For AitherOS source/docs, use web_fetch on https://raw.githubusercontent.com/AitherLabs/AitherOS/main/<path>\n"+
-		"- **Secrets**: call `list_secrets()` before any authenticated request to see what credentials exist.\n"+
-		"- **Kanban board**: `kanban_list_tasks()` — see all tasks on this workforce's board. `kanban_create_task(title, description, priority)` — add a new task (status will be 'open'). Use these to populate or inspect the team's task board.\n"+
-		"- **GitHub rate-limit errors**: automatically retried after 62s — do NOT signal `needs_help` for these.\n"+
-		"- You can make as many tool calls as needed — there is NO limit. Keep going until the subtask is done.\n"+
-		"- If a tool fails or returns partial results, try a different approach or parameters.\n"+
-		"- **Never give up because a single tool call returned insufficient information.**\n\n"+
-		"## Completion Signals\n"+
-		"When your subtask is FULLY complete, end your response with:\n"+
-		"```json\n{\"status\": \"complete\", \"summary\": \"<one-sentence summary of what you did>\"}\n```\n"+
-		"Other agents may have additional subtasks — your signal only marks YOUR subtask done.\n\n"+
-		"Signal `needs_help` ONLY as a last resort — exhausted all tools AND need something only a human can provide:\n"+
-		"```json\n{\"status\": \"needs_help\", \"reason\": \"<exactly what you tried and what you still need>\"}\n```\n\n"+
-		"If blocked by a hard dependency no tool can resolve:\n"+
-		"```json\n{\"status\": \"blocked\", \"reason\": \"<what is blocking you>\"}\n```"+
-		peerList, workspacePath))
+	taskParts = append(taskParts, "---\n"+
+		"Execute your subtask now. Use your tools aggressively — make as many calls as needed, keep going until done.\n"+
+		"Workspace: `"+workspacePath+"`  |  Secrets: call `list_secrets()` before any authenticated request.\n"+
+		"Kanban: `kanban_list_tasks()` / `kanban_create_task(title, description, priority)` to manage the board.\n\n"+
+		"When done:\n```json\n{\"status\": \"complete\", \"summary\": \"<one sentence>\"}\n```\n"+
+		"Need human input:\n```json\n{\"status\": \"needs_help\", \"reason\": \"<what you tried and need>\"}\n```\n"+
+		"Hard blocker:\n```json\n{\"status\": \"blocked\", \"reason\": \"<what is blocking>\"}\n```"+
+		peerList)
 
 	taskMsg := strings.Join(taskParts, "\n\n")
 
@@ -1280,9 +1275,13 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			ToolCalls: resp.ToolCalls,
 		})
 		for _, tc := range resp.ToolCalls {
+			result := tc.Result
+			if len(result) > maxToolResultHistoryChars {
+				result = result[:maxToolResultHistoryChars] + fmt.Sprintf("\n… (truncated, %d chars total)", len(tc.Result))
+			}
 			history = append(history, engine.ChatMessage{
 				Role:       "tool",
-				Content:    tc.Result,
+				Content:    result,
 				ToolCallID: tc.ID,
 			})
 		}
@@ -2279,7 +2278,11 @@ func buildHandoffContext(plan []models.ExecutionSubtask, dependsOn []string) str
 	var parts []string
 	for _, depID := range dependsOn {
 		if st, ok := outputByID[depID]; ok && st.Output != "" {
-			parts = append(parts, fmt.Sprintf("### Output from %s (subtask %s)\n%s", st.AgentName, st.ID, st.Output))
+			out := st.Output
+			if len(out) > maxHandoffChars {
+				out = out[:maxHandoffChars] + fmt.Sprintf("\n… (truncated, %d chars total)", len(st.Output))
+			}
+			parts = append(parts, fmt.Sprintf("### Output from %s\n%s", st.AgentName, out))
 		}
 	}
 	return strings.Join(parts, "\n\n")

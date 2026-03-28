@@ -422,3 +422,12 @@ func (h *ExecutionHandler) GlobalStats(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, stats)
 }
+
+func (h *ExecutionHandler) TokenBreakdown(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.store.GetTokenBreakdown(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to fetch token breakdown: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}

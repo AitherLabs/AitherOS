@@ -299,6 +299,44 @@ func (s *Store) GetGlobalStats(ctx context.Context) (*GlobalStats, error) {
 	return st, nil
 }
 
+// TokenModelRow holds aggregated token usage for a single model.
+type TokenModelRow struct {
+	Model      string `json:"model"`
+	ProviderID string `json:"provider_id"`
+	TokensIn   int64  `json:"tokens_in"`
+	TokensOut  int64  `json:"tokens_out"`
+	Calls      int    `json:"calls"`
+}
+
+// GetTokenBreakdown returns per-model token usage aggregated across all messages.
+func (s *Store) GetTokenBreakdown(ctx context.Context) ([]TokenModelRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			COALESCE(model, 'unknown')       AS model,
+			COALESCE(provider_id::text, '')  AS provider_id,
+			COALESCE(SUM(tokens_input),  0)  AS tokens_in,
+			COALESCE(SUM(tokens_output), 0)  AS tokens_out,
+			COUNT(*)                         AS calls
+		FROM messages
+		WHERE role = 'assistant'
+		  AND (tokens_input > 0 OR tokens_output > 0)
+		GROUP BY model, provider_id
+		ORDER BY (SUM(tokens_input) + SUM(tokens_output)) DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("get token breakdown: %w", err)
+	}
+	defer rows.Close()
+	var result []TokenModelRow
+	for rows.Next() {
+		var r TokenModelRow
+		if err := rows.Scan(&r.Model, &r.ProviderID, &r.TokensIn, &r.TokensOut, &r.Calls); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, nil
+}
+
 func (s *Store) DeleteExecution(ctx context.Context, id uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM executions WHERE id = $1`, id)
 	if err != nil {
