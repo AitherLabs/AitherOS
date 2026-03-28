@@ -31,10 +31,16 @@ func internalAPIURL() string {
 	return "http://127.0.0.1:" + port
 }
 
-const (
-	WorkforcesRoot    = "/opt/AitherOS/workforces"
+var (
+	installRoot = func() string {
+		if r := os.Getenv("INSTALL_ROOT"); r != "" {
+			return r
+		}
+		return "/opt/AitherOS"
+	}()
+	WorkforcesRoot    = installRoot + "/workforces"
 	aitherToolsCmd    = "node"
-	aitherToolsBinary = "/opt/AitherOS/mcp-servers/aither-tools/dist/index.js"
+	aitherToolsBinary = installRoot + "/mcp-servers/aither-tools/dist/index.js"
 )
 
 // Provisioner creates workforce workspaces and wires Aither-Tools into them.
