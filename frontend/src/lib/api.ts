@@ -824,6 +824,7 @@ export interface KnowledgeEntry {
   source_type: 'execution_result' | 'agent_message' | 'manual' | 'tool_result';
   title: string;
   content: string;
+  embedding?: number[] | null;
   metadata?: Record<string, any>;
   similarity?: number;
   created_at: string;
