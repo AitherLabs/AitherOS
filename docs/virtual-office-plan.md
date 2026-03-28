@@ -111,23 +111,46 @@ Drop generated PNG sheets in `frontend/public/assets/office/` and swap `PIXI.Gra
 > Generate a complete set of pixel art / lo-fi 2D game assets for the AitherOS Virtual Office: character sprites (one per agent archetype), furniture, floor tiles, UI overlays, and ambient effects. Save PNGs to `workforces/{workforce_id}/workspace/assets/office/` and create a JSON manifest + KB entries for each asset.
 
 ### Why no custom MCP tool needed
-Agents already have HTTP request capabilities via Aither-Tools. An image generation API (Stability AI, fal.ai, Replicate) is just a POST request with a JSON body that returns base64-encoded PNG. The agent:
+Agents already have HTTP request capabilities via Aither-Tools. Image gen APIs return either a URL (fal.ai, Together AI) or base64 (Stability AI). The agent workflow:
 1. Constructs the prompt
-2. Calls `http_request` to the image gen endpoint
-3. Decodes the base64 response
-4. Calls `write_file` to save the PNG
-5. Updates the manifest JSON
+2. Calls `http_request` POST to the image gen endpoint
+3. Reads the image URL from the JSON response
+4. Calls `http_request` GET to download the PNG
+5. Calls `write_file` to save the PNG
+6. Updates the manifest JSON
 
 No MCP tool wrapper required — the existing tool set is sufficient.
 
-### On OpenRouter + Image Generation
-**Important note:** OpenRouter is an LLM text-completion proxy (OpenAI-compatible `/chat/completions` endpoint). It does **not** expose image generation output through this API format, even for models that natively support it (like Gemini 2.0 Flash's experimental image output). Gemini 2.0 Flash Lite specifically is the stripped-down text-optimized variant — image generation is not available on it.
+### Image Generation Provider Options
 
-For image generation, use one of these directly (not via OpenRouter):
-- **Stability AI** (`https://api.stability.ai/v2beta/stable-image/generate/sd3`) — free tier 25 credits/day, excellent for pixel art with the right prompt
-- **fal.ai** (`https://fal.run/fal-ai/fast-sdxl`) — very cheap (~$0.003/image), fast API
-- **Replicate** (`https://api.replicate.com/v1/predictions`) — similar pricing, huge model selection
-- **Hugging Face Inference API** — free tier available, `stabilityai/sdxl-turbo` or `stabilityai/stable-diffusion-xl-base-1.0`
+**Option A — Your existing LiteLLM proxy (preferred if accounts have DALL-E)**
+Your app already routes through LiteLLM (`proxy-cuenta-1/2/3` on ports 10531–10533). LiteLLM natively supports `/v1/images/generations`. If those accounts have DALL-E access, add to `litellm_config.yaml`:
+```yaml
+- model_name: dall-e-3
+  litellm_params:
+    model: openai/dall-e-3
+    api_base: http://127.0.0.1:10531/v1
+    api_key: dummy-token
+```
+Then agents call `POST http://localhost:4000/v1/images/generations` — same infrastructure, same routing/retry. Test first: `curl http://127.0.0.1:10531/v1/images/generations -H "Authorization: Bearer dummy-token" -d '{"model":"dall-e-3","prompt":"test","n":1,"size":"1024x1024"}'`
+
+**Option B — fal.ai (recommended if A doesn't work)**
+Simple JSON API, URL-based response (no base64 decoding needed), FLUX.1 model quality is excellent for stylized sprites.
+```
+POST https://fal.run/fal-ai/flux/schnell
+Authorization: Key YOUR_FAL_KEY
+{"prompt": "...", "image_size": "square_hd", "num_images": 1}
+→ {"images": [{"url": "https://fal.media/files/xxx/output.png"}]}
+```
+Cost: ~$0.003/image. Free credits on signup.
+
+**Option C — Together AI**
+OpenAI-compatible `/v1/images/generations` endpoint. Same FLUX models as fal.ai. Can even be added to LiteLLM router as another backend.
+
+**Option D — Stability AI**
+25 free credits/day. Best pixel art quality with SD3 + right prompting. Response is binary PNG (not URL), so agent saves it directly.
+
+**NOT via OpenRouter:** OpenRouter is a `/chat/completions` proxy only. Gemini 2.0 Flash Lite is text-only on OpenRouter. Gemini 2.0 Flash full supports vision *input* on OpenRouter (useful for Art Director review) but not image generation *output*.
 
 Gemini 2.0 Flash *does* support image understanding (vision input) on OpenRouter — useful for the Art Director agent to review generated assets and request corrections.
 
