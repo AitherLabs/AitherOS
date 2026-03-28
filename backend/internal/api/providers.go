@@ -179,7 +179,7 @@ func (h *ProviderHandler) RemoveModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "model removed"})
 }
 
-// ProbeModels calls the provider's /v1/models endpoint and returns live model IDs.
+// ProbeModels calls the provider's model catalog and returns live model IDs.
 func (h *ProviderHandler) ProbeModels(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -193,7 +193,13 @@ func (h *ProviderHandler) ProbeModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ids, probeErr := probeModelsFromURL(r.Context(), provider.BaseURL, provider.APIKey)
+	var ids []string
+	var probeErr string
+	if provider.ProviderType == models.ProviderTypeCloudflare {
+		ids, probeErr = probeCloudflareModels(r.Context(), provider.BaseURL, provider.APIKey)
+	} else {
+		ids, probeErr = probeModelsFromURL(r.Context(), provider.BaseURL, provider.APIKey)
+	}
 	if probeErr != "" {
 		writeError(w, http.StatusBadGateway, probeErr)
 		return
@@ -205,8 +211,9 @@ func (h *ProviderHandler) ProbeModels(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/providers/test
 func (h *ProviderHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
+		BaseURL      string `json:"base_url"`
+		APIKey       string `json:"api_key"`
+		ProviderType string `json:"provider_type"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
@@ -217,7 +224,13 @@ func (h *ProviderHandler) TestConnection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	models, probeErr := probeModelsFromURL(r.Context(), req.BaseURL, req.APIKey)
+	var modelIDs []string
+	var probeErr string
+	if req.ProviderType == string(models.ProviderTypeCloudflare) {
+		modelIDs, probeErr = probeCloudflareModels(r.Context(), req.BaseURL, req.APIKey)
+	} else {
+		modelIDs, probeErr = probeModelsFromURL(r.Context(), req.BaseURL, req.APIKey)
+	}
 	if probeErr != "" {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     false,
@@ -228,9 +241,64 @@ func (h *ProviderHandler) TestConnection(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
-		"models": models,
+		"models": modelIDs,
 		"error":  "",
 	})
+}
+
+// probeCloudflareModels queries the Cloudflare Workers AI model catalog.
+// baseURL is the Cloudflare account ID; apiKey is the API token.
+func probeCloudflareModels(ctx context.Context, accountID, apiKey string) ([]string, string) {
+	accountID = strings.TrimRight(accountID, "/")
+	// Fetch image + audio models from the catalog
+	tasks := []string{"Text-to-Image", "Speech-to-Text", "Text-to-Speech"}
+	seen := map[string]bool{}
+	var ids []string
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	for _, task := range tasks {
+		url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai/models/search?task=%s&per_page=50",
+			accountID, strings.ReplaceAll(task, " ", "+"))
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, "unreachable — check account ID and token: " + err.Error()
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Sprintf("authentication failed (HTTP %d) — check your API token", resp.StatusCode)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Sprintf("cloudflare returned HTTP %d", resp.StatusCode)
+		}
+
+		var result struct {
+			Result []struct {
+				Name string `json:"name"`
+			} `json:"result"`
+			Success bool `json:"success"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || !result.Success {
+			continue
+		}
+		for _, m := range result.Result {
+			if m.Name != "" && !seen[m.Name] {
+				seen[m.Name] = true
+				ids = append(ids, m.Name)
+			}
+		}
+	}
+
+	if len(ids) == 0 {
+		return nil, "no models found — verify account ID is correct (not a URL)"
+	}
+	return ids, ""
 }
 
 // probeModelsFromURL is the shared logic for hitting GET /models on a base URL.

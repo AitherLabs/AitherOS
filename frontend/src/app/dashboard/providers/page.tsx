@@ -184,7 +184,7 @@ export default function ProvidersPage() {
     setTestModels([]);
     setSelectedModels(new Set());
     try {
-      const res = await api.testProvider({ base_url: formData.base_url, api_key: formData.api_key });
+      const res = await api.testProvider({ base_url: formData.base_url, api_key: formData.api_key, provider_type: formData.provider_type });
       if (res.data?.ok) {
         setTestStatus('ok');
         const models = res.data.models ?? [];
