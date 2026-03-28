@@ -97,18 +97,24 @@ func (c *imageConnector) Submit(ctx context.Context, req TaskRequest) (*TaskResp
 	}
 
 	// Detect provider backend.
-	// Google: explicit type, or googleapis.com in URL, or model name follows Google's format.
-	// Imagen models are named "imagen-*" or stored with a "models/" prefix from AI Studio.
+	// Google: explicit type, googleapis.com in URL, or model name is a known Google format.
+	// Gemini image models (gemini-*-image-*) use generateContent + responseModalities.
+	// Imagen models (imagen-*) use the Vertex-style :predict endpoint.
 	modelLower := strings.ToLower(c.model)
 	isGoogle := c.providerType == "google" ||
 		strings.Contains(c.baseURL, "googleapis.com") ||
 		strings.HasPrefix(modelLower, "imagen") ||
-		strings.HasPrefix(modelLower, "models/imagen")
+		strings.HasPrefix(modelLower, "models/imagen") ||
+		strings.Contains(modelLower, "image-preview") ||
+		strings.Contains(modelLower, "flash-image")
+	isGeminiImage := isGoogle && (strings.HasPrefix(modelLower, "gemini") || strings.HasPrefix(modelLower, "models/gemini"))
 	isFal := c.providerType == "fal" || strings.Contains(c.baseURL, "fal.run") || strings.Contains(c.baseURL, "fal.ai")
 
 	var imgBytes []byte
 	var err error
-	if isGoogle {
+	if isGeminiImage {
+		imgBytes, err = c.generateGemini(ctx, spec.Prompt)
+	} else if isGoogle {
 		imgBytes, err = c.generateGoogle(ctx, spec.Prompt, spec.AspectRatio)
 	} else if isFal {
 		imgBytes, err = c.generateFal(ctx, spec.Prompt, spec.AspectRatio)
@@ -213,6 +219,61 @@ func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio
 		return nil, fmt.Errorf("missing bytesBase64Encoded in response — body: %s", truncateStr(string(raw), 300))
 	}
 	return base64.StdEncoding.DecodeString(b64)
+}
+
+// generateGemini handles Gemini image-capable models (gemini-*-image-*, gemini-*-flash-image, etc.)
+// that generate images via generateContent with responseModalities: ["IMAGE"].
+func (c *imageConnector) generateGemini(ctx context.Context, prompt string) ([]byte, error) {
+	base := "https://generativelanguage.googleapis.com"
+	if strings.Contains(c.baseURL, "googleapis.com") {
+		base = strings.TrimRight(c.baseURL, "/")
+		for _, suffix := range []string{"/openai", "/v1beta", "/v1"} {
+			base = strings.TrimSuffix(base, suffix)
+		}
+	}
+
+	modelID := strings.TrimPrefix(c.model, "models/")
+	apiURL := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", base, modelID, c.apiKey)
+	log.Printf("image-connector: gemini generateContent (image) → %s/v1beta/models/%s (key len=%d)", base, modelID, len(c.apiKey))
+
+	body, _ := json.Marshal(map[string]any{
+		"contents": []map[string]any{
+			{"parts": []map[string]any{{"text": prompt}}},
+		},
+		"generationConfig": map[string]any{
+			"responseModalities": []string{"IMAGE", "TEXT"},
+		},
+	})
+
+	raw, err := c.post(ctx, apiURL, nil, body)
+	if err != nil {
+		return nil, fmt.Errorf("%w — body: %s", err, truncateStr(string(raw), 300))
+	}
+
+	var data struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					InlineData *struct {
+						MimeType string `json:"mimeType"`
+						Data     string `json:"data"`
+					} `json:"inlineData"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, fmt.Errorf("parse response: %w — body: %s", err, truncateStr(string(raw), 300))
+	}
+	if len(data.Candidates) == 0 {
+		return nil, fmt.Errorf("no candidates in response — body: %s", truncateStr(string(raw), 300))
+	}
+	for _, part := range data.Candidates[0].Content.Parts {
+		if part.InlineData != nil && part.InlineData.Data != "" {
+			return base64.StdEncoding.DecodeString(part.InlineData.Data)
+		}
+	}
+	return nil, fmt.Errorf("no image data in response — body: %s", truncateStr(string(raw), 300))
 }
 
 func (c *imageConnector) generateOpenAI(ctx context.Context, prompt, aspectRatio string) ([]byte, error) {
