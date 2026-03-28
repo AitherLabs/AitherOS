@@ -536,7 +536,7 @@ export default function AgentsPage() {
                         const newId = v === '_none' ? '' : v;
                         setFormProviderId(newId);
                         const pv = providers.find((p) => p.id === newId);
-                        const first = pv?.models?.find((m) => m.model_type === 'llm');
+                        const first = pv?.models?.find((m) => m.is_enabled);
                         if (first) setFormModel(first.model_name);
                       }}
                     >
@@ -558,16 +558,25 @@ export default function AgentsPage() {
                       <Label>Model</Label>
                       {(() => {
                         const selectedProvider = providers.find((p) => p.id === formProviderId);
-                        const llmModels = selectedProvider?.models?.filter((m) => m.model_type === 'llm') ?? [];
-                        return llmModels.length > 0 ? (
+                        const allModels = selectedProvider?.models?.filter((m) => m.is_enabled) ?? [];
+                        const mediaTypes = ['image', 'video', 'audio'];
+                        const mediaColor: Record<string, string> = { image: '#9A66FF', video: '#14FFF7', audio: '#56D090' };
+                        return allModels.length > 0 ? (
                           <Select value={formModel} onValueChange={setFormModel}>
                             <SelectTrigger className='font-mono text-sm'>
                               <SelectValue placeholder='Select model...' />
                             </SelectTrigger>
                             <SelectContent>
-                              {llmModels.map((m) => (
+                              {allModels.map((m) => (
                                 <SelectItem key={m.id} value={m.model_name} className='font-mono text-sm'>
-                                  {m.model_name}
+                                  <span className='flex items-center gap-1.5'>
+                                    {m.model_name}
+                                    {mediaTypes.includes(m.model_type) && (
+                                      <span className='rounded px-1 py-0.5 text-[8px] font-black tracking-widest uppercase leading-none' style={{ background: (mediaColor[m.model_type] || '#9A66FF') + '22', color: mediaColor[m.model_type] || '#9A66FF', border: `1px solid ${mediaColor[m.model_type] || '#9A66FF'}44` }}>
+                                        {m.model_type}
+                                      </span>
+                                    )}
+                                  </span>
                                 </SelectItem>
                               ))}
                             </SelectContent>
