@@ -186,5 +186,25 @@ func GetCredentialSchemas() []models.CredentialSchema {
 				{Name: "api_key", Label: "API Key", Type: "secret", Required: false},
 			},
 		},
+		{
+			ProviderType: models.ProviderTypeCloudflare,
+			Fields: []models.CredentialField{
+				{
+					Name:        "base_url",
+					Label:       "Account ID",
+					Type:        "text",
+					Required:    true,
+					Placeholder: "a1b2c3d4e5f6...",
+					HelpText:    "Found in the Cloudflare dashboard URL: dash.cloudflare.com/<account_id>",
+				},
+				{
+					Name:        "api_key",
+					Label:       "API Token",
+					Type:        "secret",
+					Required:    true,
+					Placeholder: "cfut_... or Bearer token from Workers AI",
+				},
+			},
+		},
 	}
 }

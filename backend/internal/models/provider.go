@@ -17,6 +17,7 @@ const (
 	ProviderTypeLiteLLM      ProviderType = "litellm"
 	ProviderTypePicoClaw     ProviderType = "picoclaw"
 	ProviderTypeOpenClaw     ProviderType = "openclaw"
+	ProviderTypeCloudflare   ProviderType = "cloudflare"
 )
 
 // ModelType categorises what a model can do.
