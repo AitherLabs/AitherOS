@@ -152,20 +152,23 @@ func (c *imageConnector) SubmitStream(_ context.Context, req TaskRequest) (<-cha
 // ── Provider implementations ──────────────────────────────────────────────────
 
 func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio string) ([]byte, error) {
-	// Strip any path suffix so we always reconstruct with the correct /v1beta path.
-	base := c.baseURL
-	base = strings.TrimRight(base, "/")
-	for _, suffix := range []string{"/openai", "/v1beta", "/v1"} {
-		base = strings.TrimSuffix(base, suffix)
-	}
-	if base == "" {
-		base = "https://generativelanguage.googleapis.com"
+	// Google Imagen does not go through LiteLLM or any proxy — always call the
+	// Generative Language API directly. The baseURL stored on the provider is the
+	// LiteLLM/OpenAI-compat endpoint and does not expose generateImages.
+	// If the baseURL already points to googleapis.com we keep it; otherwise we
+	// override with the canonical base.
+	base := "https://generativelanguage.googleapis.com"
+	if strings.Contains(c.baseURL, "googleapis.com") {
+		base = strings.TrimRight(c.baseURL, "/")
+		for _, suffix := range []string{"/openai", "/v1beta", "/v1"} {
+			base = strings.TrimSuffix(base, suffix)
+		}
 	}
 
 	// Model may be stored as "models/imagen-4.0-generate-001" or just "imagen-4.0-generate-001".
 	// Strip the "models/" prefix because the URL already contains /models/.
 	modelID := strings.TrimPrefix(c.model, "models/")
-	url := fmt.Sprintf("%s/v1beta/models/%s:generateImages?key=%s", base, modelID, c.apiKey)
+	apiURL := fmt.Sprintf("%s/v1beta/models/%s:generateImages?key=%s", base, modelID, c.apiKey)
 
 	body, _ := json.Marshal(map[string]any{
 		"prompt":              prompt,
@@ -175,7 +178,7 @@ func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio
 		"person_generation":   "DONT_ALLOW",
 	})
 
-	raw, err := c.post(ctx, url, nil, body)
+	raw, err := c.post(ctx, apiURL, nil, body)
 	if err != nil {
 		return nil, err
 	}
