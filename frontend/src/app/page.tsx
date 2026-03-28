@@ -275,9 +275,9 @@ function AgentOrb({
 
 /* ─── Animated connection line ─── */
 function Connector({
-  x1, y1, x2, y2, color, delay = 0,
+  x1, y1, x2, y2, color, delay = 0, strokeDasharray: sda,
 }: {
-  x1: number; y1: number; x2: number; y2: number; color: string; delay?: number;
+  x1: number; y1: number; x2: number; y2: number; color: string; delay?: number; strokeDasharray?: string;
 }) {
   const len = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
   return (
@@ -285,7 +285,7 @@ function Connector({
       x1={x1} y1={y1} x2={x2} y2={y2}
       stroke={color}
       strokeWidth={1.5}
-      strokeDasharray={len}
+      strokeDasharray={sda ?? len}
       strokeDashoffset={len}
       animate={{ strokeDashoffset: 0 }}
       transition={{ duration: 1.0, delay, ease: 'easeOut' }}
