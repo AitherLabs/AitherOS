@@ -101,18 +101,21 @@ func (c *imageConnector) Submit(ctx context.Context, req TaskRequest) (*TaskResp
 	// Gemini image models (gemini-*-image-*) use generateContent + responseModalities.
 	// Imagen models (imagen-*) use the Vertex-style :predict endpoint.
 	modelLower := strings.ToLower(c.model)
-	isGoogle := c.providerType == "google" ||
+	isCloudflare := c.providerType == "cloudflare" || strings.HasPrefix(c.model, "@cf/")
+	isGoogle := !isCloudflare && (c.providerType == "google" ||
 		strings.Contains(c.baseURL, "googleapis.com") ||
 		strings.HasPrefix(modelLower, "imagen") ||
 		strings.HasPrefix(modelLower, "models/imagen") ||
 		strings.Contains(modelLower, "image-preview") ||
-		strings.Contains(modelLower, "flash-image")
+		strings.Contains(modelLower, "flash-image"))
 	isGeminiImage := isGoogle && (strings.HasPrefix(modelLower, "gemini") || strings.HasPrefix(modelLower, "models/gemini"))
 	isFal := c.providerType == "fal" || strings.Contains(c.baseURL, "fal.run") || strings.Contains(c.baseURL, "fal.ai")
 
 	var imgBytes []byte
 	var err error
-	if isGeminiImage {
+	if isCloudflare {
+		imgBytes, err = c.generateCloudflare(ctx, spec.Prompt)
+	} else if isGeminiImage {
 		imgBytes, err = c.generateGemini(ctx, spec.Prompt)
 	} else if isGoogle {
 		imgBytes, err = c.generateGoogle(ctx, spec.Prompt, spec.AspectRatio)
@@ -274,6 +277,62 @@ func (c *imageConnector) generateGemini(ctx context.Context, prompt string) ([]b
 		}
 	}
 	return nil, fmt.Errorf("no image data in response — body: %s", truncateStr(string(raw), 300))
+}
+
+// generateCloudflare handles Cloudflare Workers AI image models (@cf/...).
+// base_url stores the Cloudflare Account ID; api_key is the Workers AI API token.
+// Supports FLUX.1 Schnell, FLUX.2, Stable Diffusion, and any @cf/* image model.
+func (c *imageConnector) generateCloudflare(ctx context.Context, prompt string) ([]byte, error) {
+	accountID := strings.TrimRight(c.baseURL, "/")
+	model := c.model
+	apiURL := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/ai/run/%s", accountID, model)
+	log.Printf("image-connector: cloudflare workers-ai → account=%s model=%s", accountID, model)
+
+	body, _ := json.Marshal(map[string]any{
+		"prompt": prompt,
+		"steps":  4, // FLUX default; ignored by models that don't support it
+	})
+
+	raw, err := c.post(ctx, apiURL, map[string]string{
+		"Authorization": "Bearer " + c.apiKey,
+	}, body)
+	if err != nil {
+		return nil, fmt.Errorf("%w — body: %s", err, truncateStr(string(raw), 300))
+	}
+
+	// Cloudflare wraps responses in {"result": {...}, "success": true}.
+	// Image models return: {"result": {"image": "<base64>"}}
+	// Some models return the image bytes directly (binary response) — handled by content-type check below.
+	var wrapper struct {
+		Result  json.RawMessage `json:"result"`
+		Success bool            `json:"success"`
+		Errors  []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		// Not JSON — treat as raw binary image bytes
+		return raw, nil
+	}
+	if !wrapper.Success && len(wrapper.Errors) > 0 {
+		return nil, fmt.Errorf("cloudflare api error: %s", wrapper.Errors[0].Message)
+	}
+
+	// Try {"image": "<base64>"} inside result
+	var imgResult struct {
+		Image string `json:"image"`
+	}
+	if err := json.Unmarshal(wrapper.Result, &imgResult); err == nil && imgResult.Image != "" {
+		return base64.StdEncoding.DecodeString(imgResult.Image)
+	}
+
+	// Fallback: result itself might be a base64 string
+	var b64str string
+	if err := json.Unmarshal(wrapper.Result, &b64str); err == nil && b64str != "" {
+		return base64.StdEncoding.DecodeString(b64str)
+	}
+
+	return nil, fmt.Errorf("no image in cloudflare response — body: %s", truncateStr(string(raw), 300))
 }
 
 func (c *imageConnector) generateOpenAI(ctx context.Context, prompt, aspectRatio string) ([]byte, error) {
