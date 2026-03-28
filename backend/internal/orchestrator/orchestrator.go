@@ -949,8 +949,14 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 			pendingIntervention = ""
 
 			if res.Err != nil {
-				subtask.Status = models.SubtaskBlocked
+				// Convert hard errors to needs_help so the execution pauses and the
+				// user can intervene rather than deadlocking into an unrecoverable halt.
+				subtask.Status = models.SubtaskNeedsHelp
 				subtask.ErrorMsg = res.Err.Error()
+				o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &subtask.AgentID, subtask.AgentName,
+					models.EventTypeHumanRequired,
+					fmt.Sprintf("[%s] Agent error — execution paused. Use 'Send message' to retry or provide guidance: %s", subtask.AgentName, res.Err.Error()),
+					map[string]any{"reason": res.Err.Error(), "subtask_id": subtask.ID}))
 			} else if res.NeedsHelp {
 				subtask.Status = models.SubtaskNeedsHelp
 				o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &subtask.AgentID, subtask.AgentName,
@@ -1180,17 +1186,15 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		cleanErr := cleanAPIError(err.Error())
 		o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
 			fmt.Sprintf("%s encountered an error: %s", agent.Name, cleanErr), nil))
-		// Rate/quota errors are recoverable — surface as needs_help so the user can act
-		// (add credits, switch provider, wait for reset) rather than deadlocking the execution.
-		if isRateLimitError(err) {
-			return agentResult{
-				AgentID:         agentID,
-				AgentName:       agent.Name,
-				NeedsHelp:       true,
-				NeedsHelpReason: "LLM provider rate limit: " + cleanErr,
-			}
+		// All LLM errors are surfaced as needs_help so the execution pauses and the
+		// user can intervene (switch model, retry, provide context) rather than
+		// deadlocking the execution with an unrecoverable blocked subtask.
+		return agentResult{
+			AgentID:         agentID,
+			AgentName:       agent.Name,
+			NeedsHelp:       true,
+			NeedsHelpReason: fmt.Sprintf("LLM provider error on first call: %s — check the agent's model/provider and use 'Send message' to retry.", cleanErr),
 		}
-		return agentResult{AgentID: agentID, AgentName: agent.Name, Err: err}
 	}
 
 	// ── Tool call feedback loop ──
@@ -1283,24 +1287,54 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			})
 		}
 
-		resp, err = eng.Submit(ctx, engine.TaskRequest{
-			AgentID:   agent.ID,
-			AgentName: agent.Name,
-			Model:     modelName,
-			Tools:     agent.Tools,
-			ToolDefs:  toolDefs,
-			History:   history,
-		})
-		if err != nil {
+		// Retry the tool-loop Submit up to 2 times on transient provider errors.
+		var toolLoopErr error
+		for attempt := 0; attempt <= 2; attempt++ {
+			if attempt > 0 {
+				backoff := time.Duration(attempt*5) * time.Second
+				o.eventBus.PublishSystem(ctx, p.exec.ID,
+					fmt.Sprintf("%s: provider error on tool round %d, retrying in %s (attempt %d/2)…", agent.Name, toolRound+1, backoff, attempt))
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					toolLoopErr = ctx.Err()
+					break
+				}
+			}
+			resp, toolLoopErr = eng.Submit(ctx, engine.TaskRequest{
+				AgentID:   agent.ID,
+				AgentName: agent.Name,
+				Model:     modelName,
+				Tools:     agent.Tools,
+				ToolDefs:  toolDefs,
+				History:   history,
+			})
+			if toolLoopErr == nil {
+				break
+			}
+		}
+		if toolLoopErr != nil {
+			cleanErr := cleanAPIError(toolLoopErr.Error())
 			o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
-				fmt.Sprintf("%s tool loop error (round %d): %s", agent.Name, toolRound+1, err.Error()), nil))
-			break
+				fmt.Sprintf("%s tool loop failed after retries (round %d): %s", agent.Name, toolRound+1, cleanErr), nil))
+			// Surface as needs_help so the execution pauses instead of deadlocking.
+			return agentResult{
+				AgentID:         agentID,
+				AgentName:       agent.Name,
+				NeedsHelp:       true,
+				NeedsHelpReason: fmt.Sprintf("LLM provider crashed during tool call round %d: %s — check the agent's model/provider and use 'Send message' to retry.", toolRound+1, cleanErr),
+			}
 		}
 	}
 
-	// Guard: if the tool loop broke due to a Submit error, resp is nil — bail out.
+	// Guard: resp should never be nil here, but defend anyway.
 	if resp == nil {
-		return agentResult{AgentID: agentID, AgentName: agent.Name, Err: fmt.Errorf("nil LLM response after tool loop error")}
+		return agentResult{
+			AgentID:         agentID,
+			AgentName:       agent.Name,
+			NeedsHelp:       true,
+			NeedsHelpReason: "LLM returned an empty response after tool calls — use 'Send message' to retry.",
+		}
 	}
 
 	// Warn when tool round limit was reached without a completion signal
