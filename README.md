@@ -471,7 +471,7 @@ See [LICENSE](./LICENSE) for the complete license text.
 
 ## Links
 
-- **Website**: [oficina.aither.systems](https://oficina.aither.systems)
+- **Website**: [aither.systems](https://aither.systems)
 - **Issues & Discussions**: [github.com/AitherLabs/AitherOS/issues](https://github.com/AitherLabs/AitherOS/issues)
 - **Releases**: [github.com/AitherLabs/AitherOS/releases](https://github.com/AitherLabs/AitherOS/releases)
 - **Commercial licensing**: [labs@aitheros.io](mailto:labs@aitheros.io)
@@ -479,5 +479,5 @@ See [LICENSE](./LICENSE) for the complete license text.
 ---
 
 <div align="center">
-  <sub>Built by <a href="https://oficina.aither.systems">AitherLabs</a> · Licensed under AGPLv3 · Commercial licenses available at labs@aitheros.io</sub>
+  <sub>Built by <a href="https://aither.systems">AitherLabs</a> · Licensed under AGPLv3 · Commercial licenses available at labs@aitheros.io</sub>
 </div>

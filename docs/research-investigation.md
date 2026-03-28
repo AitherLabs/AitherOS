@@ -373,7 +373,7 @@
 
 | Service | Local Port | Domain (via Cloudflare Tunnel) |
 |---|---|---|
-| **Frontend (Next.js)** | `3000` | `oficina.aither.systems` |
+| **Frontend (Next.js)** | `3000` | `aither.systems` |
 | **Backend (Go API)** | `8080` | `backoffice.aither.systems` |
 | **PicoClaw** (existing) | `55000` | — (internal only) |
 | **LiteLLM Proxy** (existing) | `4000` | — (internal only) |
@@ -418,7 +418,7 @@ apps:
 ```yaml
 # Add these to your cloudflared config:
 ingress:
-  - hostname: oficina.aither.systems
+  - hostname: aither.systems
     service: http://localhost:3000
   - hostname: backoffice.aither.systems
     service: http://localhost:8080

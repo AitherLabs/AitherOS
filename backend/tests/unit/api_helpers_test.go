@@ -11,7 +11,7 @@ import (
 )
 
 func TestCORSMiddleware(t *testing.T) {
-	handler := api.CORSMiddleware("http://localhost:3000,https://oficina.aither.systems")(
+	handler := api.CORSMiddleware("http://localhost:3000,https://aither.systems")(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}),
@@ -23,7 +23,7 @@ func TestCORSMiddleware(t *testing.T) {
 		wantOrigin string
 	}{
 		{"allowed origin localhost", "http://localhost:3000", "http://localhost:3000"},
-		{"allowed origin production", "https://oficina.aither.systems", "https://oficina.aither.systems"},
+		{"allowed origin production", "https://aither.systems", "https://aither.systems"},
 		{"disallowed origin", "http://evil.com", ""},
 	}
 
