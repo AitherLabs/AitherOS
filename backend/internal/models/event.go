@@ -41,6 +41,9 @@ const (
 	// Review phase events (P3)
 	EventTypeReviewStarted  EventType = "review_started"
 	EventTypeReviewComplete EventType = "review_complete"
+
+	// Auto-generated title assigned during planning
+	EventTypeExecutionTitled EventType = "execution_titled"
 )
 
 type Event struct {
