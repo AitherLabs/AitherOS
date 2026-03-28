@@ -8,6 +8,51 @@ import { WORKSPACE, MAX_TIMEOUT_S, safeResolve } from '../config.js';
 const execAsync     = promisify(exec);
 const execFileAsync = promisify(execFile);
 
+// ── Security ──────────────────────────────────────────────────────────────────
+
+// Paths that agents must never be able to read or traverse.
+const BLOCKED_PATH_PREFIXES = [
+  '/etc/',
+  '/root/',
+  '/home/',
+  '/proc/',
+  '/sys/',
+  '/run/',
+  '/var/log/',
+  '/var/run/',
+  '/usr/local/etc/',
+  '/.env',
+];
+
+// Env var names that must never be forwarded to child processes.
+const BLOCKED_ENV_KEYS = /^(AITHER_API_TOKEN|SERVICE_TOKEN|DATABASE_URL|POSTGRES_|REDIS_URL|SECRET|PASSWORD|PRIVATE_KEY|AWS_|OPENAI_API_KEY|ANTHROPIC_API_KEY)/i;
+
+/** Build a clean env for child processes — strips sensitive vars, keeps PATH and locale. */
+function safeChildEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const safe: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!BLOCKED_ENV_KEYS.test(k) && v !== undefined) safe[k] = v;
+  }
+  // Always pass extra (agent-supplied) env vars, but never let them override blocked keys.
+  for (const [k, v] of Object.entries(extra)) {
+    if (!BLOCKED_ENV_KEYS.test(k)) safe[k] = v;
+  }
+  return safe;
+}
+
+/** Check whether a shell command contains references to blocked paths. */
+function assertCommandSafe(command: string): void {
+  for (const prefix of BLOCKED_PATH_PREFIXES) {
+    // Simple string scan — catches most cases; not a perfect sandbox (use Docker for that).
+    if (command.includes(prefix)) {
+      throw new Error(
+        `Command blocked: references restricted path '${prefix}'. ` +
+        `Agents may only access the workforce workspace and allowed directories.`
+      );
+    }
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function runInShell(
@@ -16,12 +61,13 @@ async function runInShell(
   timeoutS: number,
   env?: Record<string, string>
 ): Promise<string> {
+  assertCommandSafe(command);
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd,
       timeout:  timeoutS * 1000,
       maxBuffer: 10 * 1024 * 1024, // 10 MB
-      env: { ...process.env, ...env },
+      env: safeChildEnv(env),
       shell: '/bin/bash',
     });
     let out = '';
@@ -130,10 +176,14 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
     const bin      = LANG_BIN[lang] || lang;
     const timeout  = Math.min((args.timeout_s as number) || 60, MAX_TIMEOUT_S);
     const extraArgs = ((args.args as string[]) || []).join(' ');
+    const code     = args.code as string;
+
+    // Check script contents for blocked paths too.
+    assertCommandSafe(code);
 
     const tmpFile  = path.join(os.tmpdir(), `aither_script_${Date.now()}.${ext}`);
     try {
-      await fs.writeFile(tmpFile, args.code as string, 'utf8');
+      await fs.writeFile(tmpFile, code, 'utf8');
       await fs.chmod(tmpFile, 0o755);
       return await runInShell(`${bin} ${tmpFile} ${extraArgs}`, WORKSPACE, timeout);
     } finally {
@@ -165,13 +215,16 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
     const { spawn } = await import('node:child_process');
     const rawCwd   = (args.cwd as string) || WORKSPACE;
     const cwd      = safeResolve(rawCwd);
+    const command  = args.command as string;
+    assertCommandSafe(command);
     const logName  = (args.log_file as string) || `bg_${Date.now()}.log`;
     const logPath  = safeResolve(path.join(WORKSPACE, logName));
 
     const logFd    = await fs.open(logPath, 'a');
-    const child    = spawn('/bin/bash', ['-c', args.command as string], {
+    const child    = spawn('/bin/bash', ['-c', command], {
       cwd,
       detached: true,
+      env: safeChildEnv(),
       stdio: ['ignore', logFd.fd, logFd.fd],
     });
     child.unref();
