@@ -2089,6 +2089,25 @@ func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution
 		}
 
 		agentID := agent.ID
+
+		// Media agents (image/video/audio generators) don't discuss — they only
+		// execute when given a spec. Inject a static contribution and skip the LLM call.
+		if engine.IsMediaConnector(eng) {
+			staticContrib := fmt.Sprintf(
+				"[%s]: I am a media generation agent. I do not participate in discussion. "+
+					"Assign me a subtask with a JSON spec containing `prompt`, `output_path`, and optionally `aspect_ratio`. "+
+					"I will generate the media and return the file path.\n"+
+					"```json\n{\"status\": \"contribute\", \"primary_executor\": \"%s\", \"my_role\": \"Generate images/media on demand from structured specs.\"}\n```",
+				agent.Name, agent.Name,
+			)
+			contributions = append(contributions, staticContrib)
+			o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &agentID, agent.Name,
+				models.EventTypeDiscussionTurn,
+				fmt.Sprintf("%s is a media generator — ready to receive image specs.", agent.Name), nil))
+			turnCount++
+			continue
+		}
+
 		systemPrompt, _ := engine.InterpolatePrompt(agent.SystemPrompt, agent.Variables, nil)
 
 		priorCtx := ""

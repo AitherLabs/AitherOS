@@ -569,6 +569,7 @@ export interface Agent {
   engine_config: Record<string, string>;
   tools: string[];
   model: string;
+  model_type?: string;
   provider_id?: string;
   variables: AgentVariable[];
   strategy: string;

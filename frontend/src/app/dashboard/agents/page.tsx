@@ -297,7 +297,14 @@ export default function AgentsPage() {
                         <EntityAvatar icon={agent.icon} color={accentColor} avatarUrl={agent.avatar_url} name={agent.name} size='md' />
                       </div>
                       <div>
-                        <h3 className='font-semibold leading-tight text-foreground'>{agent.name}</h3>
+                        <div className='flex items-center gap-1.5'>
+                          <h3 className='font-semibold leading-tight text-foreground'>{agent.name}</h3>
+                          {(agent.model_type === 'image' || agent.model_type === 'video' || agent.model_type === 'audio') && (
+                            <span className='rounded px-1 py-0.5 text-[8px] font-black tracking-widest uppercase' style={{ background: '#9A66FF22', color: '#9A66FF', border: '1px solid #9A66FF44' }}>
+                              {agent.model_type}
+                            </span>
+                          )}
+                        </div>
                         <p className='mt-0.5 font-mono text-[10px] text-muted-foreground/70'>{agent.model}</p>
                       </div>
                     </div>

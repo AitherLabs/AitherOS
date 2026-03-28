@@ -578,7 +578,14 @@ export default function WorkforcesPage() {
                           >
                             <EntityAvatar icon={agent.icon} color={agent.color} avatarUrl={agent.avatar_url} size='md' />
                             <div className='flex-1 min-w-0'>
-                              <p className='font-medium text-sm'>{agent.name}</p>
+                              <div className='flex items-center gap-1.5'>
+                                <p className='font-medium text-sm'>{agent.name}</p>
+                                {(agent.model_type === 'image' || agent.model_type === 'video' || agent.model_type === 'audio') && (
+                                  <span className='rounded px-1 py-0.5 text-[8px] font-black tracking-widest uppercase' style={{ background: '#9A66FF22', color: '#9A66FF', border: '1px solid #9A66FF44' }}>
+                                    {agent.model_type}
+                                  </span>
+                                )}
+                              </div>
                               <p className='text-xs text-muted-foreground line-clamp-1'>
                                 {agent.model} \u00b7 {agent.strategy}
                               </p>

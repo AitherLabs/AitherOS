@@ -58,6 +58,7 @@ type Agent struct {
 	Tools         []string          `json:"tools" db:"tools"`
 	Model         string            `json:"model" db:"model"`
 	ProviderID    *uuid.UUID        `json:"provider_id,omitempty" db:"provider_id"` // FK to model_providers
+	ModelType     string            `json:"model_type,omitempty"`                   // Computed: model type from provider_models (image/video/audio/llm/…)
 	Variables     []AgentVariable   `json:"variables" db:"variables"`               // JSONB
 	Strategy      AgentStrategy     `json:"strategy" db:"strategy"`
 	MaxIterations int               `json:"max_iterations" db:"max_iterations"`

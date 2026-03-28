@@ -1129,6 +1129,11 @@ export default function WorkforceDetailPage() {
                           </div>
                           <div className='flex items-center gap-2 text-[10px] text-muted-foreground'>
                             <span className='font-mono'>{agent.model}</span>
+                            {(agent.model_type === 'image' || agent.model_type === 'video' || agent.model_type === 'audio') && (
+                              <span className='rounded px-1 py-0.5 text-[8px] font-black tracking-widest uppercase' style={{ background: '#9A66FF22', color: '#9A66FF', border: '1px solid #9A66FF44' }}>
+                                {agent.model_type}
+                              </span>
+                            )}
                             <span className='text-border'>·</span>
                             <span>max {agent.max_iterations} iters</span>
                             {agent.tools?.length > 0 && (
