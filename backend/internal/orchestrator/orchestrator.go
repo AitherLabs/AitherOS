@@ -20,6 +20,32 @@ import (
 	"github.com/google/uuid"
 )
 
+// virtualPlatformTools are injected into every agent's tool list to give agents
+// direct access to AitherOS platform capabilities (Kanban board, etc.).
+var virtualPlatformTools = []engine.ToolDefinition{
+	{
+		Name:        "kanban_create_task",
+		Description: "Create a new task on this workforce's Kanban board. Use this to populate the board with planned work items.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":       map[string]any{"type": "string", "description": "Short task title (one line)"},
+				"description": map[string]any{"type": "string", "description": "Full task description including acceptance criteria, specs, or output path"},
+				"priority":    map[string]any{"type": "integer", "description": "Priority 0 (low) to 10 (critical). Default 5.", "default": 5},
+			},
+			"required": []string{"title"},
+		},
+	},
+	{
+		Name:        "kanban_list_tasks",
+		Description: "List all current tasks on this workforce's Kanban board. Use this to check existing tasks before creating duplicates.",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	},
+}
+
 // virtualSignalTools are injected into every agent's tool list so that LLMs
 // which prefer function-calling over inline JSON can still trigger the
 // completion/halt/peer-consultation flows correctly.
@@ -98,6 +124,66 @@ func handleVirtualSignalTool(tc engine.ToolCallInfo, resp *engine.TaskResponse) 
 	resp.Content = "```json\n" + sig + "\n```"
 	resp.ToolCalls = nil
 	return true
+}
+
+// handlePlatformTool intercepts virtual platform tool calls (Kanban, etc.) before
+// they are dispatched to MCP. Returns the result string and true if handled.
+func (o *Orchestrator) handlePlatformTool(ctx context.Context, wfID uuid.UUID, agentName string, tc engine.ToolCallInfo) (string, bool) {
+	str := func(v any) string {
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return ""
+	}
+	intVal := func(v any, def int) int {
+		switch n := v.(type) {
+		case float64:
+			return int(n)
+		case int:
+			return n
+		}
+		return def
+	}
+
+	switch tc.Name {
+	case "kanban_create_task":
+		title := str(tc.Args["title"])
+		if title == "" {
+			return "Error: title is required", true
+		}
+		priority := intVal(tc.Args["priority"], 5)
+		desc := str(tc.Args["description"])
+		task, err := o.store.CreateKanbanTask(ctx, wfID, models.CreateKanbanTaskRequest{
+			Title:       title,
+			Description: desc,
+			Priority:    priority,
+			CreatedBy:   agentName,
+		})
+		if err != nil {
+			return fmt.Sprintf("Error creating task: %s", err.Error()), true
+		}
+		return fmt.Sprintf(`{"ok":true,"task_id":%q,"title":%q,"status":"open"}`, task.ID.String(), task.Title), true
+
+	case "kanban_list_tasks":
+		tasks, err := o.store.ListKanbanTasks(ctx, wfID)
+		if err != nil {
+			return fmt.Sprintf("Error listing tasks: %s", err.Error()), true
+		}
+		if len(tasks) == 0 {
+			return `{"tasks":[],"count":0}`, true
+		}
+		out := fmt.Sprintf(`{"count":%d,"tasks":[`, len(tasks))
+		for i, t := range tasks {
+			if i > 0 {
+				out += ","
+			}
+			out += fmt.Sprintf(`{"id":%q,"title":%q,"status":%q,"priority":%d}`,
+				t.ID.String(), t.Title, t.Status, t.Priority)
+		}
+		out += `]}`
+		return out, true
+	}
+	return "", false
 }
 
 // completionSignal is the structured JSON that agents return to signal their state.
@@ -1036,6 +1122,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		"- **Shell**: `run_command` — git, npm, python, curl, bash. Clone repos to `%s`, run tests, compile, deploy.\n"+
 		"- **Filesystem**: read/write files in your workspace or read `/opt/AitherOS` (AitherOS source, read-only).\n"+
 		"- **Secrets**: call `list_secrets()` before any authenticated request to see what credentials exist.\n"+
+		"- **Kanban board**: `kanban_list_tasks()` — see all tasks on this workforce's board. `kanban_create_task(title, description, priority)` — add a new task (status will be 'open'). Use these to populate or inspect the team's task board.\n"+
 		"- **GitHub rate-limit errors**: automatically retried after 62s — do NOT signal `needs_help` for these.\n"+
 		"- You can make as many tool calls as needed — there is NO limit. Keep going until the subtask is done.\n"+
 		"- If a tool fails or returns partial results, try a different approach or parameters.\n"+
@@ -1073,8 +1160,9 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	if o.mcpManager != nil {
 		toolDefs = o.mcpManager.ResolveAgentToolDefs(ctx, p.wf.ID, agent.ID)
 	}
-	// Append virtual signal tools so LLMs that prefer function-calling over
-	// inline JSON can still trigger the completion/halt/peer flows correctly.
+	// Append virtual platform tools (Kanban, etc.) and signal tools so LLMs
+	// that prefer function-calling can use both without going through MCP.
+	toolDefs = append(toolDefs, virtualPlatformTools...)
 	toolDefs = append(toolDefs, virtualSignalTools...)
 
 	resp, err := eng.Submit(ctx, engine.TaskRequest{
@@ -1119,7 +1207,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		{Role: "user", Content: taskMsg},
 	}
 
-	for toolRound := 0; toolRound < maxToolRounds && len(resp.ToolCalls) > 0 && p.mcpSession != nil; toolRound++ {
+	for toolRound := 0; toolRound < maxToolRounds && len(resp.ToolCalls) > 0; toolRound++ {
 		signalled := false
 		for i, tc := range resp.ToolCalls {
 			// Intercept virtual signal tools before dispatching to MCP.
@@ -1131,10 +1219,23 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				break
 			}
 
+			// Intercept virtual platform tools (Kanban, etc.) before dispatching to MCP.
+			if platformResult, handled := o.handlePlatformTool(ctx, p.wf.ID, agent.Name, tc); handled {
+				resp.ToolCalls[i].Result = platformResult
+				o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
+					fmt.Sprintf("%s called platform tool: %s", agent.Name, tc.Name),
+					map[string]any{"tool": tc.Name, "args": tc.Args, "result": platformResult}))
+				continue
+			}
+
 			o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
 				fmt.Sprintf("%s is calling tool: %s (round %d)", agent.Name, tc.Name, toolRound+1),
 				map[string]any{"tool": tc.Name, "args": tc.Args, "round": toolRound + 1}))
 
+			if p.mcpSession == nil {
+				resp.ToolCalls[i].Result = fmt.Sprintf("Error: tool %q requires MCP — no MCP server is connected to this agent", tc.Name)
+				continue
+			}
 			result, toolErr := p.mcpSession.ExecuteToolCall(ctx, p.wf.ID, tc.Name, tc.Args)
 			// Retry once on rate-limit errors (GitHub secondary rate limit needs ~60s)
 			if toolErr != nil && isRateLimitError(toolErr) {
