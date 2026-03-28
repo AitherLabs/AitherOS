@@ -68,11 +68,14 @@ const PROVIDER_DEFAULTS: Record<string, { base_url: string; placeholder: string 
 };
 
 const MODEL_TYPES = [
-  { value: 'llm', label: 'LLM' },
+  { value: 'llm',       label: 'LLM' },
   { value: 'embedding', label: 'Embedding' },
-  { value: 'rerank', label: 'Rerank' },
-  { value: 'tts', label: 'TTS' },
-  { value: 'stt', label: 'STT' }
+  { value: 'rerank',    label: 'Rerank' },
+  { value: 'tts',       label: 'TTS (Text-to-Speech)' },
+  { value: 'stt',       label: 'STT (Speech-to-Text)' },
+  { value: 'image',     label: 'Image Generation' },
+  { value: 'video',     label: 'Video Generation' },
+  { value: 'audio',     label: 'Audio Generation' },
 ];
 
 export default function ProvidersPage() {
