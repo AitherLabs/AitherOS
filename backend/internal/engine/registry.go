@@ -45,15 +45,32 @@ func (r *ProviderRegistry) GetConnector(name string) (Connector, bool) {
 
 // ResolveForAgent returns the Connector + resolved model name for a given agent.
 // Priority: agent.ProviderID → agent.EngineType → default provider.
+// If the agent's model is registered as type "image" in its provider, an
+// imageConnector is returned instead of the standard OpenAI-compat connector.
 func (r *ProviderRegistry) ResolveForAgent(ctx context.Context, agent *models.Agent) (Connector, string, error) {
-	// If agent has a provider_id, use it to build an OpenAI-compatible connector
+	// If agent has a provider_id, use it to build a connector
 	if agent.ProviderID != nil {
 		provider, err := r.store.GetProvider(ctx, *agent.ProviderID)
 		if err != nil {
 			return nil, "", fmt.Errorf("resolve provider %s: %w", agent.ProviderID, err)
 		}
-		conn := r.buildOpenAICompatConnector(provider)
 		modelName := agent.Model
+
+		// Check if the agent's model is registered as an image (or video/audio) type.
+		// If so, route through the image connector instead of chat completions.
+		for _, m := range provider.Models {
+			if m.ModelName == modelName && m.IsEnabled &&
+				(m.ModelType == models.ModelTypeImage || m.ModelType == models.ModelTypeVideo || m.ModelType == models.ModelTypeAudio) {
+				baseURL := provider.BaseURL
+				if baseURL == "" {
+					baseURL = defaultBaseURL(provider.ProviderType)
+				}
+				conn := newImageConnector(string(provider.ProviderType), baseURL, provider.APIKey, modelName)
+				return conn, modelName, nil
+			}
+		}
+
+		conn := r.buildOpenAICompatConnector(provider)
 		return conn, modelName, nil
 	}
 
