@@ -638,6 +638,7 @@ export interface ExecutionSubtask {
   depends_on: string[];
   status: 'pending' | 'running' | 'done' | 'blocked' | 'needs_help';
   output: string;
+  error_msg?: string;
 }
 
 export interface Execution {

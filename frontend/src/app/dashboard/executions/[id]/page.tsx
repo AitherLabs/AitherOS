@@ -13,6 +13,7 @@ import {
   IconCheck,
   IconChevronDown,
   IconChevronRight,
+  IconDownload,
   IconHandStop,
   IconKey,
   IconLoader2,
@@ -1167,6 +1168,105 @@ function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle 
 });
 AgentThread.displayName = 'AgentThread';
 
+/* ── Markdown export ── */
+function buildMarkdown(
+  execution: import('@/lib/api').Execution,
+  workforce: import('@/lib/api').Workforce | null,
+  agents: import('@/lib/api').Agent[],
+  messages: import('@/lib/api').Message[],
+): string {
+  const lines: string[] = [];
+  const ts = (d: string) => new Date(d).toLocaleString();
+
+  lines.push(`# ${execution.title || execution.objective}`);
+  lines.push('');
+  lines.push(`**Workforce:** ${workforce?.name || execution.workforce_id}`);
+  lines.push(`**Status:** ${execution.status}`);
+  lines.push(`**Created:** ${ts(execution.created_at)}`);
+  if (execution.started_at) lines.push(`**Started:** ${ts(execution.started_at)}`);
+  if (execution.ended_at)   lines.push(`**Ended:** ${ts(execution.ended_at)}`);
+  if (execution.elapsed_s)  lines.push(`**Duration:** ${execution.elapsed_s}s`);
+  if (execution.tokens_used) lines.push(`**Tokens used:** ${execution.tokens_used.toLocaleString()}`);
+  if (agents.length) lines.push(`**Agents:** ${agents.map(a => a.name).join(', ')}`);
+  lines.push('');
+
+  lines.push('## Objective');
+  lines.push('');
+  lines.push(execution.objective);
+  lines.push('');
+
+  if (execution.strategy) {
+    lines.push('## Strategy');
+    lines.push('');
+    lines.push(execution.strategy);
+    lines.push('');
+  }
+
+  if ((execution.plan || []).length > 0) {
+    lines.push('## Execution Plan');
+    lines.push('');
+    for (const s of execution.plan) {
+      const statusIcon = s.status === 'done' ? '✅' : s.status === 'blocked' ? '🚫' : s.status === 'running' ? '⚡' : '⏳';
+      lines.push(`### ${statusIcon} [${s.id}] ${s.agent_name}`);
+      lines.push('');
+      lines.push(s.subtask);
+      if (s.depends_on?.length) lines.push(`*Depends on: ${s.depends_on.join(', ')}*`);
+      if (s.output) {
+        lines.push('');
+        lines.push('**Output:**');
+        lines.push('');
+        lines.push(s.output);
+      }
+      if (s.error_msg) {
+        lines.push('');
+        lines.push(`**Error:** ${s.error_msg}`);
+      }
+      lines.push('');
+    }
+  }
+
+  if (execution.result) {
+    lines.push('## Final Result');
+    lines.push('');
+    lines.push(execution.result);
+    lines.push('');
+  }
+
+  if (execution.error_message) {
+    lines.push('## Error');
+    lines.push('');
+    lines.push(execution.error_message);
+    lines.push('');
+  }
+
+  const assistantMsgs = messages.filter(m => m.role === 'assistant' && m.phase === 'execution');
+  if (assistantMsgs.length > 0) {
+    lines.push('## Agent Messages');
+    lines.push('');
+    for (const m of assistantMsgs) {
+      lines.push(`### ${m.agent_name} (iter ${m.iteration})`);
+      lines.push('');
+      lines.push(m.content);
+      lines.push('');
+    }
+  }
+
+  lines.push('---');
+  lines.push(`*Exported from AitherOS · ${new Date().toLocaleString()}*`);
+
+  return lines.join('\n');
+}
+
+function downloadMarkdown(content: string, filename: string) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function ExecutionDetailPage() {
   const { data: session } = useSession();
   const params = useParams();
@@ -1819,6 +1919,19 @@ export default function ExecutionDetailPage() {
               Re-run
             </Button>
           )}
+          <Button
+            variant='outline' size='sm'
+            className='border-border/40 text-muted-foreground hover:text-foreground hover:bg-muted/20'
+            title='Export as Markdown'
+            onClick={() => {
+              const md = buildMarkdown(execution, workforce, orderedAgents, messages);
+              const slug = (execution.title || execution.objective).slice(0, 40).replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+              downloadMarkdown(md, `execution-${slug}-${execution.id.slice(0, 8)}.md`);
+            }}
+          >
+            <IconDownload className='mr-1 h-3.5 w-3.5' />
+            Export .md
+          </Button>
           {!isRunning && execution.status !== 'planning' && (
             <Button
               variant='ghost' size='icon'
