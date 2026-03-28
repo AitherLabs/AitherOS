@@ -184,7 +184,12 @@ func (s *Store) GetPendingApprovalForExecution(ctx context.Context, executionID 
 
 func (s *Store) CountPendingApprovals(ctx context.Context, workforceID uuid.UUID) (int, error) {
 	var count int
-	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM approvals WHERE workforce_id = $1 AND status = 'pending'`, workforceID).Scan(&count)
+	err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM approvals a
+		WHERE a.workforce_id = $1 AND a.status = 'pending'
+		AND (a.execution_id IS NULL OR EXISTS (
+			SELECT 1 FROM executions e WHERE e.id = a.execution_id AND e.status = 'awaiting_approval'
+		))`, workforceID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("count pending approvals: %w", err)
 	}

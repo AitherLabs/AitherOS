@@ -10,8 +10,11 @@ import {
   IconCheck,
   IconClock,
   IconPlayerPlay,
+  IconPlus,
   IconServer,
+  IconShieldCheck,
   IconX,
+  IconAlertTriangle,
 } from '@tabler/icons-react';
 import api, { ActivityEvent, Agent, Workforce, Execution, Provider } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
@@ -54,22 +57,21 @@ function greeting(name: string): string {
 }
 
 const execStatusCfg: Record<string, { color: string; label: string; pulse?: boolean }> = {
-  running:           { color: P.purple, label: 'Running',          pulse: true },
-  planning:          { color: P.cyan,   label: 'Planning',         pulse: true },
+  running:           { color: P.purple, label: 'Running',        pulse: true },
+  planning:          { color: P.cyan,   label: 'Planning',       pulse: true },
   completed:         { color: P.green,  label: 'Completed' },
   failed:            { color: P.red,    label: 'Failed' },
   halted:            { color: P.amber,  label: 'Halted' },
-  awaiting_approval: { color: P.amber,  label: 'Needs approval',   pulse: true },
-  pending_approval:  { color: P.amber,  label: 'Needs approval',   pulse: true },
+  awaiting_approval: { color: P.amber,  label: 'Needs approval', pulse: true },
+  pending_approval:  { color: P.amber,  label: 'Needs approval', pulse: true },
 };
-
 
 interface ExecWithMeta extends Execution {
   workforce_name?: string;
   workforce_agents?: Agent[];
 }
 
-/* ─── Ambient pulse ring around agent avatar ─── */
+/* ─── Ambient pulse ring ─── */
 function AgentPresence({ color, active }: { color: string; active: boolean }) {
   if (!active) return null;
   return (
@@ -83,206 +85,194 @@ function AgentPresence({ color, active }: { color: string; active: boolean }) {
   );
 }
 
-/* ─── Single agent "desk card" ─── */
-function AgentDeskCard({ agent, busyExec }: { agent: Agent; busyExec?: ExecWithMeta }) {
-  const router = useRouter();
-  const isWorking = !!busyExec;
-  const statusColor = isWorking ? P.purple : agent.status === 'active' ? P.green : P.muted;
-
+/* ─── Agent chip (compact for inside workforce card) ─── */
+function AgentChip({ agent, busy }: { agent: Agent; busy: boolean }) {
+  const color = busy ? P.purple : agent.status === 'active' ? P.green : P.muted;
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      whileHover={{ y: -2, transition: { duration: 0.15 } }}
-      onClick={() => router.push(`/dashboard/agents/${agent.id}`)}
-      className='relative flex cursor-pointer flex-col items-center gap-2 rounded-xl border p-3 transition-colors'
-      style={{
-        borderColor: isWorking ? `${P.purple}40` : 'rgba(255,255,255,0.06)',
-        background:  isWorking
-          ? `linear-gradient(135deg, ${P.purple}0A 0%, transparent 100%)`
-          : 'rgba(255,255,255,0.02)',
-      }}
-    >
+    <div className='relative flex flex-col items-center gap-1'>
       <div className='relative'>
-        <AgentPresence color={statusColor} active={isWorking} />
-        <EntityAvatar icon={agent.icon} color={agent.color} avatarUrl={agent.avatar_url} name={agent.name} size='md' />
-        {/* status dot */}
+        <AgentPresence color={color} active={busy} />
+        <EntityAvatar icon={agent.icon} color={agent.color} avatarUrl={agent.avatar_url} name={agent.name} size='sm' />
         <span
-          className='absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background'
-          style={{
-            backgroundColor: statusColor,
-            boxShadow: isWorking ? `0 0 6px ${statusColor}` : undefined,
-          }}
+          className='absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background'
+          style={{ backgroundColor: color, boxShadow: busy ? `0 0 5px ${color}` : undefined }}
         />
       </div>
-      <div className='w-full text-center'>
-        <p className='truncate text-[11px] font-semibold text-foreground/90'>{agent.name}</p>
-        <p className='truncate text-[9px] text-muted-foreground/50'>
-          {isWorking ? (
-            <span style={{ color: P.purple }}>⚡ working</span>
-          ) : agent.status === 'active' ? (
-            <span style={{ color: P.green }}>ready</span>
-          ) : (
-            'idle'
-          )}
-        </p>
-      </div>
-      {isWorking && busyExec && (
-        <p className='w-full truncate text-center text-[9px] text-muted-foreground/40 leading-tight'>
-          {busyExec.title || busyExec.objective}
-        </p>
-      )}
-    </motion.div>
+      <span className='text-[9px] font-medium leading-none text-muted-foreground/50 max-w-[48px] truncate text-center'>
+        {agent.name.split(' ')[0]}
+      </span>
+    </div>
   );
 }
 
-/* ─── Active mission card ─── */
-function MissionCard({ exec, agents }: { exec: ExecWithMeta; agents: Agent[] }) {
+/* ─── Workforce room card ─── */
+function WorkforceRoomCard({
+  wf, agents, activeExec, needsActionExec, agentBusyMap,
+}: {
+  wf: Workforce;
+  agents: Agent[];
+  activeExec?: ExecWithMeta;
+  needsActionExec?: ExecWithMeta;
+  agentBusyMap: Record<string, ExecWithMeta>;
+}) {
   const router = useRouter();
-  const cfg = execStatusCfg[exec.status] || { color: P.muted, label: exec.status };
-  const isLive = cfg.pulse;
-  const completedSteps = (exec.plan || []).filter(s => s.status === 'done').length;
-  const totalSteps = (exec.plan || []).length;
+  const highlightExec = activeExec || needsActionExec;
+  const cfg = highlightExec ? (execStatusCfg[highlightExec.status] || { color: P.muted, label: highlightExec.status }) : null;
+  const isLive = cfg?.pulse;
+  const wfAgentIds = wf.agent_ids || [];
+  const wfAgents = wfAgentIds.map(id => agents.find(a => a.id === id)).filter(Boolean) as Agent[];
+  const completedSteps = (highlightExec?.plan || []).filter(s => s.status === 'done').length;
+  const totalSteps = (highlightExec?.plan || []).length;
   const progress = totalSteps > 0 ? completedSteps / totalSteps : 0;
 
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, x: -12 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 12 }}
-      onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
-      className='group relative cursor-pointer overflow-hidden rounded-xl border transition-all hover:border-opacity-60'
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -2, transition: { duration: 0.15 } }}
+      className='group relative flex flex-col rounded-2xl border cursor-pointer overflow-hidden transition-all'
       style={{
-        borderColor: `${cfg.color}30`,
-        background: `linear-gradient(135deg, ${cfg.color}08 0%, transparent 60%)`,
-        borderLeftWidth: 2,
-        borderLeftColor: cfg.color,
+        borderColor: isLive ? `${cfg!.color}35` : 'rgba(255,255,255,0.07)',
+        background: isLive
+          ? `linear-gradient(135deg, ${cfg!.color}0A 0%, rgba(255,255,255,0.01) 100%)`
+          : 'rgba(255,255,255,0.02)',
       }}
+      onClick={() => router.push(`/dashboard/workforces/${wf.id}`)}
     >
       {/* live shimmer */}
       {isLive && (
         <div
           className='pointer-events-none absolute inset-0'
           style={{
-            background: `linear-gradient(90deg, transparent 0%, ${cfg.color}06 50%, transparent 100%)`,
-            animation: 'shimmer 2.5s ease-in-out infinite',
+            background: `linear-gradient(90deg, transparent 0%, ${cfg!.color}05 50%, transparent 100%)`,
+            animation: 'shimmer 3s ease-in-out infinite',
           }}
         />
       )}
 
-      <div className='relative p-3'>
+      <div className='relative p-4 flex flex-col gap-3 flex-1'>
+        {/* Header */}
         <div className='flex items-start justify-between gap-2'>
-          <div className='min-w-0 flex-1'>
-            <div className='flex items-center gap-1.5 mb-1'>
+          <div className='flex items-center gap-2.5 min-w-0'>
+            <div
+              className='flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-base'
+              style={{ background: `${P.purple}18`, border: `1px solid ${P.purple}30` }}
+            >
+              {wf.icon || '⚡'}
+            </div>
+            <div className='min-w-0'>
+              <p className='text-sm font-semibold text-foreground/90 truncate'>{wf.name}</p>
+              <p className='text-[10px] text-muted-foreground/40 truncate'>{wfAgents.length} agent{wfAgents.length !== 1 ? 's' : ''}</p>
+            </div>
+          </div>
+
+          {/* status badge */}
+          {cfg ? (
+            <div
+              className='flex items-center gap-1.5 rounded-full px-2 py-0.5 shrink-0'
+              style={{ background: `${cfg.color}15`, border: `1px solid ${cfg.color}30` }}
+            >
               {isLive && (
-                <span className='relative flex h-2 w-2 shrink-0'>
+                <span className='relative flex h-1.5 w-1.5 shrink-0'>
                   <span className='absolute inline-flex h-full w-full animate-ping rounded-full opacity-75' style={{ backgroundColor: cfg.color }} />
-                  <span className='relative inline-flex h-2 w-2 rounded-full' style={{ backgroundColor: cfg.color }} />
+                  <span className='relative inline-flex h-1.5 w-1.5 rounded-full' style={{ backgroundColor: cfg.color }} />
                 </span>
               )}
-              {exec.status === 'completed' && <IconCheck className='h-3.5 w-3.5 shrink-0' style={{ color: cfg.color }} />}
-              {exec.status === 'failed'    && <IconX     className='h-3.5 w-3.5 shrink-0' style={{ color: cfg.color }} />}
-              {exec.status === 'halted'    && <IconClock className='h-3.5 w-3.5 shrink-0' style={{ color: cfg.color }} />}
-              <span className='text-[10px] font-semibold uppercase tracking-wide' style={{ color: cfg.color }}>{cfg.label}</span>
-              <span className='ml-auto text-[9px] text-muted-foreground/40'>{timeAgo(exec.created_at)}</span>
+              <span className='text-[10px] font-semibold' style={{ color: cfg.color }}>{cfg.label}</span>
             </div>
-
-            <p className='text-xs font-medium text-foreground/90 line-clamp-1 leading-snug'>
-              {exec.title || exec.objective}
-            </p>
-
-            {exec.workforce_name && (
-              <p className='mt-0.5 text-[10px] text-muted-foreground/50'>
-                {exec.workforce_name}
-              </p>
-            )}
-          </div>
-
-          {/* Agent stack */}
-          <div className='flex shrink-0 -space-x-1.5'>
-            {(exec.workforce_agents || []).slice(0, 3).map(a => (
-              <EntityAvatar key={a.id} icon={a.icon} color={a.color} avatarUrl={a.avatar_url} name={a.name} size='xs' className='border-2 border-background' />
-            ))}
-          </div>
+          ) : (
+            <div
+              className='flex items-center gap-1.5 rounded-full px-2 py-0.5 shrink-0'
+              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+            >
+              <span className='h-1.5 w-1.5 rounded-full bg-muted-foreground/30' />
+              <span className='text-[10px] text-muted-foreground/40'>Idle</span>
+            </div>
+          )}
         </div>
 
-        {/* Progress bar for running executions with a plan */}
-        {totalSteps > 0 && isLive && (
-          <div className='mt-2.5'>
-            <div className='flex items-center justify-between mb-1'>
-              <span className='text-[9px] text-muted-foreground/40'>
-                {completedSteps}/{totalSteps} steps
-              </span>
-              <span className='text-[9px] text-muted-foreground/40'>
-                {Math.round(progress * 100)}%
-              </span>
-            </div>
-            <div className='h-1 w-full overflow-hidden rounded-full bg-white/5'>
-              <motion.div
-                className='h-full rounded-full'
-                style={{ backgroundColor: cfg.color }}
-                initial={{ width: 0 }}
-                animate={{ width: `${progress * 100}%` }}
-                transition={{ duration: 0.6, ease: 'easeOut' }}
-              />
-            </div>
+        {/* Active mission info */}
+        {highlightExec && (
+          <div className='rounded-lg px-2.5 py-2' style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <p className='text-[11px] font-medium text-foreground/70 line-clamp-2 leading-snug'>
+              {highlightExec.title || highlightExec.objective}
+            </p>
+            {totalSteps > 0 && isLive && (
+              <div className='mt-2'>
+                <div className='h-1 w-full overflow-hidden rounded-full bg-white/5'>
+                  <motion.div
+                    className='h-full rounded-full'
+                    style={{ backgroundColor: cfg!.color }}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${progress * 100}%` }}
+                    transition={{ duration: 0.6, ease: 'easeOut' }}
+                  />
+                </div>
+                <p className='mt-1 text-[9px] text-muted-foreground/30'>{completedSteps}/{totalSteps} steps</p>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Result preview */}
-        {exec.status === 'completed' && exec.result && (
-          <p className='mt-2 text-[10px] leading-relaxed text-muted-foreground/50 line-clamp-2'>
-            {exec.result.slice(0, 160)}
-          </p>
+        {/* Agent row */}
+        {wfAgents.length > 0 && (
+          <div className='flex items-center gap-2 flex-wrap'>
+            {wfAgents.slice(0, 6).map(agent => (
+              <AgentChip key={agent.id} agent={agent} busy={!!agentBusyMap[agent.id]} />
+            ))}
+            {wfAgents.length > 6 && (
+              <span className='text-[9px] text-muted-foreground/30'>+{wfAgents.length - 6}</span>
+            )}
+          </div>
         )}
       </div>
+
+      {/* Launch CTA — visible on hover when idle */}
+      {!highlightExec && (
+        <div
+          className='absolute bottom-0 left-0 right-0 flex items-center justify-center gap-1.5 py-2.5
+            opacity-0 group-hover:opacity-100 transition-opacity rounded-b-2xl'
+          style={{ background: `linear-gradient(to top, ${P.purple}18, transparent)` }}
+        >
+          <IconPlayerPlay className='h-3 w-3' style={{ color: P.purple }} />
+          <span className='text-[11px] font-medium' style={{ color: P.purple }}>Launch mission</span>
+        </div>
+      )}
     </motion.div>
   );
 }
 
-
-/* ─── Stat pill ─── */
-function StatPill({ value, label, color, href }: { value: number | string; label: string; color: string; href: string }) {
+/* ─── Needs-action execution card ─── */
+function ActionCard({ exec }: { exec: ExecWithMeta }) {
   const router = useRouter();
+  const isApproval = exec.status === 'awaiting_approval' || exec.status === 'pending_approval';
+  const color = isApproval ? P.amber : P.red;
+  const Icon = isApproval ? IconShieldCheck : IconAlertTriangle;
   return (
-    <button
-      onClick={() => router.push(href)}
-      className='flex flex-col items-center rounded-xl border px-4 py-3 transition-all hover:scale-[1.03] active:scale-[0.98]'
-      style={{
-        borderColor: `${color}25`,
-        background: `${color}08`,
-      }}
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 8 }}
+      onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
+      className='flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 transition-all hover:brightness-110'
+      style={{ borderColor: `${color}30`, background: `${color}08`, borderLeftWidth: 2, borderLeftColor: color }}
     >
-      <span className='text-2xl font-extrabold tabular-nums tracking-tight' style={{ color }}>
-        {value}
+      <Icon className='h-4 w-4 shrink-0' style={{ color }} />
+      <div className='min-w-0 flex-1'>
+        <p className='text-xs font-medium text-foreground/90 line-clamp-1'>
+          {exec.title || exec.objective}
+        </p>
+        <p className='text-[10px] text-muted-foreground/45 mt-0.5'>
+          {exec.workforce_name} · {timeAgo(exec.created_at)}
+        </p>
+      </div>
+      <span className='text-[10px] font-semibold shrink-0' style={{ color }}>
+        {isApproval ? 'Review plan' : 'Halted'}
       </span>
-      <span className='text-[10px] font-medium text-muted-foreground/60 mt-0.5 whitespace-nowrap'>
-        {label}
-      </span>
-    </button>
-  );
-}
-
-/* ─── Workspace pulse indicator ─── */
-function WorkspacePulse({ active }: { active: boolean }) {
-  return (
-    <div className='flex items-center gap-1.5'>
-      <span className='relative flex h-2 w-2'>
-        {active ? (
-          <>
-            <span className='absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-60' />
-            <span className='relative inline-flex h-2 w-2 rounded-full bg-green-400' />
-          </>
-        ) : (
-          <span className='relative inline-flex h-2 w-2 rounded-full bg-muted-foreground/30' />
-        )}
-      </span>
-      <span className='text-[11px] font-medium' style={{ color: active ? P.green : P.muted }}>
-        {active ? 'Workspace active' : 'Workspace idle'}
-      </span>
-    </div>
+      <IconArrowRight className='h-3.5 w-3.5 shrink-0 opacity-50' style={{ color }} />
+    </motion.div>
   );
 }
 
@@ -290,18 +280,17 @@ function WorkspacePulse({ active }: { active: boolean }) {
 export function OverviewStats() {
   const { data: session } = useSession();
   const router = useRouter();
-  const [loading, setLoading]                 = useState(true);
-  const [agents, setAgents]                   = useState<Agent[]>([]);
-  const [workforces, setWorkforces]           = useState<Workforce[]>([]);
-  const [executions, setExecutions]           = useState<ExecWithMeta[]>([]);
-  const [providers, setProviders]             = useState<Provider[]>([]);
-  const [totalTokens, setTotalTokens]         = useState(0);
+  const [loading, setLoading]                   = useState(true);
+  const [agents, setAgents]                     = useState<Agent[]>([]);
+  const [workforces, setWorkforces]             = useState<Workforce[]>([]);
+  const [executions, setExecutions]             = useState<ExecWithMeta[]>([]);
+  const [providers, setProviders]               = useState<Provider[]>([]);
+  const [totalTokens, setTotalTokens]           = useState(0);
   const [pendingApprovals, setPendingApprovals] = useState(0);
-  const [recentActivity, setRecentActivity]   = useState<ActivityEvent[]>([]);
-  const [clock, setClock]                     = useState(new Date());
+  const [recentActivity, setRecentActivity]     = useState<ActivityEvent[]>([]);
+  const [clock, setClock]                       = useState(new Date());
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Live clock
   useEffect(() => {
     tickRef.current = setInterval(() => setClock(new Date()), 30_000);
     return () => { if (tickRef.current) clearInterval(tickRef.current); };
@@ -354,22 +343,24 @@ export function OverviewStats() {
   const userName    = (session?.user as any)?.username || session?.user?.name || 'Operator';
   const agentsMap   = agents.reduce<Record<string, Agent>>((m, a) => { m[a.id] = a; return m; }, {});
   const activeExecs = executions.filter(e => ['running', 'planning'].includes(e.status));
-  const needsAction = executions.filter(e => ['awaiting_approval', 'pending_approval', 'halted'].includes(e.status));
-  const recentExecs = executions.slice(0, 8);
+  const needsAction = executions.filter(e => ['awaiting_approval', 'pending_approval'].includes(e.status));
   const isActive    = activeExecs.length > 0;
 
-  // Map agent → their current running execution
   const agentBusyMap: Record<string, ExecWithMeta> = {};
   for (const exec of activeExecs) {
     for (const s of exec.plan || []) {
-      if (s.status === 'running' && s.agent_id) {
-        agentBusyMap[s.agent_id] = exec;
-      }
+      if (s.status === 'running' && s.agent_id) agentBusyMap[s.agent_id] = exec;
     }
   }
 
+  const activeExecByWf  = activeExecs.reduce<Record<string, ExecWithMeta>>((m, e) => { m[e.workforce_id] = e; return m; }, {});
+  const actionExecByWf  = needsAction.reduce<Record<string, ExecWithMeta>>((m, e) => { m[e.workforce_id] = e; return m; }, {});
+
   const clockStr = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const dateStr  = clock.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  const dateStr  = clock.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+
+  const connectedProviders = providers.filter(p => p.is_enabled).length;
+  const recentExecs = executions.filter(e => ['completed','failed','halted'].includes(e.status)).slice(0, 6);
 
   return (
     <div className='flex flex-col gap-6'>
@@ -380,7 +371,7 @@ export function OverviewStats() {
         }
       `}</style>
 
-      {/* ── HEADER: Greeting + workspace status ── */}
+      {/* ── HEADER ── */}
       <div className='flex items-start justify-between gap-4 flex-wrap'>
         <div>
           <motion.h1
@@ -393,295 +384,229 @@ export function OverviewStats() {
           <motion.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ delay: 0.15 }}
+            transition={{ delay: 0.1 }}
             className='mt-0.5 text-sm text-muted-foreground'
           >
             {isActive
-              ? `${activeExecs.length} mission${activeExecs.length !== 1 ? 's' : ''} in progress · your team is working`
-              : 'Your AI team is standing by'}
+              ? `${activeExecs.length} mission${activeExecs.length !== 1 ? 's' : ''} running · ${agents.filter(a=>a.status==='active').length} agents online`
+              : 'Your office is standing by'}
           </motion.p>
         </div>
 
         <motion.div
           initial={{ opacity: 0, x: 12 }}
           animate={{ opacity: 1, x: 0 }}
-          transition={{ delay: 0.2 }}
-          className='flex flex-col items-end gap-1.5'
+          transition={{ delay: 0.15 }}
+          className='flex items-center gap-3'
         >
-          <WorkspacePulse active={isActive} />
+          {/* workspace pulse */}
+          <div className='flex items-center gap-1.5'>
+            <span className='relative flex h-2 w-2'>
+              {isActive ? (
+                <>
+                  <span className='absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-60' />
+                  <span className='relative inline-flex h-2 w-2 rounded-full bg-green-400' />
+                </>
+              ) : (
+                <span className='relative inline-flex h-2 w-2 rounded-full bg-muted-foreground/30' />
+              )}
+            </span>
+            <span className='text-[11px] font-medium hidden sm:block' style={{ color: isActive ? P.green : P.muted }}>
+              {isActive ? 'Office active' : 'Idle'}
+            </span>
+          </div>
+
           <div className='text-right'>
-            <p className='text-lg font-mono font-semibold tabular-nums tracking-tight text-foreground/80'>{clockStr}</p>
-            <p className='text-[10px] text-muted-foreground/50'>{dateStr}</p>
+            <p className='text-base font-mono font-semibold tabular-nums leading-none text-foreground/80'>{clockStr}</p>
+            <p className='text-[10px] text-muted-foreground/40'>{dateStr}</p>
           </div>
         </motion.div>
       </div>
 
-      {/* ── NEEDS ATTENTION banner ── */}
+      {/* ── NEEDS ATTENTION ── */}
       <AnimatePresence>
-        {pendingApprovals > 0 && (
+        {(pendingApprovals > 0 || needsAction.length > 0) && (
           <motion.div
-            initial={{ opacity: 0, y: -8, height: 0 }}
-            animate={{ opacity: 1, y: 0, height: 'auto' }}
-            exit={{ opacity: 0, y: -8, height: 0 }}
-            onClick={() => router.push('/dashboard/workforces')}
-            className='cursor-pointer rounded-xl border px-4 py-3 flex items-center gap-3'
-            style={{ borderColor: `${P.amber}40`, background: `${P.amber}08` }}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className='flex flex-col gap-2'
           >
-            <span className='relative flex h-2.5 w-2.5 shrink-0'>
-              <span className='absolute inline-flex h-full w-full animate-ping rounded-full opacity-75' style={{ backgroundColor: P.amber }} />
-              <span className='relative inline-flex h-2.5 w-2.5 rounded-full' style={{ backgroundColor: P.amber }} />
-            </span>
-            <p className='text-sm font-medium' style={{ color: P.amber }}>
-              {pendingApprovals} execution{pendingApprovals !== 1 ? 's' : ''} waiting for your approval
-            </p>
-            <IconArrowRight className='ml-auto h-4 w-4 shrink-0' style={{ color: P.amber }} />
+            <div className='flex items-center gap-2'>
+              <span className='relative flex h-2 w-2 shrink-0'>
+                <span className='absolute inline-flex h-full w-full animate-ping rounded-full opacity-75' style={{ backgroundColor: P.amber }} />
+                <span className='relative inline-flex h-2 w-2 rounded-full' style={{ backgroundColor: P.amber }} />
+              </span>
+              <h2 className='text-xs font-semibold uppercase tracking-wider' style={{ color: P.amber }}>
+                Needs your attention
+              </h2>
+            </div>
+            <AnimatePresence>
+              {needsAction.map(exec => <ActionCard key={exec.id} exec={exec} />)}
+            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ── STAT PILLS ── */}
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-        className='grid grid-cols-2 gap-3 sm:grid-cols-4'
-      >
-        <StatPill value={loading ? '—' : agents.length}     label='AI colleagues'      color={P.purple} href='/dashboard/agents' />
-        <StatPill value={loading ? '—' : workforces.length} label='workforces'          color={P.green}  href='/dashboard/workforces' />
-        <StatPill value={loading ? '—' : activeExecs.length}label='active missions'     color={P.cyan}   href='/dashboard/executions' />
-        <StatPill value={loading ? '—' : formatTokens(totalTokens)} label='tokens used' color={P.amber}  href='/dashboard/providers' />
-      </motion.div>
-
-      {/* ── MAIN GRID: missions (left) + team (right) ── */}
-      <div className='grid gap-6 lg:grid-cols-[1fr_260px]'>
-
-        {/* LEFT: Missions */}
-        <div className='flex flex-col gap-4 min-w-0'>
-
-          {/* Active missions */}
-          {(activeExecs.length > 0 || needsAction.length > 0) && (
-            <div>
-              <div className='mb-3 flex items-center gap-2'>
-                <span className='relative flex h-2 w-2'>
-                  <span className='absolute inline-flex h-full w-full animate-ping rounded-full bg-purple-400 opacity-60' />
-                  <span className='relative inline-flex h-2 w-2 rounded-full bg-purple-400' />
-                </span>
-                <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>Live</h2>
-              </div>
-              <div className='grid gap-2 sm:grid-cols-2'>
-                <AnimatePresence>
-                  {[...activeExecs, ...needsAction].map(exec => (
-                    <MissionCard key={exec.id} exec={exec} agents={agents} />
-                  ))}
-                </AnimatePresence>
-              </div>
-            </div>
-          )}
-
-          {/* Recent executions */}
-          <div>
-            <div className='mb-3 flex items-center justify-between'>
-              <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>
-                Recent missions
-              </h2>
-              <button
-                onClick={() => router.push('/dashboard/executions')}
-                className='flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-[#9A66FF] transition-colors'
-              >
-                All <IconArrowRight className='h-3 w-3' />
-              </button>
-            </div>
-
-            {loading ? (
-              <div className='space-y-2'>
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <div key={i} className='h-14 animate-pulse rounded-xl border border-border/30 bg-muted/20' style={{ opacity: 1 - i * 0.2 }} />
-                ))}
-              </div>
-            ) : recentExecs.length === 0 ? (
-              <div
-                className='flex flex-col items-center justify-center rounded-xl border border-dashed border-border/40 py-12 text-center'
-                style={{ background: `${P.purple}04` }}
-              >
-                <span className='text-3xl mb-3'>🚀</span>
-                <p className='text-sm font-medium text-foreground/60'>No missions yet</p>
-                <p className='text-xs text-muted-foreground/40 mt-1'>
-                  Head to a workforce and launch your first execution
-                </p>
-                <button
-                  onClick={() => router.push('/dashboard/workforces')}
-                  className='mt-4 flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all hover:scale-105'
-                  style={{ borderColor: `${P.purple}40`, color: P.purple, background: `${P.purple}10` }}
-                >
-                  <IconPlayerPlay className='h-3 w-3' />
-                  Go to workforces
-                </button>
-              </div>
-            ) : (
-              <div className='space-y-1.5'>
-                {recentExecs.map((exec, i) => {
-                  const cfg    = execStatusCfg[exec.status] || { color: P.muted, label: exec.status };
-                  const isLive = cfg.pulse;
-                  return (
-                    <motion.div
-                      key={exec.id}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.04 }}
-                      onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
-                      className='group flex cursor-pointer items-center gap-3 rounded-xl border border-border/30 px-3 py-2.5 transition-all hover:border-border/60 hover:bg-white/[0.02]'
-                      style={{ borderLeftWidth: 2, borderLeftColor: cfg.color + '80' }}
-                    >
-                      {/* Agents */}
-                      <div className='flex shrink-0 -space-x-1.5'>
-                        {(exec.workforce_agents || []).slice(0, 3).map(a => (
-                          <EntityAvatar key={a.id} icon={a.icon} color={a.color} avatarUrl={a.avatar_url} name={a.name} size='xs' className='border-2 border-background' />
-                        ))}
-                      </div>
-
-                      {/* Info */}
-                      <div className='min-w-0 flex-1'>
-                        <p className='text-xs font-medium line-clamp-1 text-foreground/90'>
-                          {exec.title || exec.objective}
-                        </p>
-                        <p className='text-[10px] text-muted-foreground/45 mt-0.5'>
-                          {exec.workforce_name}{exec.tokens_used > 0 ? ` · ${formatTokens(exec.tokens_used)} tokens` : ''}
-                        </p>
-                      </div>
-
-                      {/* Status + time */}
-                      <div className='flex shrink-0 flex-col items-end gap-0.5'>
-                        <div className='flex items-center gap-1'>
-                          {isLive && (
-                            <span className='h-1.5 w-1.5 rounded-full animate-pulse' style={{ backgroundColor: cfg.color }} />
-                          )}
-                          <span className='text-[10px] font-semibold' style={{ color: cfg.color }}>
-                            {cfg.label}
-                          </span>
-                        </div>
-                        <span className='text-[9px] text-muted-foreground/35'>
-                          {timeAgo(exec.created_at)}
-                        </span>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+      {/* ── OFFICE FLOOR: workforces ── */}
+      <div>
+        <div className='mb-3 flex items-center justify-between'>
+          <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>Your teams</h2>
+          <button
+            onClick={() => router.push('/dashboard/workforces')}
+            className='flex items-center gap-1 text-[11px] text-muted-foreground/50 hover:text-[#9A66FF] transition-colors'
+          >
+            Manage <IconArrowRight className='h-3 w-3' />
+          </button>
         </div>
 
-        {/* RIGHT: Team + Activity */}
+        {loading ? (
+          <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className='h-40 animate-pulse rounded-2xl border border-border/30 bg-muted/10' />
+            ))}
+          </div>
+        ) : workforces.length === 0 ? (
+          <div
+            className='flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/40 py-12 text-center'
+            style={{ background: `${P.purple}04` }}
+          >
+            <span className='text-3xl mb-3'>🏢</span>
+            <p className='text-sm font-medium text-foreground/60'>No teams yet</p>
+            <p className='text-xs text-muted-foreground/40 mt-1'>Create a workforce to staff your first team</p>
+            <button
+              onClick={() => router.push('/dashboard/workforces')}
+              className='mt-4 flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all hover:scale-105'
+              style={{ borderColor: `${P.purple}40`, color: P.purple, background: `${P.purple}10` }}
+            >
+              <IconPlus className='h-3 w-3' /> Create workforce
+            </button>
+          </div>
+        ) : (
+          <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
+            <AnimatePresence>
+              {workforces.map((wf, i) => (
+                <motion.div key={wf.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }}>
+                  <WorkforceRoomCard
+                    wf={wf}
+                    agents={agents}
+                    activeExec={activeExecByWf[wf.id]}
+                    needsActionExec={actionExecByWf[wf.id]}
+                    agentBusyMap={agentBusyMap}
+                  />
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        )}
+      </div>
+
+      {/* ── BOTTOM: recent missions + activity + infra ── */}
+      <div className='grid gap-6 lg:grid-cols-[1fr_280px]'>
+
+        {/* Recent completed missions */}
+        <div>
+          <div className='mb-3 flex items-center justify-between'>
+            <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>Recent missions</h2>
+            <button
+              onClick={() => router.push('/dashboard/executions')}
+              className='flex items-center gap-1 text-[11px] text-muted-foreground/50 hover:text-[#9A66FF] transition-colors'
+            >
+              All <IconArrowRight className='h-3 w-3' />
+            </button>
+          </div>
+
+          {loading ? (
+            <div className='space-y-1.5'>
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className='h-12 animate-pulse rounded-xl border border-border/30 bg-muted/10' style={{ opacity: 1 - i * 0.2 }} />
+              ))}
+            </div>
+          ) : recentExecs.length === 0 ? (
+            <div className='flex flex-col items-center justify-center rounded-xl border border-dashed border-border/40 py-10 text-center'
+              style={{ background: `${P.purple}04` }}>
+              <span className='text-2xl mb-2'>🚀</span>
+              <p className='text-xs text-muted-foreground/50'>No completed missions yet</p>
+            </div>
+          ) : (
+            <div className='space-y-1.5'>
+              {recentExecs.map((exec, i) => {
+                const cfg = execStatusCfg[exec.status] || { color: P.muted, label: exec.status };
+                return (
+                  <motion.div
+                    key={exec.id}
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.04 }}
+                    onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
+                    className='group flex cursor-pointer items-center gap-3 rounded-xl border border-border/30 px-3 py-2.5 transition-all hover:border-border/60 hover:bg-white/[0.02]'
+                    style={{ borderLeftWidth: 2, borderLeftColor: `${cfg.color}80` }}
+                  >
+                    <div className='flex shrink-0 -space-x-1.5'>
+                      {(exec.workforce_agents || []).slice(0, 3).map(a => (
+                        <EntityAvatar key={a.id} icon={a.icon} color={a.color} avatarUrl={a.avatar_url} name={a.name} size='xs' className='border-2 border-background' />
+                      ))}
+                    </div>
+                    <div className='min-w-0 flex-1'>
+                      <p className='text-xs font-medium line-clamp-1 text-foreground/90'>{exec.title || exec.objective}</p>
+                      <p className='text-[10px] text-muted-foreground/40 mt-0.5'>
+                        {exec.workforce_name}{exec.tokens_used > 0 ? ` · ${formatTokens(exec.tokens_used)} tok` : ''}
+                      </p>
+                    </div>
+                    <div className='flex shrink-0 flex-col items-end gap-0.5'>
+                      <div className='flex items-center gap-1'>
+                        {exec.status === 'completed' && <IconCheck className='h-3 w-3' style={{ color: cfg.color }} />}
+                        {exec.status === 'failed'    && <IconX     className='h-3 w-3' style={{ color: cfg.color }} />}
+                        {exec.status === 'halted'    && <IconClock className='h-3 w-3' style={{ color: cfg.color }} />}
+                        <span className='text-[10px] font-semibold' style={{ color: cfg.color }}>{cfg.label}</span>
+                      </div>
+                      <span className='text-[9px] text-muted-foreground/30'>{timeAgo(exec.created_at)}</span>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Right column: activity + infra */}
         <div className='flex flex-col gap-6 min-w-0'>
 
-          {/* Team / Agent presence */}
-          <div>
-            <div className='mb-3 flex items-center justify-between'>
-              <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>
-                Your team
-              </h2>
+          {/* Quick stats */}
+          <div className='grid grid-cols-2 gap-2'>
+            {[
+              { value: loading ? '—' : agents.filter(a=>a.status==='active').length, label: 'agents online', color: P.green, href: '/dashboard/agents' },
+              { value: loading ? '—' : activeExecs.length, label: 'running', color: P.purple, href: '/dashboard/executions' },
+              { value: loading ? '—' : formatTokens(totalTokens), label: 'tokens used', color: P.amber, href: '/dashboard/providers' },
+              { value: loading ? '—' : connectedProviders, label: 'providers', color: P.cyan, href: '/dashboard/providers' },
+            ].map(({ value, label, color, href }) => (
               <button
-                onClick={() => router.push('/dashboard/agents')}
-                className='flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-[#9A66FF] transition-colors'
+                key={label}
+                onClick={() => router.push(href)}
+                className='flex flex-col rounded-xl border px-3 py-2.5 transition-all hover:scale-[1.03]'
+                style={{ borderColor: `${color}20`, background: `${color}07` }}
               >
-                All <IconArrowRight className='h-3 w-3' />
+                <span className='text-xl font-extrabold tabular-nums' style={{ color }}>{value}</span>
+                <span className='text-[10px] text-muted-foreground/50 mt-0.5'>{label}</span>
               </button>
-            </div>
-
-            {loading ? (
-              <div className='grid grid-cols-3 gap-2'>
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className='h-24 animate-pulse rounded-xl border border-border/30 bg-muted/20' />
-                ))}
-              </div>
-            ) : agents.length === 0 ? (
-              <div
-                className='flex flex-col items-center justify-center rounded-xl border border-dashed border-border/40 py-8 text-center'
-                style={{ background: `${P.purple}04` }}
-              >
-                <p className='text-xs text-muted-foreground/50'>No agents yet.</p>
-                <button
-                  onClick={() => router.push('/dashboard/agents')}
-                  className='mt-2 text-xs text-[#9A66FF] hover:underline'
-                >
-                  Create your first agent →
-                </button>
-              </div>
-            ) : (
-              <div className='grid grid-cols-3 gap-1.5'>
-                {agents.slice(0, 9).map(agent => (
-                  <AgentDeskCard
-                    key={agent.id}
-                    agent={agent}
-                    busyExec={agentBusyMap[agent.id]}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Workforce summary */}
-            {workforces.length > 0 && (
-              <div className='mt-3 space-y-1'>
-                {workforces.slice(0, 3).map(wf => {
-                  const wfExec = activeExecs.find(e => e.workforce_id === wf.id);
-                  return (
-                    <button
-                      key={wf.id}
-                      onClick={() => router.push(`/dashboard/workforces/${wf.id}`)}
-                      className='group w-full flex items-center gap-2.5 rounded-lg border border-border/30 px-2.5 py-2 text-left transition-colors hover:border-border/60 hover:bg-white/[0.02]'
-                    >
-                      <div
-                        className='flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs'
-                        style={{ background: `${P.purple}18`, border: `1px solid ${P.purple}30` }}
-                      >
-                        {wf.icon || '⚡'}
-                      </div>
-                      <div className='min-w-0 flex-1'>
-                        <p className='truncate text-[11px] font-medium text-foreground/80'>{wf.name}</p>
-                        {wfExec && (
-                          <p className='truncate text-[9px] text-muted-foreground/45'>
-                            ⚡ {wfExec.title || wfExec.objective}
-                          </p>
-                        )}
-                      </div>
-                      {wfExec ? (
-                        <span className='h-1.5 w-1.5 rounded-full shrink-0 animate-pulse' style={{ backgroundColor: P.purple }} />
-                      ) : (
-                        <span className='h-1.5 w-1.5 rounded-full shrink-0 bg-muted-foreground/20' />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            ))}
           </div>
 
           {/* Activity feed */}
           {recentActivity.length > 0 && (
             <div>
-              <div className='mb-3 flex items-center justify-between'>
-                <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>
-                  Activity
-                </h2>
+              <div className='mb-2.5 flex items-center justify-between'>
+                <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>Activity</h2>
                 <button
                   onClick={() => router.push('/dashboard/activity')}
-                  className='flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-[#9A66FF] transition-colors'
+                  className='flex items-center gap-1 text-[11px] text-muted-foreground/50 hover:text-[#9A66FF] transition-colors'
                 >
                   All <IconArrowRight className='h-3 w-3' />
                 </button>
               </div>
-              <div
-                className='rounded-xl border border-border/30 px-3 divide-y divide-border/20'
-                style={{ background: 'rgba(255,255,255,0.01)' }}
-              >
-                {recentActivity.slice(0, 6).map((evt, i) => (
-                  <ActivityFeedItem
-                    key={evt.id}
-                    evt={evt}
-                    agentsMap={agentsMap}
-                    compact
-                    idx={i}
-                  />
+              <div className='rounded-xl border border-border/30 px-3 divide-y divide-border/20' style={{ background: 'rgba(255,255,255,0.01)' }}>
+                {recentActivity.slice(0, 5).map((evt, i) => (
+                  <ActivityFeedItem key={evt.id} evt={evt} agentsMap={agentsMap} compact idx={i} />
                 ))}
               </div>
             </div>
@@ -690,13 +615,11 @@ export function OverviewStats() {
           {/* Providers */}
           {providers.length > 0 && (
             <div>
-              <div className='mb-3 flex items-center justify-between'>
-                <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>
-                  Providers
-                </h2>
+              <div className='mb-2.5 flex items-center justify-between'>
+                <h2 className='text-xs font-semibold uppercase tracking-wider text-muted-foreground'>Infrastructure</h2>
                 <button
                   onClick={() => router.push('/dashboard/providers')}
-                  className='flex items-center gap-1 text-[11px] text-muted-foreground/60 hover:text-[#14FFF7] transition-colors'
+                  className='flex items-center gap-1 text-[11px] text-muted-foreground/50 hover:text-[#14FFF7] transition-colors'
                 >
                   All <IconArrowRight className='h-3 w-3' />
                 </button>
@@ -704,19 +627,14 @@ export function OverviewStats() {
               <div className='space-y-1'>
                 {providers.map(pv => (
                   <div key={pv.id} className='flex items-center gap-2.5 rounded-lg border border-border/30 px-2.5 py-2'>
-                    <div className='flex h-6 w-6 shrink-0 items-center justify-center rounded-md' style={{ background: `${P.cyan}14` }}>
+                    <div className='flex h-6 w-6 shrink-0 items-center justify-center rounded-md' style={{ background: `${P.cyan}12` }}>
                       <IconServer className='h-3.5 w-3.5' style={{ color: P.cyan }} />
                     </div>
                     <div className='min-w-0 flex-1'>
                       <p className='truncate text-[11px] font-medium text-foreground/80'>{pv.name}</p>
-                      <p className='text-[9px] text-muted-foreground/40'>
-                        {pv.provider_type} · {pv.models?.length || 0} model{(pv.models?.length || 0) !== 1 ? 's' : ''}
-                      </p>
+                      <p className='text-[9px] text-muted-foreground/35'>{pv.provider_type} · {pv.models?.length || 0} models</p>
                     </div>
-                    <span
-                      className='h-1.5 w-1.5 rounded-full shrink-0'
-                      style={{ backgroundColor: pv.is_enabled ? P.green : P.muted }}
-                    />
+                    <span className='h-1.5 w-1.5 rounded-full shrink-0' style={{ backgroundColor: pv.is_enabled ? P.green : P.muted }} />
                   </div>
                 ))}
               </div>

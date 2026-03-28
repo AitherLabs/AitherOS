@@ -297,7 +297,7 @@ export default function AppSidebar() {
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => signOut({ callbackUrl: '/auth/sign-in' })}
+                  onClick={() => signOut({ callbackUrl: `${window.location.origin}/auth/sign-in` })}
                 >
                   <IconLogout className='mr-2 h-4 w-4' />
                   Sign out
