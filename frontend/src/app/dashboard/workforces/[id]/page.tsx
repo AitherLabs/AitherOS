@@ -1376,14 +1376,32 @@ export default function WorkforceDetailPage() {
                   </span>
                 )}
               </h3>
-              <Button
-                size='sm'
-                variant='ghost'
-                className='text-xs'
-                onClick={() => setKbAddOpen(true)}
-              >
-                <IconPlus className='mr-1 h-3 w-3' /> Add Knowledge
-              </Button>
+              <div className='flex items-center gap-1'>
+                <Button
+                  size='sm'
+                  variant='ghost'
+                  className='text-xs'
+                  onClick={async () => {
+                    if (session?.accessToken) api.setToken(session.accessToken);
+                    const [kbRes, kbCountRes] = await Promise.all([
+                      api.listKnowledge(wfId),
+                      api.countKnowledge(wfId),
+                    ]);
+                    setKnowledgeEntries(kbRes.data || []);
+                    setKnowledgeCount(kbCountRes.data?.count || 0);
+                  }}
+                >
+                  <IconRefresh className='h-3 w-3' />
+                </Button>
+                <Button
+                  size='sm'
+                  variant='ghost'
+                  className='text-xs'
+                  onClick={() => setKbAddOpen(true)}
+                >
+                  <IconPlus className='mr-1 h-3 w-3' /> Add Knowledge
+                </Button>
+              </div>
             </div>
 
             {/* Search */}
@@ -1484,6 +1502,11 @@ export default function WorkforceDetailPage() {
                             }}>
                               {(entry.source_type || '').replace('_', ' ')}
                             </Badge>
+                            {!entry.embedding && (
+                              <Badge variant='outline' className='text-[9px]' style={{ backgroundColor: '#FFBF4710', borderColor: '#FFBF4730', color: '#FFBF47' }}>
+                                no embedding
+                              </Badge>
+                            )}
                           </div>
                           <p className='mt-1 text-[10px] text-muted-foreground line-clamp-2'>
                             {(entry.content || '').slice(0, 200)}

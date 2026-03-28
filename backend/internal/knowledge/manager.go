@@ -116,24 +116,26 @@ func (m *Manager) IngestAgentMessages(ctx context.Context, workforceID, executio
 
 // IngestManual embeds and stores user-provided knowledge.
 func (m *Manager) IngestManual(ctx context.Context, workforceID uuid.UUID, title, content string) (*models.KnowledgeEntry, error) {
-	if !m.embedder.Available() {
-		return nil, fmt.Errorf("embeddings are not available — check your EMBEDDING_MODEL configuration")
-	}
 	if content == "" {
 		return nil, fmt.Errorf("content is required")
 	}
 
-	textToEmbed := content
-	if title != "" {
-		textToEmbed = fmt.Sprintf("%s\n\n%s", title, content)
-	}
-	if len(textToEmbed) > 8000 {
-		textToEmbed = textToEmbed[:8000]
-	}
-
-	embedding, err := m.embedder.Embed(ctx, textToEmbed)
-	if err != nil {
-		return nil, fmt.Errorf("embed: %w", err)
+	// Embed if available; store without a vector if not (entry still appears in the
+	// list and can be embedded later — RAG search already filters to embedding IS NOT NULL).
+	var embedding []float32
+	if m.embedder.Available() {
+		textToEmbed := content
+		if title != "" {
+			textToEmbed = fmt.Sprintf("%s\n\n%s", title, content)
+		}
+		if len(textToEmbed) > 8000 {
+			textToEmbed = textToEmbed[:8000]
+		}
+		if emb, err := m.embedder.Embed(ctx, textToEmbed); err != nil {
+			log.Printf("knowledge: embed manual entry (non-fatal): %v", err)
+		} else {
+			embedding = emb
+		}
 	}
 
 	entry := &models.KnowledgeEntry{
@@ -199,18 +201,20 @@ func (m *Manager) IngestSingleMessage(ctx context.Context, workforceID, executio
 	if len(content) < 100 {
 		return // skip trivial messages
 	}
-	// Use a detached context — the execution context may cancel before the goroutine finishes.
 	_ = ctx
 	go func() {
 		bgCtx := context.Background()
-		textToEmbed := fmt.Sprintf("Agent: %s\n\n%s", agentName, content)
-		if len(textToEmbed) > 8000 {
-			textToEmbed = textToEmbed[:8000]
-		}
-		embedding, err := m.embedder.Embed(bgCtx, textToEmbed)
-		if err != nil {
-			log.Printf("knowledge: embed single message (%s iter=%d): %v", agentName, iteration, err)
-			return
+		var embedding []float32
+		if m.embedder.Available() {
+			textToEmbed := fmt.Sprintf("Agent: %s\n\n%s", agentName, content)
+			if len(textToEmbed) > 8000 {
+				textToEmbed = textToEmbed[:8000]
+			}
+			if emb, err := m.embedder.Embed(bgCtx, textToEmbed); err != nil {
+				log.Printf("knowledge: embed single message (%s iter=%d, non-fatal): %v", agentName, iteration, err)
+			} else {
+				embedding = emb
+			}
 		}
 		entry := &models.KnowledgeEntry{
 			ID:          uuid.New(),
