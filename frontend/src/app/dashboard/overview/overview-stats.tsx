@@ -15,6 +15,7 @@ import {
 } from '@tabler/icons-react';
 import api, { ActivityEvent, Agent, Workforce, Execution, Provider } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
+import { ActivityFeedItem } from '@/app/dashboard/activity/page';
 
 /* ─── Brand palette ─── */
 const P = {
@@ -62,14 +63,6 @@ const execStatusCfg: Record<string, { color: string; label: string; pulse?: bool
   pending_approval:  { color: P.amber,  label: 'Needs approval',   pulse: true },
 };
 
-const activityColor = (action: string) =>
-  action.includes('completed') ? P.green :
-  action.includes('failed')    ? P.red :
-  action.includes('approved')  ? P.green :
-  action.includes('rejected')  ? P.red :
-  action.includes('started')   ? P.purple :
-  action.includes('halted')    ? P.amber :
-  action.includes('created')   ? P.cyan : P.muted;
 
 interface ExecWithMeta extends Execution {
   workforce_name?: string;
@@ -249,40 +242,6 @@ function MissionCard({ exec, agents }: { exec: ExecWithMeta; agents: Agent[] }) 
   );
 }
 
-/* ─── Activity feed row ─── */
-function FeedRow({ evt, idx }: { evt: ActivityEvent; idx: number }) {
-  const color = activityColor(evt.action || '');
-  const actorIcon = evt.actor_type === 'user' ? '👤' : evt.actor_type === 'agent' ? '🤖' : '⚙️';
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: -8 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: idx * 0.04 }}
-      className='flex items-start gap-2.5 py-1.5'
-    >
-      <span className='shrink-0 text-[11px] mt-0.5'>{actorIcon}</span>
-      <div className='min-w-0 flex-1'>
-        <div className='flex items-baseline gap-1.5 flex-wrap'>
-          <span className='text-[11px] font-medium' style={{ color }}>
-            {evt.actor_name || evt.actor_type}
-          </span>
-          <span className='text-[10px] text-muted-foreground/60'>
-            {(evt.action || '').replace(/\./g, ' ')}
-          </span>
-          <span className='ml-auto text-[9px] text-muted-foreground/35 shrink-0'>
-            {timeAgo(evt.created_at)}
-          </span>
-        </div>
-        {evt.summary && (
-          <p className='text-[10px] text-muted-foreground/50 line-clamp-1 mt-0.5'>
-            {evt.summary}
-          </p>
-        )}
-      </div>
-    </motion.div>
-  );
-}
 
 /* ─── Stat pill ─── */
 function StatPill({ value, label, color, href }: { value: number | string; label: string; color: string; href: string }) {
@@ -393,6 +352,7 @@ export function OverviewStats() {
   useEffect(() => { loadAll(); }, [loadAll]);
 
   const userName    = (session?.user as any)?.username || session?.user?.name || 'Operator';
+  const agentsMap   = agents.reduce<Record<string, Agent>>((m, a) => { m[a.id] = a; return m; }, {});
   const activeExecs = executions.filter(e => ['running', 'planning'].includes(e.status));
   const needsAction = executions.filter(e => ['awaiting_approval', 'pending_approval', 'halted'].includes(e.status));
   const recentExecs = executions.slice(0, 8);
@@ -711,11 +671,17 @@ export function OverviewStats() {
                 </button>
               </div>
               <div
-                className='rounded-xl border border-border/30 px-3 py-2 divide-y divide-border/20'
+                className='rounded-xl border border-border/30 px-3 divide-y divide-border/20'
                 style={{ background: 'rgba(255,255,255,0.01)' }}
               >
-                {recentActivity.slice(0, 8).map((evt, i) => (
-                  <FeedRow key={evt.id} evt={evt} idx={i} />
+                {recentActivity.slice(0, 6).map((evt, i) => (
+                  <ActivityFeedItem
+                    key={evt.id}
+                    evt={evt}
+                    agentsMap={agentsMap}
+                    compact
+                    idx={i}
+                  />
                 ))}
               </div>
             </div>
