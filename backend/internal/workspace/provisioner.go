@@ -112,7 +112,7 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 			Transport:   "stdio",
 			Command:     aitherToolsCmd,
 			Args:        []string{aitherToolsBinary},
-			Icon:        "/assets/favicon.png",
+			Icon:        "⚙️",
 			EnvVars:     requiredEnv,
 		})
 		if err != nil {
