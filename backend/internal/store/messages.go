@@ -18,13 +18,27 @@ func (s *Store) CreateMessage(ctx context.Context, msg *models.Message) error {
 			tokens_input, tokens_output, model, provider_id, latency_ms, tool_calls, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		msg.ID, msg.ExecutionID, msg.AgentID, msg.AgentName, msg.Iteration, msg.Phase,
-		msg.Role, msg.Content, msg.TokensIn, msg.TokensOut,
+		msg.Role, sanitizeText(msg.Content), msg.TokensIn, msg.TokensOut,
 		msg.Model, msg.ProviderID, msg.LatencyMs, toolCallsJSON, msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
 	return nil
+}
+
+// sanitizeText strips characters that PostgreSQL TEXT columns reject:
+// null bytes (\u0000) and other C0/C1 control characters that cause
+// SQLSTATE 22P05 "unsupported Unicode escape sequence" errors.
+func sanitizeText(s string) string {
+	result := make([]rune, 0, len(s))
+	for _, r := range s {
+		if r == 0 {
+			continue // null byte — always rejected by Postgres TEXT
+		}
+		result = append(result, r)
+	}
+	return string(result)
 }
 
 func (s *Store) ListMessages(ctx context.Context, executionID uuid.UUID, limit, offset int) ([]*models.Message, int, error) {
