@@ -963,8 +963,19 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		ToolDefs:     toolDefs,
 	})
 	if err != nil {
+		cleanErr := cleanAPIError(err.Error())
 		o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
-			fmt.Sprintf("%s encountered an error: %s", agent.Name, err.Error()), nil))
+			fmt.Sprintf("%s encountered an error: %s", agent.Name, cleanErr), nil))
+		// Rate/quota errors are recoverable — surface as needs_help so the user can act
+		// (add credits, switch provider, wait for reset) rather than deadlocking the execution.
+		if isRateLimitError(err) {
+			return agentResult{
+				AgentID:         agentID,
+				AgentName:       agent.Name,
+				NeedsHelp:       true,
+				NeedsHelpReason: "LLM provider rate limit: " + cleanErr,
+			}
+		}
 		return agentResult{AgentID: agentID, AgentName: agent.Name, Err: err}
 	}
 
@@ -1699,6 +1710,8 @@ func buildDeadlockMessage(plan []models.ExecutionSubtask) string {
 			reason := st.ErrorMsg
 			if reason == "" {
 				reason = "unknown error (check execution events for details)"
+			} else {
+				reason = cleanAPIError(reason)
 			}
 			msg += fmt.Sprintf("  • [%s] %s — %s: %s\n", st.ID, st.AgentName, truncateStr(st.Subtask, 80), reason)
 		}
@@ -1729,7 +1742,29 @@ func buildDeadlockMessage(plan []models.ExecutionSubtask) string {
 	return msg
 }
 
-// isRateLimitError returns true if the error looks like a GitHub/API rate-limit response.
+// cleanAPIError extracts a human-readable message from raw provider error strings.
+// Many providers return verbose JSON (OpenRouter, OpenAI); this pulls out the
+// "message" field value if present, otherwise returns the first 200 chars.
+func cleanAPIError(raw string) string {
+	// Try to extract "message":"..." from JSON error bodies
+	if idx := strings.Index(raw, `"message":"`); idx >= 0 {
+		start := idx + len(`"message":"`)
+		end := strings.Index(raw[start:], `"`)
+		if end > 0 {
+			return raw[start : start+end]
+		}
+	}
+	// Fallback: first line, capped at 200 chars
+	if nl := strings.IndexByte(raw, '\n'); nl > 0 {
+		raw = raw[:nl]
+	}
+	if len(raw) > 200 {
+		return raw[:200] + "…"
+	}
+	return raw
+}
+
+// isRateLimitError returns true if the error looks like a provider rate-limit response.
 func isRateLimitError(err error) bool {
 	if err == nil {
 		return false
@@ -1737,6 +1772,8 @@ func isRateLimitError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "rate limit") ||
 		strings.Contains(msg, "secondary rate") ||
+		strings.Contains(msg, "free-models-per-day") ||
+		strings.Contains(msg, "per_day") ||
 		strings.Contains(msg, "429") ||
 		strings.Contains(msg, "x-ratelimit")
 }
