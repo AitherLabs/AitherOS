@@ -1887,6 +1887,10 @@ func (o *Orchestrator) evaluateKanbanTaskCompletion(ctx context.Context, task *m
 	}
 	var eng engine.Connector
 	for _, a := range wfAgents {
+		// Skip image/video/audio agents — QA needs a text LLM
+		if a.ModelType != "" && a.ModelType != string(models.ModelTypeLLM) {
+			continue
+		}
 		if e, _, err := o.resolveConnector(ctx, a); err == nil {
 			eng = e
 			break
