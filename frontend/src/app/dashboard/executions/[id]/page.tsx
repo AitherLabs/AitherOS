@@ -666,35 +666,33 @@ interface LiveEvent {
   isNew?: boolean;
 }
 
-function EventDetail({ ev, dot }: { ev: LiveEvent; dot: string }) {
+function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
   const d = ev.data;
-  if (!d) return null;
 
-  // Tool call: show args + result summary
+  // Tool call: show args (full, no truncation)
   if (ev.type === 'tool_call') {
-    const tool = d.tool as string | undefined;
-    const args = d.args as Record<string, any> | undefined;
-    const resultLen = d.result_length as number | undefined;
-    const round = d.round as number | undefined;
+    const tool = d?.tool as string | undefined;
+    const args = d?.args as Record<string, any> | undefined;
+    const resultLen = d?.result_length as number | undefined;
+    const round = d?.round as number | undefined;
     return (
-      <div className='mt-1.5 space-y-1'>
+      <div className='space-y-3'>
         {tool && (
-          <div className='flex items-center gap-1.5'>
-            <span className='text-[9px] font-semibold uppercase text-muted-foreground/50'>Tool</span>
-            <code className='rounded bg-muted/40 px-1.5 py-0.5 text-[10px] font-mono' style={{ color: dot }}>{tool}</code>
-            {round != null && <span className='text-[9px] text-muted-foreground/35'>round {round}</span>}
-            {resultLen != null && <span className='ml-auto text-[9px] text-muted-foreground/35'>{resultLen} chars returned</span>}
+          <div className='flex items-center gap-2 flex-wrap'>
+            <code className='rounded bg-muted/40 px-2 py-1 text-xs font-mono' style={{ color: dot }}>{tool}</code>
+            {round != null && <span className='text-xs text-muted-foreground/50'>round {round}</span>}
+            {resultLen != null && <span className='ml-auto text-xs text-muted-foreground/40'>{resultLen.toLocaleString()} chars returned</span>}
           </div>
         )}
         {args && Object.keys(args).length > 0 && (
-          <div className='rounded bg-muted/20 p-1.5'>
-            <span className='text-[9px] font-semibold uppercase text-muted-foreground/40'>Arguments</span>
+          <div className='rounded-lg bg-muted/20 p-3 space-y-2'>
+            <span className='text-[10px] font-semibold uppercase text-muted-foreground/50'>Arguments</span>
             {Object.entries(args).map(([k, v]) => (
-              <div key={k} className='mt-0.5 flex gap-1.5 text-[10px]'>
-                <span className='shrink-0 text-muted-foreground/50'>{k}:</span>
-                <span className='break-all font-mono text-[#EAEAEA]/70'>
-                  {typeof v === 'string' ? (v.length > 200 ? v.slice(0, 200) + '…' : v) : JSON.stringify(v)}
-                </span>
+              <div key={k} className='space-y-0.5'>
+                <span className='text-[10px] text-muted-foreground/50'>{k}</span>
+                <pre className='whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-[#EAEAEA]/80 bg-muted/20 rounded p-2'>
+                  {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
+                </pre>
               </div>
             ))}
           </div>
@@ -703,105 +701,127 @@ function EventDetail({ ev, dot }: { ev: LiveEvent; dot: string }) {
     );
   }
 
-  // Subtask started/done: show subtask description
+  // Subtask started/done
   if (ev.type === 'subtask_started' || ev.type === 'subtask_done') {
-    const subtask = d.subtask as string | undefined;
-    const tokens = d.tokens as number | undefined;
+    const subtask = d?.subtask as string | undefined;
+    const tokens = d?.tokens as number | undefined;
     return (
-      <div className='mt-1.5 space-y-1'>
-        {subtask && (
-          <p className='break-words text-[10px] leading-relaxed text-[#EAEAEA]/60'>{subtask}</p>
-        )}
-        {tokens != null && (
-          <span className='text-[9px] text-muted-foreground/40'>{tokens.toLocaleString()} tokens</span>
-        )}
+      <div className='space-y-2'>
+        {subtask && <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/80'>{subtask}</p>}
+        {tokens != null && <span className='text-xs text-muted-foreground/50'>{tokens.toLocaleString()} tokens used</span>}
       </div>
     );
   }
 
-  // Human required / needs_help: show reason prominently
+  // Human required
   if (ev.type === 'human_required') {
-    const reason = d.reason as string | undefined;
+    const reason = d?.reason as string | undefined;
     return reason ? (
-      <div className='mt-1.5 rounded border border-[#FFBF47]/20 bg-[#FFBF47]/5 p-1.5'>
-        <p className='break-words text-[10px] leading-relaxed text-[#FFBF47]/80'>{reason}</p>
+      <div className='rounded-lg border border-[#FFBF47]/20 bg-[#FFBF47]/5 p-3'>
+        <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#FFBF47]/80'>{reason}</p>
       </div>
     ) : null;
   }
 
-  // Agent error: show full error
+  // Agent error
   if (ev.type === 'agent_error') {
     return (
-      <div className='mt-1.5 rounded bg-red-500/5 p-1.5'>
-        <p className='break-words font-mono text-[10px] leading-relaxed text-red-400/70'>{ev.content}</p>
+      <div className='rounded-lg bg-red-500/5 p-3'>
+        <pre className='whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-red-400/80'>{ev.content}</pre>
       </div>
     );
   }
 
-  // Handoff: show from/to
+  // Handoff
   if (ev.type === 'agent_handoff') {
-    const from = d.from_agent as string | undefined;
-    const to = d.to_agent as string | undefined;
+    const from = d?.from_agent as string | undefined;
+    const to = d?.to_agent as string | undefined;
     if (from && to) {
       return (
-        <div className='mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground/50'>
-          <span>{from}</span>
-          <span>→</span>
-          <span style={{ color: dot }}>{to}</span>
+        <div className='flex items-center gap-2 text-sm text-muted-foreground/70'>
+          <span>{from}</span><span>→</span><span style={{ color: dot }}>{to}</span>
         </div>
       );
     }
   }
 
-  // Discussion turn: show peer/question
+  // Peer consultation
   if (ev.type === 'peer_consultation') {
-    const peer = d.peer as string | undefined;
-    const question = d.question as string | undefined;
+    const peer = d?.peer as string | undefined;
+    const question = d?.question as string | undefined;
     if (question) {
       return (
-        <div className='mt-1.5 space-y-0.5'>
-          {peer && <span className='text-[9px] font-semibold uppercase text-muted-foreground/40'>Asking {peer}</span>}
-          <p className='break-words text-[10px] leading-relaxed text-[#EAEAEA]/60'>{question}</p>
+        <div className='space-y-1.5'>
+          {peer && <span className='text-[10px] font-semibold uppercase text-muted-foreground/50'>Asking {peer}</span>}
+          <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/80'>{question}</p>
         </div>
       );
     }
   }
 
-  return null;
+  // Fallback: show full content
+  return ev.content ? (
+    <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/80'>{ev.content}</p>
+  ) : null;
 }
 
 function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: string }) {
   const [open, setOpen] = useState(false);
-  const hasDetail = !!ev.data && Object.keys(ev.data).length > 0;
+  const hasDetail = !!ev.data && Object.keys(ev.data).length > 0 || ev.content.length > 80;
   return (
-    <div
-      className={`flow-event-enter rounded-md border border-border/20 bg-background/30 ${hasDetail ? 'cursor-pointer' : ''}`}
-      style={{ borderLeftColor: dot + '60', borderLeftWidth: 2 }}
-      onClick={() => hasDetail && setOpen(v => !v)}
-    >
-      <div className='flex items-center gap-1.5 p-2'>
-        <span className='h-1.5 w-1.5 rounded-full shrink-0' style={{ backgroundColor: dot }} />
-        <span className='text-[10px] font-semibold truncate' style={{ color: dot }}>
-          {ev.agent_name ? `${ev.agent_name} · ` : ''}{label}
-        </span>
-        <span className='ml-auto shrink-0 text-[9px] text-muted-foreground/35'>
-          {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-        </span>
-        {hasDetail && (
-          <IconChevronRight className={`h-2.5 w-2.5 shrink-0 text-muted-foreground/30 transition-transform duration-150 ${open ? 'rotate-90' : ''}`} />
-        )}
-      </div>
-      {/* Summary line (always visible) */}
-      <p className={`px-2 pb-1.5 break-words text-[10px] leading-relaxed line-clamp-2 -mt-1 ${ev.type === 'agent_error' ? 'text-red-400/80' : 'text-muted-foreground/65'}`}>
-        {ev.content}
-      </p>
-      {/* Expanded detail */}
-      {open && hasDetail && (
-        <div className='border-t border-border/20 px-2 pb-2'>
-          <EventDetail ev={ev} dot={dot} />
+    <>
+      <div
+        className={`flow-event-enter rounded-md border border-border/20 bg-background/30 ${hasDetail ? 'cursor-pointer hover:bg-background/50 transition-colors' : ''}`}
+        style={{ borderLeftColor: dot + '60', borderLeftWidth: 2 }}
+        onClick={() => hasDetail && setOpen(true)}
+      >
+        <div className='flex items-center gap-1.5 p-2'>
+          <span className='h-1.5 w-1.5 rounded-full shrink-0' style={{ backgroundColor: dot }} />
+          <span className='text-[10px] font-semibold truncate' style={{ color: dot }}>
+            {ev.agent_name ? `${ev.agent_name} · ` : ''}{label}
+          </span>
+          <span className='ml-auto shrink-0 text-[9px] text-muted-foreground/35'>
+            {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+          {hasDetail && (
+            <IconArrowsMaximize className='h-2.5 w-2.5 shrink-0 text-muted-foreground/30' />
+          )}
         </div>
-      )}
-    </div>
+        {/* Summary line (always visible, 2-line clamp) */}
+        <p className={`px-2 pb-1.5 break-words text-[10px] leading-relaxed line-clamp-2 -mt-1 ${ev.type === 'agent_error' ? 'text-red-400/80' : 'text-muted-foreground/65'}`}>
+          {ev.content}
+        </p>
+      </div>
+
+      {/* Full detail dialog */}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className='max-w-2xl max-h-[80vh] flex flex-col'>
+          <DialogHeader>
+            <DialogTitle className='flex items-center gap-2 text-sm'>
+              <span className='h-2 w-2 rounded-full shrink-0' style={{ backgroundColor: dot }} />
+              <span style={{ color: dot }}>{ev.agent_name ? `${ev.agent_name} · ` : ''}{label}</span>
+              <span className='ml-auto text-[10px] font-normal text-muted-foreground/50'>
+                {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          <ScrollArea className='flex-1 min-h-0 pr-1'>
+            <div className='space-y-3 pb-2'>
+              {/* Full content text */}
+              {ev.content && (
+                <p className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${ev.type === 'agent_error' ? 'text-red-400/80' : 'text-[#EAEAEA]/80'}`}>
+                  {ev.content}
+                </p>
+              )}
+              {/* Structured detail */}
+              {ev.data && Object.keys(ev.data).length > 0 && (
+                <EventDetailBody ev={ev} dot={dot} />
+              )}
+            </div>
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -2062,15 +2082,38 @@ export default function ExecutionDetailPage() {
             </div>
 
             {/* Final result */}
-            {execution.status === 'completed' && execution.result && (
-              <div className='rounded-xl border border-[#56D090]/30 bg-[#56D090]/5 p-4'>
-                <div className='mb-2 flex items-center gap-2'>
-                  <span className='text-base'>✅</span>
-                  <span className='text-xs font-semibold uppercase tracking-wider text-[#56D090]'>Final Result</span>
+            {execution.status === 'completed' && execution.result && (() => {
+              let parsed: { status?: string; summary?: string; [k: string]: any } | null = null;
+              try { parsed = JSON.parse(execution.result); } catch {}
+              const summary = parsed?.summary ?? null;
+              const isCompletionSignal = parsed && typeof parsed === 'object' && ('status' in parsed || 'summary' in parsed);
+              return (
+                <div className='rounded-xl border border-[#56D090]/30 bg-[#56D090]/5 p-4 space-y-3'>
+                  <div className='flex items-center gap-2'>
+                    <span className='text-base'>✅</span>
+                    <span className='text-xs font-semibold uppercase tracking-wider text-[#56D090]'>Final Result</span>
+                  </div>
+                  {summary ? (
+                    <>
+                      <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/90'>{summary}</p>
+                      {/* Show other fields from completion signal beyond status/summary */}
+                      {isCompletionSignal && Object.entries(parsed!).filter(([k]) => k !== 'status' && k !== 'summary').length > 0 && (
+                        <div className='space-y-1.5 border-t border-[#56D090]/20 pt-3'>
+                          {Object.entries(parsed!).filter(([k]) => k !== 'status' && k !== 'summary').map(([k, v]) => (
+                            <div key={k}>
+                              <span className='text-[10px] font-semibold uppercase text-[#56D090]/60'>{k}</span>
+                              <p className='text-xs text-[#EAEAEA]/70 whitespace-pre-wrap'>{typeof v === 'string' ? v : JSON.stringify(v, null, 2)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/90'>{execution.result}</div>
+                  )}
                 </div>
-                <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/90'>{execution.result}</div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Error */}
             {execution.status === 'failed' && execution.error_message && (
