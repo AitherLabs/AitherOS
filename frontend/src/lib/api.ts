@@ -179,7 +179,7 @@ class ApiClient {
     });
   }
 
-  async updateKanbanTask(taskId: string, data: Partial<{ title: string; description: string; status: KanbanStatus; priority: number; assigned_to: string; execution_id: string; notes: string }>) {
+  async updateKanbanTask(taskId: string, data: Partial<{ title: string; description: string; status: KanbanStatus; priority: number; assigned_to: string; execution_id: string; notes: string; qa_status: KanbanQAStatus; qa_notes: string }>) {
     return this.request<KanbanTask>(`/api/v1/kanban/${taskId}`, {
       method: 'PATCH',
       body: JSON.stringify(data)
@@ -614,6 +614,7 @@ export interface Credential {
 }
 
 export type KanbanStatus = 'open' | 'todo' | 'in_progress' | 'blocked' | 'done';
+export type KanbanQAStatus = 'pending' | 'passed' | 'needs_review' | 'skipped';
 
 export interface KanbanTask {
   id: string;
@@ -627,6 +628,8 @@ export interface KanbanTask {
   execution_id?: string;
   notes: string;
   position: number;
+  qa_status: KanbanQAStatus;
+  qa_notes: string;
   created_at: string;
   updated_at: string;
 }

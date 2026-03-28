@@ -22,7 +22,7 @@ import {
   IconRobot,
   IconX,
 } from '@tabler/icons-react';
-import api, { Agent, KanbanStatus, KanbanTask, Workforce } from '@/lib/api';
+import api, { Agent, KanbanStatus, KanbanTask, KanbanQAStatus, Workforce } from '@/lib/api';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -440,6 +440,26 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                           </a>
                         )}
                       </div>
+
+                      {/* QA status badge (shown after execution completes) */}
+                      {task.qa_status && task.qa_status !== 'pending' && task.qa_status !== 'skipped' && (
+                        <div className='mb-1.5'>
+                          {task.qa_status === 'passed' ? (
+                            <span className='inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold'
+                              style={{ background: '#56D09020', color: '#56D090', border: '1px solid #56D09040' }}>
+                              ✓ QA passed
+                            </span>
+                          ) : (
+                            <span
+                              className='inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold cursor-help'
+                              style={{ background: '#FFBF4720', color: '#FFBF47', border: '1px solid #FFBF4740' }}
+                              title={task.qa_notes}
+                            >
+                              ⚠ QA review needed
+                            </span>
+                          )}
+                        </div>
+                      )}
 
                       {/* Last note (timestamped trail) */}
                       {lastNote && (

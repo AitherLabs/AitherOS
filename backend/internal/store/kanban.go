@@ -13,7 +13,8 @@ import (
 func (s *Store) ListKanbanTasks(ctx context.Context, workforceID uuid.UUID) ([]*models.KanbanTask, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, workforce_id, title, description, status, priority,
-		       assigned_to, created_by, execution_id, notes, position, created_at, updated_at
+		       assigned_to, created_by, execution_id, notes, position,
+		       qa_status, qa_notes, created_at, updated_at
 		FROM kanban_tasks
 		WHERE workforce_id = $1
 		ORDER BY position ASC, created_at ASC`, workforceID)
@@ -28,13 +29,39 @@ func (s *Store) ListKanbanTasks(ctx context.Context, workforceID uuid.UUID) ([]*
 		if err := rows.Scan(
 			&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
 			&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
-			&t.CreatedAt, &t.UpdatedAt,
+			&t.QAStatus, &t.QANotes, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan kanban task: %w", err)
 		}
 		tasks = append(tasks, t)
 	}
 	return tasks, nil
+}
+
+// GetNextTodoKanbanTask returns the highest-priority todo task for a workforce,
+// ordered by priority DESC then position ASC. Returns nil if none exists.
+func (s *Store) GetNextTodoKanbanTask(ctx context.Context, workforceID uuid.UUID) (*models.KanbanTask, error) {
+	t := &models.KanbanTask{}
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, workforce_id, title, description, status, priority,
+		       assigned_to, created_by, execution_id, notes, position,
+		       qa_status, qa_notes, created_at, updated_at
+		FROM kanban_tasks
+		WHERE workforce_id = $1 AND status = 'todo'
+		ORDER BY priority DESC, position ASC, created_at ASC
+		LIMIT 1`, workforceID,
+	).Scan(
+		&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
+		&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
+		&t.QAStatus, &t.QANotes, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get next todo task: %w", err)
+	}
+	return t, nil
 }
 
 func (s *Store) CreateKanbanTask(ctx context.Context, workforceID uuid.UUID, req models.CreateKanbanTaskRequest) (*models.KanbanTask, error) {
@@ -46,6 +73,7 @@ func (s *Store) CreateKanbanTask(ctx context.Context, workforceID uuid.UUID, req
 		Status:      models.KanbanStatusOpen,
 		Priority:    req.Priority,
 		CreatedBy:   req.CreatedBy,
+		QAStatus:    models.KanbanQAStatusPending,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
@@ -65,10 +93,10 @@ func (s *Store) CreateKanbanTask(ctx context.Context, workforceID uuid.UUID, req
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO kanban_tasks
-		  (id, workforce_id, title, description, status, priority, assigned_to, created_by, notes, position, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		  (id, workforce_id, title, description, status, priority, assigned_to, created_by, notes, position, qa_status, qa_notes, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		t.ID, t.WorkforceID, t.Title, t.Description, t.Status, t.Priority,
-		t.AssignedTo, t.CreatedBy, t.Notes, t.Position, t.CreatedAt, t.UpdatedAt,
+		t.AssignedTo, t.CreatedBy, t.Notes, t.Position, t.QAStatus, t.QANotes, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert kanban task: %w", err)
@@ -80,12 +108,13 @@ func (s *Store) GetKanbanTask(ctx context.Context, id uuid.UUID) (*models.Kanban
 	t := &models.KanbanTask{}
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, workforce_id, title, description, status, priority,
-		       assigned_to, created_by, execution_id, notes, position, created_at, updated_at
+		       assigned_to, created_by, execution_id, notes, position,
+		       qa_status, qa_notes, created_at, updated_at
 		FROM kanban_tasks WHERE id = $1`, id,
 	).Scan(
 		&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
-		&t.CreatedAt, &t.UpdatedAt,
+		&t.QAStatus, &t.QANotes, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -117,6 +146,12 @@ func (s *Store) UpdateKanbanTask(ctx context.Context, id uuid.UUID, req models.U
 	if req.Notes != nil {
 		t.Notes = *req.Notes
 	}
+	if req.QAStatus != nil {
+		t.QAStatus = *req.QAStatus
+	}
+	if req.QANotes != nil {
+		t.QANotes = *req.QANotes
+	}
 	if req.AssignedTo != nil {
 		if *req.AssignedTo == "" {
 			t.AssignedTo = nil
@@ -136,10 +171,12 @@ func (s *Store) UpdateKanbanTask(ctx context.Context, id uuid.UUID, req models.U
 	_, err = s.pool.Exec(ctx, `
 		UPDATE kanban_tasks
 		SET title=$2, description=$3, status=$4, priority=$5,
-		    assigned_to=$6, execution_id=$7, notes=$8, updated_at=$9
+		    assigned_to=$6, execution_id=$7, notes=$8,
+		    qa_status=$9, qa_notes=$10, updated_at=$11
 		WHERE id=$1`,
 		t.ID, t.Title, t.Description, t.Status, t.Priority,
-		t.AssignedTo, t.ExecutionID, t.Notes, t.UpdatedAt,
+		t.AssignedTo, t.ExecutionID, t.Notes,
+		t.QAStatus, t.QANotes, t.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update kanban task: %w", err)
@@ -152,12 +189,13 @@ func (s *Store) FindKanbanTaskByExecutionID(ctx context.Context, execID uuid.UUI
 	t := &models.KanbanTask{}
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, workforce_id, title, description, status, priority,
-		       assigned_to, created_by, execution_id, notes, position, created_at, updated_at
+		       assigned_to, created_by, execution_id, notes, position,
+		       qa_status, qa_notes, created_at, updated_at
 		FROM kanban_tasks WHERE execution_id = $1 LIMIT 1`, execID,
 	).Scan(
 		&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
-		&t.CreatedAt, &t.UpdatedAt,
+		&t.QAStatus, &t.QANotes, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {

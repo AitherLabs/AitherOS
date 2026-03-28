@@ -1402,21 +1402,29 @@ func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
 		return
 	}
 	for _, wf := range workforces {
-		// Skip if already running
+		// Skip if workforce is already in an active state
 		if wf.Status == models.WorkForceStatusExecuting || wf.Status == models.WorkForceStatusPlanning {
 			continue
 		}
-		// Skip if an active execution goroutine is registered
-		var alreadyActive bool
-		o.activeExecs.Range(func(_, v any) bool {
-			alreadyActive = true
-			return false
+
+		// Skip if there is already an active goroutine for THIS workforce
+		var wfActive bool
+		o.activeExecs.Range(func(k, v any) bool {
+			// activeExecs keys are execution UUIDs; look up each execution's workforce
+			if execID, ok := k.(uuid.UUID); ok {
+				if exec, err := o.store.GetExecution(ctx, execID); err == nil && exec.WorkForceID == wf.ID {
+					wfActive = true
+					return false
+				}
+			}
+			return true
 		})
-		if alreadyActive {
+		if wfActive {
 			continue
 		}
 
-		// Check if enough time has elapsed since the last execution
+		// Enforce the heartbeat interval: only proceed if enough time has elapsed
+		// since the last execution for this workforce.
 		lastExec, err := o.store.GetLatestExecution(ctx, wf.ID)
 		if err != nil {
 			log.Printf("scheduler: latest execution for %q: %v", wf.Name, err)
@@ -1429,9 +1437,41 @@ func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
 			}
 		}
 
-		log.Printf("scheduler: auto-launching execution for workforce %q (interval=%dm)", wf.Name, wf.HeartbeatIntervalM)
-		if _, err := o.StartExecution(ctx, wf.ID, wf.Objective, nil); err != nil {
-			log.Printf("scheduler: start execution for %q: %v", wf.Name, err)
+		// Prefer kanban todo tasks over the workforce's generic objective.
+		// This is the core of the autonomous kanban loop: pick the highest-priority
+		// todo task, launch an execution from it, and link them.
+		nextTask, err := o.store.GetNextTodoKanbanTask(ctx, wf.ID)
+		if err != nil {
+			log.Printf("scheduler: get next todo task for %q: %v", wf.Name, err)
+			continue
+		}
+
+		if nextTask != nil {
+			objective := nextTask.Title
+			if nextTask.Description != "" {
+				objective = nextTask.Title + "\n\n" + nextTask.Description
+			}
+			log.Printf("scheduler: launching kanban task %q for workforce %q", nextTask.Title, wf.Name)
+			exec, err := o.StartExecution(ctx, wf.ID, objective, nil)
+			if err != nil {
+				log.Printf("scheduler: start execution for task %q: %v", nextTask.Title, err)
+				continue
+			}
+			// Link task to execution and move to in_progress
+			execIDStr := exec.ID.String()
+			inProgress := models.KanbanStatusInProgress
+			if _, err := o.store.UpdateKanbanTask(ctx, nextTask.ID, models.UpdateKanbanTaskRequest{
+				Status:      &inProgress,
+				ExecutionID: &execIDStr,
+			}); err != nil {
+				log.Printf("scheduler: link kanban task %s: %v", nextTask.ID, err)
+			}
+		} else {
+			// No todo tasks — fall back to the workforce's configured objective
+			log.Printf("scheduler: no kanban tasks, launching objective execution for %q", wf.Name)
+			if _, err := o.StartExecution(ctx, wf.ID, wf.Objective, nil); err != nil {
+				log.Printf("scheduler: start execution for %q: %v", wf.Name, err)
+			}
 		}
 	}
 }
@@ -1628,10 +1668,12 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 	if exec, err := o.store.GetExecution(ctx, execID); err == nil && exec.Title != "" {
 		execTitle = exec.Title
 	}
-	// If this execution was linked to a kanban task, mark it done
+	// If this execution was linked to a kanban task, mark it done and run QA review.
 	if task, _ := o.store.FindKanbanTaskByExecutionID(ctx, execID); task != nil {
 		done := models.KanbanStatusDone
 		o.store.UpdateKanbanTask(ctx, task.ID, models.UpdateKanbanTaskRequest{Status: &done})
+		// QA runs in background — don't block the completion flow
+		go o.evaluateKanbanTaskCompletion(context.Background(), task, result, wfID)
 	}
 	o.eventBus.Publish(ctx, models.NewEvent(execID, nil, "", models.EventTypeExecutionDone,
 		fmt.Sprintf("Objective completed after %d iterations. Total tokens: %d", iterations, tokensUsed),
@@ -1679,6 +1721,103 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 			o.knowledgeManager.IngestAgentMessages(bgCtx, wfID, execID, msgs)
 			log.Printf("knowledge: embedded agent messages for execution %s", execID)
 		}()
+	}
+}
+
+// evaluateKanbanTaskCompletion runs a brief LLM review after an execution finishes
+// to check whether the output actually satisfied the task's acceptance criteria.
+// It updates qa_status and qa_notes on the task; if the LLM flags issues the task
+// is also moved back to "blocked" so a human can review it.
+func (o *Orchestrator) evaluateKanbanTaskCompletion(ctx context.Context, task *models.KanbanTask, executionResult string, wfID uuid.UUID) {
+	// No criteria to evaluate against → skip
+	if strings.TrimSpace(task.Description) == "" {
+		skipped := models.KanbanQAStatusSkipped
+		skippedNote := "QA skipped: no acceptance criteria in task description."
+		o.store.UpdateKanbanTask(ctx, task.ID, models.UpdateKanbanTaskRequest{
+			QAStatus: &skipped,
+			QANotes:  &skippedNote,
+		})
+		return
+	}
+
+	// Pick a connector from any available agent in the workforce
+	wf, err := o.store.GetWorkForce(ctx, wfID)
+	if err != nil {
+		return
+	}
+	wfAgents, err := o.loadWorkForceAgents(ctx, wf)
+	if err != nil || len(wfAgents) == 0 {
+		return
+	}
+	var eng engine.Connector
+	for _, a := range wfAgents {
+		if e, _, err := o.resolveConnector(ctx, a); err == nil {
+			eng = e
+			break
+		}
+	}
+	if eng == nil {
+		return
+	}
+
+	// Truncate result so we don't blow the context window
+	truncResult := executionResult
+	if len(truncResult) > 3000 {
+		truncResult = truncResult[:3000] + "\n…[truncated]"
+	}
+
+	prompt := fmt.Sprintf(
+		"You are a QA reviewer for an AI-generated task. Evaluate whether the execution output satisfies the task requirements.\n\n"+
+			"TASK TITLE: %s\n\n"+
+			"ACCEPTANCE CRITERIA / DESCRIPTION:\n%s\n\n"+
+			"EXECUTION OUTPUT:\n%s\n\n"+
+			"Respond ONLY with a JSON object in this exact format:\n"+
+			`{"passed": true/false, "reason": "one or two sentences explaining your verdict"}`,
+		task.Title, task.Description, truncResult,
+	)
+
+	resp, err := eng.Submit(ctx, engine.TaskRequest{
+		AgentName:    "qa-reviewer",
+		SystemPrompt: "You are a precise QA reviewer. Evaluate task completion objectively. Respond only with the requested JSON.",
+		Message:      prompt,
+	})
+	if err != nil {
+		log.Printf("kanban QA: llm call failed for task %s: %v", task.ID, err)
+		return
+	}
+
+	// Parse the JSON verdict
+	var verdict struct {
+		Passed bool   `json:"passed"`
+		Reason string `json:"reason"`
+	}
+	// Extract JSON from the response (may be wrapped in markdown)
+	raw := resp.Content
+	if start := strings.Index(raw, "{"); start != -1 {
+		if end := strings.LastIndex(raw, "}"); end > start {
+			json.Unmarshal([]byte(raw[start:end+1]), &verdict) //nolint:errcheck
+		}
+	}
+
+	ts := fmt.Sprintf("[%s] QA", time.Now().Format("2006-01-02 15:04"))
+	if verdict.Passed {
+		passed := models.KanbanQAStatusPassed
+		note := fmt.Sprintf("%s ✓ passed — %s", ts, verdict.Reason)
+		o.store.UpdateKanbanTask(ctx, task.ID, models.UpdateKanbanTaskRequest{
+			QAStatus: &passed,
+			QANotes:  &note,
+		})
+		log.Printf("kanban QA: task %q passed (%s)", task.Title, verdict.Reason)
+	} else {
+		needsReview := models.KanbanQAStatusNeedsReview
+		blocked := models.KanbanStatusBlocked
+		note := fmt.Sprintf("%s ✗ needs review — %s", ts, verdict.Reason)
+		o.store.UpdateKanbanTask(ctx, task.ID, models.UpdateKanbanTaskRequest{
+			Status:   &blocked,
+			QAStatus: &needsReview,
+			QANotes:  &note,
+		})
+		log.Printf("kanban QA: task %q flagged for review (%s)", task.Title, verdict.Reason)
 	}
 }
 
