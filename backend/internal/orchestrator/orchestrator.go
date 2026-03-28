@@ -1536,8 +1536,10 @@ func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
 		return
 	}
 	for _, wf := range workforces {
-		// Skip if workforce is already in an active state
-		if wf.Status == models.WorkForceStatusExecuting || wf.Status == models.WorkForceStatusPlanning {
+		// Skip if workforce is already in an active state or awaiting human input
+		if wf.Status == models.WorkForceStatusExecuting ||
+			wf.Status == models.WorkForceStatusPlanning ||
+			wf.Status == models.WorkForceStatusAwaitingApproval {
 			continue
 		}
 

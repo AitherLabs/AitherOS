@@ -47,7 +47,7 @@ func (s *Store) GetNextTodoKanbanTask(ctx context.Context, workforceID uuid.UUID
 		       assigned_to, created_by, execution_id, notes, position,
 		       qa_status, qa_notes, created_at, updated_at
 		FROM kanban_tasks
-		WHERE workforce_id = $1 AND status = 'todo'
+		WHERE workforce_id = $1 AND status IN ('open', 'todo')
 		ORDER BY priority DESC, position ASC, created_at ASC
 		LIMIT 1`, workforceID,
 	).Scan(
