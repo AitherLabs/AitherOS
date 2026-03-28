@@ -137,19 +137,8 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 		}
 	}
 
-	// ── 4. Discover and cache tool definitions ────────────────────────────────
-	tools, err := p.discoverTools(srv)
-	if err != nil {
-		log.Printf("workspace: tool discovery for %q failed (non-fatal): %v", wf.Name, err)
-	} else {
-		if err := p.store.UpsertMCPServerTools(ctx, srv.ID, tools); err != nil {
-			log.Printf("workspace: cache tools for %q failed (non-fatal): %v", wf.Name, err)
-		} else {
-			log.Printf("workspace: cached %d Aither-Tools definitions for %q", len(tools), wf.Name)
-		}
-	}
-
-	// ── 5. Grant all workforce agents full access to Aither-Tools ─────────────
+	// ── 4. Grant all workforce agents full access to Aither-Tools ─────────────
+	// Done synchronously so agents have access immediately when Create returns.
 	for _, agentID := range wf.AgentIDs {
 		// Empty tool slice = all tools allowed (see store.SetAgentMCPPermissions)
 		if err := p.store.SetAgentMCPPermissions(ctx, agentID, srv.ID, []string{}); err != nil {
@@ -158,6 +147,22 @@ func (p *Provisioner) provision(ctx context.Context, wf *models.WorkForce) error
 	}
 
 	log.Printf("workspace: provisioned Aither-Tools for %q (server %s)", wf.Name, srv.ID)
+
+	// ── 5. Discover and cache tool definitions (slow — run in background) ─────
+	srvCopy := srv
+	go func() {
+		tools, err := p.discoverTools(srvCopy)
+		if err != nil {
+			log.Printf("workspace: tool discovery for %q failed (non-fatal): %v", wf.Name, err)
+			return
+		}
+		if err := p.store.UpsertMCPServerTools(context.Background(), srvCopy.ID, tools); err != nil {
+			log.Printf("workspace: cache tools for %q failed (non-fatal): %v", wf.Name, err)
+		} else {
+			log.Printf("workspace: cached %d Aither-Tools definitions for %q", len(tools), wf.Name)
+		}
+	}()
+
 	return nil
 }
 

@@ -57,8 +57,10 @@ func (h *WorkForceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Provision workspace + Aither-Tools in the background (non-blocking)
-	go h.provisioner.Provision(context.Background(), wf)
+	// Provision workspace + Aither-Tools synchronously so the MCP server is
+	// visible immediately when the Create response reaches the frontend.
+	// Only tool discovery runs in the background (see provisioner.go).
+	h.provisioner.Provision(context.Background(), wf)
 
 	wf.WorkspacePath = workspacePathIfProvisioned(wf.Name)
 	writeJSON(w, http.StatusCreated, wf)
