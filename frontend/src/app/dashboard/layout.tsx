@@ -9,7 +9,7 @@ import { cookies } from 'next/headers';
 
 export const metadata: Metadata = {
   title: 'AitherOS — Dashboard',
-  description: 'Autonomous AI Workforce Orchestration Platform',
+  description: 'The Operating System for Autonomous AI Teams',
   robots: {
     index: false,
     follow: false

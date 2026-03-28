@@ -46,7 +46,7 @@ export default function SignInPage() {
             AitherOS
           </div>
           <p className='text-sm text-[#EAEAEA]/60'>
-            Autonomous AI Workforce Orchestration
+            The Operating System for Autonomous AI Teams
           </p>
         </div>
 
