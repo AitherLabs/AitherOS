@@ -25,15 +25,16 @@ type ChatMessage struct {
 }
 
 type TaskRequest struct {
-	AgentID      uuid.UUID        `json:"agent_id"`
-	AgentName    string           `json:"agent_name"`
-	SystemPrompt string           `json:"system_prompt"`
-	Instructions string           `json:"instructions"`
-	Message      string           `json:"message"`
-	Model        string           `json:"model"`
-	Tools        []string         `json:"tools"`           // Legacy: tool name strings
-	ToolDefs     []ToolDefinition `json:"tool_defs"`       // Full tool definitions for OpenAI function calling
-	History      []ChatMessage    `json:"history,omitempty"` // If set, used as the full message list (overrides SystemPrompt+Message)
+	AgentID       uuid.UUID        `json:"agent_id"`
+	AgentName     string           `json:"agent_name"`
+	SystemPrompt  string           `json:"system_prompt"`
+	Instructions  string           `json:"instructions"`
+	Message       string           `json:"message"`
+	Model         string           `json:"model"`
+	WorkspacePath string           `json:"workspace_path,omitempty"` // Absolute path to workforce workspace (used by image agents)
+	Tools         []string         `json:"tools"`                    // Legacy: tool name strings
+	ToolDefs      []ToolDefinition `json:"tool_defs"`                // Full tool definitions for OpenAI function calling
+	History       []ChatMessage    `json:"history,omitempty"`        // If set, used as the full message list (overrides SystemPrompt+Message)
 }
 
 type TaskResponse struct {

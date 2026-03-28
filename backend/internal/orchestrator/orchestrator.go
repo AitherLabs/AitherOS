@@ -1045,14 +1045,15 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	toolDefs = append(toolDefs, virtualSignalTools...)
 
 	resp, err := eng.Submit(ctx, engine.TaskRequest{
-		AgentID:      agent.ID,
-		AgentName:    agent.Name,
-		SystemPrompt: systemPrompt,
-		Instructions: instructions,
-		Message:      taskMsg,
-		Model:        modelName,
-		Tools:        agent.Tools,
-		ToolDefs:     toolDefs,
+		AgentID:       agent.ID,
+		AgentName:     agent.Name,
+		SystemPrompt:  systemPrompt,
+		Instructions:  instructions,
+		Message:       taskMsg,
+		Model:         modelName,
+		WorkspacePath: workspacePath,
+		Tools:         agent.Tools,
+		ToolDefs:      toolDefs,
 	})
 	if err != nil {
 		cleanErr := cleanAPIError(err.Error())
