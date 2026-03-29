@@ -265,6 +265,8 @@ var (
 
 	// ORCH_MAX_INTERVENTION_CONTEXT_CHARS: max accumulated operator instructions.
 	maxInterventionContextChars = envInt("ORCH_MAX_INTERVENTION_CONTEXT_CHARS", defaultMaxInterventionContextChars, 500, 20000)
+	// ORCH_AUTONOMOUS_OBJECTIVE_FALLBACK: run workforce objective when no kanban TODO exists.
+	autonomousObjectiveFallbackEnabled = envBool("ORCH_AUTONOMOUS_OBJECTIVE_FALLBACK", false)
 )
 
 // trimHistory keeps history[0] (system prompt) and history[1] (user task) as
@@ -301,6 +303,7 @@ type Orchestrator struct {
 
 	activeExecs          sync.Map // executionID -> *executionContext
 	interventionChannels sync.Map // executionID -> chan string
+	briefRefreshInFlight sync.Map // projectID -> struct{}
 }
 
 type LLMConfig struct {
@@ -310,9 +313,57 @@ type LLMConfig struct {
 }
 
 type executionContext struct {
-	cancel     context.CancelFunc
-	tokensUsed atomic.Int64
-	iterations atomic.Int32
+	cancel      context.CancelFunc
+	workforceID uuid.UUID
+	tokensUsed  atomic.Int64
+	iterations  atomic.Int32
+}
+
+type planningBudgetTracker struct {
+	maxTokens  int64
+	usedTokens int64
+	alerted    bool
+}
+
+func newPlanningBudgetTracker(exec *models.Execution, wf *models.WorkForce) *planningBudgetTracker {
+	maxTokens := wf.BudgetTokens
+	if maxTokens <= 0 {
+		maxTokens = 2_000_000
+	}
+	usedTokens := exec.TokensUsed
+	if usedTokens < 0 {
+		usedTokens = 0
+	}
+	return &planningBudgetTracker{maxTokens: maxTokens, usedTokens: usedTokens}
+}
+
+func (p *planningBudgetTracker) exhausted() bool {
+	if p == nil || p.maxTokens <= 0 {
+		return false
+	}
+	return p.usedTokens >= p.maxTokens
+}
+
+func (o *Orchestrator) consumePlanningTokens(ctx context.Context, execID uuid.UUID, planningBudget *planningBudgetTracker, resp *engine.TaskResponse, source string) {
+	if planningBudget == nil || resp == nil {
+		return
+	}
+	delta := resp.TokensIn + resp.TokensOut
+	if delta <= 0 {
+		delta = resp.TokensUsed
+	}
+	if delta <= 0 {
+		return
+	}
+	planningBudget.usedTokens += delta
+	if err := o.store.IncrementExecutionTokens(ctx, execID, delta); err != nil {
+		log.Printf("orchestrator: increment planning tokens for %s: %v", execID, err)
+	}
+	if planningBudget.exhausted() && !planningBudget.alerted {
+		planningBudget.alerted = true
+		o.eventBus.PublishSystem(ctx, execID,
+			fmt.Sprintf("Planning token budget exhausted after %s (%d/%d tokens).", source, planningBudget.usedTokens, planningBudget.maxTokens))
+	}
 }
 
 // agentResult holds the output from a single agent subtask execution.
@@ -387,14 +438,23 @@ func (o *Orchestrator) resolveConnector(ctx context.Context, agent *models.Agent
 
 // StartExecution kicks off the planning → HitL → execution loop for a workforce.
 func (o *Orchestrator) StartExecution(ctx context.Context, workforceID uuid.UUID, objective string, inputs map[string]string) (*models.Execution, error) {
-	wf, err := o.store.GetWorkForce(ctx, workforceID)
+	wf, previousStatus, claimed, err := o.store.TryClaimWorkForceExecutionSlot(ctx, workforceID)
 	if err != nil {
-		return nil, fmt.Errorf("get workforce: %w", err)
+		return nil, fmt.Errorf("claim workforce execution slot: %w", err)
+	}
+	if !claimed {
+		return nil, fmt.Errorf("workforce %s is already active (status: %s)", workforceID, previousStatus)
 	}
 
-	if wf.Status == models.WorkForceStatusExecuting {
-		return nil, fmt.Errorf("workforce %s is already executing", workforceID)
-	}
+	claimedSlot := true
+	defer func() {
+		if !claimedSlot {
+			return
+		}
+		if restoreErr := o.store.UpdateWorkForceStatus(context.Background(), workforceID, previousStatus); restoreErr != nil {
+			log.Printf("orchestrator: restore workforce status after failed start (%s -> %s): %v", workforceID, previousStatus, restoreErr)
+		}
+	}()
 
 	exec, err := o.store.CreateExecution(ctx, workforceID, objective, inputs)
 	if err != nil {
@@ -406,10 +466,6 @@ func (o *Orchestrator) StartExecution(ctx context.Context, workforceID uuid.UUID
 		return nil, fmt.Errorf("update exec status: %w", err)
 	}
 	exec.Status = models.ExecutionStatusPlanning
-
-	if err := o.store.UpdateWorkForceStatus(ctx, workforceID, models.WorkForceStatusPlanning); err != nil {
-		return nil, fmt.Errorf("update wf status: %w", err)
-	}
 
 	o.eventBus.PublishSystem(ctx, exec.ID, fmt.Sprintf("WorkForce '%s' starting planning phase for objective: %s", wf.Name, objective))
 
@@ -428,16 +484,18 @@ func (o *Orchestrator) StartExecution(ctx context.Context, workforceID uuid.UUID
 
 	// Register a cancellable context NOW so HaltExecution can cancel planning too
 	planCtx, planCancel := context.WithCancel(context.Background())
-	o.activeExecs.Store(exec.ID, &executionContext{cancel: planCancel})
+	o.activeExecs.Store(exec.ID, &executionContext{cancel: planCancel, workforceID: workforceID})
 
 	// Run planning asynchronously
 	go o.runPlanning(exec, wf, planCtx)
+	claimedSlot = false
 
 	return exec, nil
 }
 
 func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce, ctx context.Context) {
 	defer o.activeExecs.Delete(exec.ID)
+	planningBudget := newPlanningBudgetTracker(exec, wf)
 
 	agents, err := o.loadWorkForceAgents(ctx, wf)
 	if err != nil {
@@ -456,7 +514,7 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 			o.failExecution(ctx, exec.ID, wf.ID, "no agents available")
 			return
 		}
-		structuredPlan, strategy = o.runDiscussion(ctx, exec, wf, agents, leaderAgent)
+		structuredPlan, strategy = o.runDiscussion(ctx, exec, wf, agents, leaderAgent, planningBudget)
 	} else if len(agents) == 1 {
 		// ── Single agent: skip discussion, build simple plan directly ──
 		agent := agents[0]
@@ -467,6 +525,10 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 		strategy = fmt.Sprintf("## %s\nSole executor — working on objective directly.\n", agent.Name)
 	} else {
 		o.failExecution(ctx, exec.ID, wf.ID, "no agents in workforce")
+		return
+	}
+	if planningBudget.exhausted() {
+		o.haltExecution(ctx, exec.ID, wf.ID, "Token budget exhausted during planning phase")
 		return
 	}
 
@@ -480,11 +542,20 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 		exec.Plan = structuredPlan
 	}
 
-	// Generate a short title for the execution in the background so it's ready
-	// before the user sees the approval card. Fires a WS event when done.
-	execIDCopy := exec.ID
-	objectiveCopy := exec.Objective
-	go o.generateAndSetTitle(execIDCopy, wf, agents, strategy, objectiveCopy)
+	// Generate a short title before surfacing the approval card.
+	o.generateAndSetTitle(ctx, exec.ID, wf, agents, strategy, exec.Objective, planningBudget)
+	if planningBudget.exhausted() {
+		o.haltExecution(ctx, exec.ID, wf.ID, "Token budget exhausted during planning phase")
+		return
+	}
+
+	// Generate a concise summary of the combined strategy for the approval card.
+	// Prefer the workforce leader agent for this task.
+	approvalSummary := o.summarizeStrategy(ctx, exec.ID, wf, agents, strategy, exec.Objective, planningBudget)
+	if planningBudget.exhausted() {
+		o.haltExecution(ctx, exec.ID, wf.ID, "Token budget exhausted during planning phase")
+		return
+	}
 
 	// If the execution was halted during planning, do not overwrite the halted status
 	select {
@@ -504,10 +575,6 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypePlanProposed,
 		"Strategy and execution plan proposed. Awaiting human approval.",
 		map[string]any{"strategy": strategy, "plan": structuredPlan}))
-
-	// Generate a concise summary of the combined strategy for the approval card
-	// Prefer the workforce leader agent for this task
-	approvalSummary := o.summarizeStrategy(ctx, wf, agents, strategy, exec.Objective)
 
 	// Create a formal approval request for plan review
 	wfID := wf.ID
@@ -538,9 +605,12 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 
 // summarizeStrategy generates a short executive summary of the combined agent strategies.
 // Uses the workforce leader agent if set; otherwise falls back to the first resolvable agent.
-func (o *Orchestrator) summarizeStrategy(ctx context.Context, wf *models.WorkForce, agents []*models.Agent, strategy, objective string) string {
+func (o *Orchestrator) summarizeStrategy(ctx context.Context, execID uuid.UUID, wf *models.WorkForce, agents []*models.Agent, strategy, objective string, planningBudget *planningBudgetTracker) string {
 	if strategy == "" || len(agents) == 0 {
 		return fmt.Sprintf("%d agent(s) have proposed their strategies. Review and approve to begin execution.", len(agents))
+	}
+	if planningBudget.exhausted() {
+		return fmt.Sprintf("%d agent(s) have proposed their strategies for this mission. Review the Strategy Session above, then approve or reject.", len(agents))
 	}
 
 	// Build candidate list: leader first, then the rest
@@ -592,6 +662,7 @@ func (o *Orchestrator) summarizeStrategy(ctx context.Context, wf *models.WorkFor
 		Message:      summarizePrompt,
 		Model:        modelName,
 	})
+	o.consumePlanningTokens(ctx, execID, planningBudget, resp, "strategy summarization")
 	if err != nil || strings.TrimSpace(resp.Content) == "" {
 		return fmt.Sprintf("%d agent(s) have proposed their strategies for this mission. Review the Strategy Session above, then approve or reject.", len(agents))
 	}
@@ -605,11 +676,14 @@ func (o *Orchestrator) summarizeStrategy(ctx context.Context, wf *models.WorkFor
 	return summary
 }
 
-// generateAndSetTitle makes a small LLM call to produce a 4-7 word human-readable
-// title for the execution, persists it, and fires an execution_titled WS event.
-// Runs as a goroutine — uses its own context with a 30s timeout.
-func (o *Orchestrator) generateAndSetTitle(execID uuid.UUID, wf *models.WorkForce, agents []*models.Agent, strategy, objective string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// generateAndSetTitle makes a small LLM call to produce a 4-7 word
+// human-readable title for the execution, persists it, and fires an
+// execution_titled event.
+func (o *Orchestrator) generateAndSetTitle(ctx context.Context, execID uuid.UUID, wf *models.WorkForce, agents []*models.Agent, strategy, objective string, planningBudget *planningBudgetTracker) {
+	if planningBudget.exhausted() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Find the first resolvable engine (same logic as summarizeStrategy)
@@ -685,6 +759,7 @@ func (o *Orchestrator) generateAndSetTitle(execID uuid.UUID, wf *models.WorkForc
 		Message:      prompt,
 		Model:        modelName,
 	})
+	o.consumePlanningTokens(ctx, execID, planningBudget, resp, "title generation")
 	if err != nil {
 		log.Printf("orchestrator: generateAndSetTitle LLM error (exec %s, model %s): %v", execID, modelName, err)
 		return
@@ -780,7 +855,7 @@ func (o *Orchestrator) ApproveExecution(ctx context.Context, executionID uuid.UU
 			return o.store.UpdateExecutionStatus(ctx, executionID, models.ExecutionStatusFailed)
 		}
 		planCtx, planCancel := context.WithCancel(context.Background())
-		o.activeExecs.Store(exec.ID, &executionContext{cancel: planCancel})
+		o.activeExecs.Store(exec.ID, &executionContext{cancel: planCancel, workforceID: exec.WorkForceID})
 		go o.runPlanning(exec, wf, planCtx)
 		return nil
 	}
@@ -816,7 +891,8 @@ func (o *Orchestrator) ApproveExecution(ctx context.Context, executionID uuid.UU
 
 func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 	ctx, cancel := context.WithCancel(context.Background())
-	execCtx := &executionContext{cancel: cancel}
+	execCtx := &executionContext{cancel: cancel, workforceID: exec.WorkForceID}
+	execCtx.tokensUsed.Store(exec.TokensUsed)
 	o.activeExecs.Store(exec.ID, execCtx)
 	defer o.activeExecs.Delete(exec.ID)
 
@@ -1735,22 +1811,23 @@ func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
 		return
 	}
 	for _, wf := range workforces {
-		// Skip if workforce is already in an active state or awaiting human input
+		// Skip if workforce is already in an active state or awaiting human input.
+		// Also skip terminal halt/fail states to prevent autonomous retry loops.
 		if wf.Status == models.WorkForceStatusExecuting ||
 			wf.Status == models.WorkForceStatusPlanning ||
-			wf.Status == models.WorkForceStatusAwaitingApproval {
+			wf.Status == models.WorkForceStatusAwaitingApproval ||
+			wf.Status == models.WorkForceStatusHalted ||
+			wf.Status == models.WorkForceStatusFailed {
 			continue
 		}
 
 		// Skip if there is already an active goroutine for THIS workforce
 		var wfActive bool
-		o.activeExecs.Range(func(k, v any) bool {
-			// activeExecs keys are execution UUIDs; look up each execution's workforce
-			if execID, ok := k.(uuid.UUID); ok {
-				if exec, err := o.store.GetExecution(ctx, execID); err == nil && exec.WorkForceID == wf.ID {
-					wfActive = true
-					return false
-				}
+		o.activeExecs.Range(func(_, v any) bool {
+			execCtx, ok := v.(*executionContext)
+			if ok && execCtx.workforceID == wf.ID {
+				wfActive = true
+				return false
 			}
 			return true
 		})
@@ -1767,7 +1844,11 @@ func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
 		}
 		if lastExec != nil {
 			interval := time.Duration(wf.HeartbeatIntervalM) * time.Minute
-			if time.Since(lastExec.CreatedAt) < interval {
+			referenceTime := lastExec.CreatedAt
+			if lastExec.EndedAt != nil {
+				referenceTime = *lastExec.EndedAt
+			}
+			if time.Since(referenceTime) < interval {
 				continue // too soon
 			}
 		}
@@ -1802,6 +1883,10 @@ func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
 				log.Printf("scheduler: link kanban task %s: %v", nextTask.ID, err)
 			}
 		} else {
+			if !autonomousObjectiveFallbackEnabled {
+				log.Printf("scheduler: no todo kanban task for %q; skipping objective fallback (ORCH_AUTONOMOUS_OBJECTIVE_FALLBACK=false)", wf.Name)
+				continue
+			}
 			// No todo tasks — fall back to the workforce's configured objective
 			log.Printf("scheduler: no kanban tasks, launching objective execution for %q", wf.Name)
 			if _, err := o.StartExecution(ctx, wf.ID, wf.Objective, nil); err != nil {
@@ -1915,6 +2000,22 @@ func envDuration(name string, fallback, minVal time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func envBool(name string, fallback bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		log.Printf("orchestrator: invalid %s=%q (using default %t)", name, v, fallback)
+		return fallback
+	}
 }
 
 // ResumeExecution resumes a halted execution from where it left off.
@@ -2140,9 +2241,7 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 		if err != nil || proj.BriefIntervalM == 0 {
 			return
 		}
-		if err := o.RefreshProjectBrief(context.Background(), *exec.ProjectID); err != nil {
-			log.Printf("orchestrator: post-exec brief refresh for %s: %v", *exec.ProjectID, err)
-		}
+		o.enqueueProjectBriefRefresh(*exec.ProjectID, "post_execution")
 	}()
 }
 
@@ -2742,7 +2841,7 @@ func findLeaderAgent(agents []*models.Agent, leaderID *uuid.UUID) *models.Agent 
 // Each non-leader agent contributes their perspective (1 turn), then the leader
 // synthesizes into an execution plan. Returns the agreed plan and discussion summary.
 // Safety: capped at maxDiscussionTurns total agent turns.
-func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution, wf *models.WorkForce, agents []*models.Agent, leaderAgent *models.Agent) ([]models.ExecutionSubtask, string) {
+func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution, wf *models.WorkForce, agents []*models.Agent, leaderAgent *models.Agent, planningBudget *planningBudgetTracker) ([]models.ExecutionSubtask, string) {
 	const maxDiscussionTurns = 6
 
 	leaderID := leaderAgent.ID
@@ -2780,6 +2879,9 @@ func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution
 	for _, agent := range agents {
 		if agent.ID == leaderAgent.ID {
 			continue
+		}
+		if planningBudget.exhausted() {
+			return buildSimplePlan(agents, exec.Objective), "Fallback plan (planning token budget exhausted)"
 		}
 		if turnCount >= maxDiscussionTurns-1 {
 			break
@@ -2859,9 +2961,13 @@ func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution
 			Message:      contributionPrompt,
 			Model:        modelName,
 		})
+		o.consumePlanningTokens(ctx, exec.ID, planningBudget, resp, fmt.Sprintf("discussion contribution (%s)", agent.Name))
 		if err != nil {
 			log.Printf("orchestrator: discussion contribution from %s: %v", agent.Name, err)
 			continue
+		}
+		if planningBudget.exhausted() {
+			return buildSimplePlan(agents, exec.Objective), "Fallback plan (planning token budget exhausted)"
 		}
 
 		respMsg := &models.Message{
@@ -2891,6 +2997,9 @@ func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution
 	if err != nil {
 		log.Printf("orchestrator: discussion: no engine for leader %s: %v", leaderAgent.Name, err)
 		return buildSimplePlan(agents, exec.Objective), "Fallback plan (leader engine unavailable)"
+	}
+	if planningBudget.exhausted() {
+		return buildSimplePlan(agents, exec.Objective), "Fallback plan (planning token budget exhausted)"
 	}
 
 	leaderSystemPrompt, _ := engine.InterpolatePrompt(leaderAgent.SystemPrompt, leaderAgent.Variables, nil)
@@ -2936,9 +3045,13 @@ func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution
 		Message:      synthPrompt,
 		Model:        leaderModel,
 	})
+	o.consumePlanningTokens(ctx, exec.ID, planningBudget, synthResp, "discussion synthesis")
 	if err != nil {
 		log.Printf("orchestrator: discussion: leader synthesis failed: %v", err)
 		return buildSimplePlan(agents, exec.Objective), "Fallback plan (leader synthesis failed)"
+	}
+	if planningBudget.exhausted() {
+		return buildSimplePlan(agents, exec.Objective), "Fallback plan (planning token budget exhausted)"
 	}
 
 	synthRespMsg := &models.Message{

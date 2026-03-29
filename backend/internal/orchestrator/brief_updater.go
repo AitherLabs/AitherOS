@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const maxCurrentBriefPromptChars = 12000
+
 // RefreshProjectBrief regenerates the project brief using the workforce leader agent.
 // Synthesizes recent executions + kanban state into an updated living document.
 // Returns an error so it can be used both synchronously (API handler) and in goroutines.
@@ -128,19 +130,30 @@ func (o *Orchestrator) runBriefSchedulerTick(ctx context.Context) {
 	}
 	for _, proj := range projects {
 		projID := proj.ID
-		log.Printf("brief-scheduler: refreshing brief for project %q", proj.Name)
-		go func() {
-			if err := o.RefreshProjectBrief(context.Background(), projID); err != nil {
-				log.Printf("brief-scheduler: refresh %s: %v", projID, err)
-			}
-		}()
+		o.enqueueProjectBriefRefresh(projID, "stale_scheduler")
 	}
+}
+
+func (o *Orchestrator) enqueueProjectBriefRefresh(projectID uuid.UUID, source string) {
+	if _, loaded := o.briefRefreshInFlight.LoadOrStore(projectID, struct{}{}); loaded {
+		log.Printf("brief-refresh: skip duplicate in-flight refresh for project %s (source=%s)", projectID, source)
+		return
+	}
+
+	go func() {
+		defer o.briefRefreshInFlight.Delete(projectID)
+		if err := o.RefreshProjectBrief(context.Background(), projectID); err != nil {
+			log.Printf("brief-refresh: refresh %s failed (source=%s): %v", projectID, source, err)
+		}
+	}()
 }
 
 func buildBriefRefreshPrompt(proj *models.Project, workforceName string, execs []*models.Execution, tasks []*models.KanbanTask) string {
 	currentBrief := proj.Brief
 	if currentBrief == "" {
 		currentBrief = "(no brief yet — create it from scratch based on the available context)"
+	} else if len(currentBrief) > maxCurrentBriefPromptChars {
+		currentBrief = truncateStr(currentBrief, maxCurrentBriefPromptChars) + fmt.Sprintf("\n… (truncated, %d chars total)", len(proj.Brief))
 	}
 
 	// Execution summary

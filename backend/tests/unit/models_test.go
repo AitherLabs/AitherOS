@@ -126,6 +126,21 @@ func TestNewEvent(t *testing.T) {
 	if event.Data["key"] != "value" {
 		t.Errorf("Data[key] = %v, want %q", event.Data["key"], "value")
 	}
+	if event.Data["reason"] != "" {
+		t.Errorf("Data[reason] = %v, want empty string", event.Data["reason"])
+	}
+	if event.Data["subtask_id"] != "" {
+		t.Errorf("Data[subtask_id] = %v, want empty string", event.Data["subtask_id"])
+	}
+	if event.Data["step"] != nil {
+		t.Errorf("Data[step] = %v, want nil", event.Data["step"])
+	}
+	if event.Data["round"] != nil {
+		t.Errorf("Data[round] = %v, want nil", event.Data["round"])
+	}
+	if event.Data["action_hint"] == "" {
+		t.Error("Data[action_hint] should be populated")
+	}
 	if event.Timestamp.IsZero() {
 		t.Error("Timestamp should not be zero")
 	}
@@ -144,8 +159,14 @@ func TestNewEventNilAgent(t *testing.T) {
 	if event.AgentName != "" {
 		t.Errorf("AgentName = %q, want empty", event.AgentName)
 	}
-	if event.Data != nil {
-		t.Errorf("Data = %v, want nil", event.Data)
+	if event.Data == nil {
+		t.Fatal("Data should be initialized with normalized fields")
+	}
+	if event.Data["reason"] != "" {
+		t.Errorf("Data[reason] = %v, want empty string", event.Data["reason"])
+	}
+	if event.Data["action_hint"] == "" {
+		t.Error("Data[action_hint] should be populated")
 	}
 }
 

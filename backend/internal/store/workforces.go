@@ -272,6 +272,67 @@ func (s *Store) ListAutonomousWorkforces(ctx context.Context) ([]*models.WorkFor
 	return workforces, nil
 }
 
+// TryClaimWorkForceExecutionSlot atomically marks a workforce as planning if it
+// is not currently in an active execution lifecycle state.
+//
+// Returns:
+//   - wf: loaded workforce (with status set to planning when claimed)
+//   - prevStatus: status before attempting the claim
+//   - claimed: true when the caller now owns the execution slot
+func (s *Store) TryClaimWorkForceExecutionSlot(ctx context.Context, id uuid.UUID) (*models.WorkForce, models.WorkForceStatus, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	wf := &models.WorkForce{}
+	err = tx.QueryRow(ctx, `
+		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, heartbeat_interval_m, created_at, updated_at
+		FROM workforces
+		WHERE id = $1
+		FOR UPDATE`, id,
+	).Scan(
+		&wf.ID, &wf.Name, &wf.Description, &wf.Objective, &wf.Status,
+		&wf.Icon, &wf.Color, &wf.AvatarURL,
+		&wf.BudgetTokens, &wf.BudgetTimeS, &wf.LeaderAgentID,
+		&wf.AutonomousMode, &wf.HeartbeatIntervalM,
+		&wf.CreatedAt, &wf.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, "", false, fmt.Errorf("workforce not found: %s", id)
+		}
+		return nil, "", false, fmt.Errorf("lock workforce: %w", err)
+	}
+
+	prevStatus := wf.Status
+	if prevStatus == models.WorkForceStatusPlanning ||
+		prevStatus == models.WorkForceStatusExecuting ||
+		prevStatus == models.WorkForceStatusAwaitingApproval {
+		return wf, prevStatus, false, nil
+	}
+
+	now := time.Now()
+	if _, err := tx.Exec(ctx, `
+		UPDATE workforces
+		SET status = $2, updated_at = $3
+		WHERE id = $1`,
+		id, models.WorkForceStatusPlanning, now,
+	); err != nil {
+		return nil, "", false, fmt.Errorf("claim workforce execution slot: %w", err)
+	}
+
+	wf.Status = models.WorkForceStatusPlanning
+	wf.UpdatedAt = now
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", false, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return wf, prevStatus, true, nil
+}
+
 func (s *Store) UpdateWorkForce(ctx context.Context, id uuid.UUID, req models.UpdateWorkForceRequest) (*models.WorkForce, error) {
 	wf, err := s.GetWorkForce(ctx, id)
 	if err != nil {

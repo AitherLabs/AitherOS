@@ -82,6 +82,108 @@ const eventTypeConfig: Record<string, { dot: string; label: string }> = {
   execution_titled:     { dot: '#9A66FF', label: 'Named' },
 };
 
+const eventTypeDetailConfig: Record<string, { title: string; summary: string; action?: string }> = {
+  execution_started: {
+    title: 'Execution Started',
+    summary: 'The orchestrator started (or resumed) running the approved plan.'
+  },
+  execution_done: {
+    title: 'Execution Completed',
+    summary: 'All subtasks finished or the run completed successfully.'
+  },
+  execution_halted: {
+    title: 'Execution Halted',
+    summary: 'Execution stopped before completion.',
+    action: 'Review the reason and either intervene with guidance or resume after adjusting inputs.'
+  },
+  subtask_started: {
+    title: 'Subtask Started',
+    summary: 'An agent began working on a specific subtask.'
+  },
+  subtask_done: {
+    title: 'Subtask Completed',
+    summary: 'An agent reported this subtask as complete.'
+  },
+  human_required: {
+    title: 'Human Input Required',
+    summary: 'The agent cannot continue without operator help.',
+    action: 'Use Send Message or credential injection to unblock this step.'
+  },
+  human_intervened: {
+    title: 'Operator Intervention',
+    summary: 'A human instruction was injected into the execution flow.'
+  },
+  agent_handoff: {
+    title: 'Agent Handoff',
+    summary: 'Output from one subtask was handed to a downstream agent.'
+  },
+  tool_call: {
+    title: 'Tool Call',
+    summary: 'An agent invoked a tool and optionally received a result.'
+  },
+  peer_consultation: {
+    title: 'Peer Consultation',
+    summary: 'An agent asked another agent for targeted guidance.'
+  },
+  plan_proposed: {
+    title: 'Plan Proposed',
+    summary: 'A strategy and execution plan were generated for approval.'
+  },
+  plan_approved: {
+    title: 'Plan Approved',
+    summary: 'The proposed plan was approved and execution can proceed.'
+  },
+  discussion_started: {
+    title: 'Discussion Started',
+    summary: 'Multi-agent discussion began to form a plan or consensus.'
+  },
+  discussion_turn: {
+    title: 'Discussion Turn',
+    summary: 'One participant contributed to the team discussion.'
+  },
+  discussion_consensus: {
+    title: 'Consensus Reached',
+    summary: 'Discussion converged to a shared decision.'
+  },
+  review_started: {
+    title: 'Review Started',
+    summary: 'A review phase started to validate execution outputs.'
+  },
+  review_complete: {
+    title: 'Review Complete',
+    summary: 'The review phase finished.'
+  },
+  agent_error: {
+    title: 'Agent Error',
+    summary: 'The agent encountered an error while reasoning or using tools.',
+    action: 'Inspect details, then intervene with corrected instructions or credentials.'
+  }
+};
+
+function humanizeEventType(type: string): string {
+  return type
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatEventDataKey(key: string): string {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatEventDataValue(value: any): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 type CredentialHint = { service: string; key: string };
 
 function inferServiceFromKey(key: string): string {
@@ -728,13 +830,14 @@ interface LiveEvent {
 function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
   const d = ev.data;
 
-  // Tool call: show tool name + full args (no truncation)
+  let specific: React.ReactNode = null;
+
   if (ev.type === 'tool_call') {
     const tool = d?.tool as string | undefined;
     const args = d?.args as Record<string, any> | undefined;
     const resultLen = d?.result_length as number | undefined;
     const round = d?.round as number | undefined;
-    return (
+    specific = (
       <div className='space-y-3'>
         {tool && (
           <div className='flex items-center gap-2 flex-wrap'>
@@ -758,92 +861,99 @@ function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
         )}
       </div>
     );
-  }
-
-  // Discussion turn: show the full content the agent wrote (d.content is the full text,
-  // ev.content is just the short status line like "Art Director has shared their perspective.")
-  if (ev.type === 'discussion_turn') {
+  } else if (ev.type === 'discussion_turn') {
     const content = d?.content as string | undefined;
     if (content) {
-      return (
+      specific = (
         <div className='rounded-lg bg-muted/10 p-3 border border-border/20'>
           <span className='text-[10px] font-semibold uppercase text-muted-foreground/40 block mb-1.5'>Full Message</span>
           <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/85'>{content}</p>
         </div>
       );
     }
-    return null;
-  }
-
-  // Plan proposed: show the full plan text
-  if (ev.type === 'plan_proposed') {
+  } else if (ev.type === 'plan_proposed') {
     const plan = d?.plan as string | undefined;
     const strategy = d?.strategy as string | undefined;
-    return plan ? (
-      <div className='space-y-2'>
-        {strategy && <span className='text-[10px] font-semibold uppercase text-muted-foreground/40'>Strategy: {strategy}</span>}
-        <pre className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/85 bg-muted/10 rounded p-3 border border-border/20'>{plan}</pre>
-      </div>
-    ) : null;
-  }
-
-  // Discussion started: show the participants
-  if (ev.type === 'discussion_started') {
+    if (plan) {
+      specific = (
+        <div className='space-y-2'>
+          {strategy && <span className='text-[10px] font-semibold uppercase text-muted-foreground/40'>Strategy</span>}
+          {strategy && <p className='text-sm text-[#EAEAEA]/75 whitespace-pre-wrap break-words'>{strategy}</p>}
+          <pre className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/85 bg-muted/10 rounded p-3 border border-border/20'>{plan}</pre>
+        </div>
+      );
+    }
+  } else if (ev.type === 'discussion_started') {
     const agents = d?.agents as string[] | undefined;
     const leader = d?.leader as string | undefined;
-    return agents?.length ? (
-      <div className='space-y-1.5'>
-        {leader && <div className='text-xs text-muted-foreground/60'>Leader: <span style={{ color: dot }}>{leader}</span></div>}
-        <div className='flex flex-wrap gap-1.5'>
-          {agents.map(a => (
-            <span key={a} className='rounded bg-muted/30 px-2 py-0.5 text-xs text-[#EAEAEA]/70'>{a}</span>
-          ))}
+    if (agents?.length) {
+      specific = (
+        <div className='space-y-1.5'>
+          {leader && <div className='text-xs text-muted-foreground/60'>Leader: <span style={{ color: dot }}>{leader}</span></div>}
+          <div className='flex flex-wrap gap-1.5'>
+            {agents.map(a => (
+              <span key={a} className='rounded bg-muted/30 px-2 py-0.5 text-xs text-[#EAEAEA]/70'>{a}</span>
+            ))}
+          </div>
         </div>
-      </div>
-    ) : null;
-  }
-
-  // Subtask started/done: description is already ev.content, tokens are extra
-  if (ev.type === 'subtask_started' || ev.type === 'subtask_done') {
+      );
+    }
+  } else if (ev.type === 'subtask_started' || ev.type === 'subtask_done') {
     const tokens = d?.tokens as number | undefined;
-    return tokens != null ? (
-      <span className='text-xs text-muted-foreground/50'>{tokens.toLocaleString()} tokens used</span>
-    ) : null;
-  }
-
-  // Human required: reason is already shown as ev.content
-  if (ev.type === 'human_required') {
-    return null;
-  }
-
-  // Agent error: already shown as ev.content
-  if (ev.type === 'agent_error') {
-    return null;
-  }
-
-  // Peer consultation: question is the primary content
-  if (ev.type === 'peer_consultation') {
+    if (tokens != null) {
+      specific = <span className='text-xs text-muted-foreground/50'>{tokens.toLocaleString()} tokens used</span>;
+    }
+  } else if (ev.type === 'peer_consultation') {
     const peer = d?.peer as string | undefined;
     const question = d?.question as string | undefined;
-    return question ? (
-      <div className='space-y-1.5'>
-        {peer && <div className='text-[10px] font-semibold uppercase text-muted-foreground/40'>Asking {peer}</div>}
-        <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/85'>{question}</p>
-      </div>
-    ) : null;
+    if (question) {
+      specific = (
+        <div className='space-y-1.5'>
+          {peer && <div className='text-[10px] font-semibold uppercase text-muted-foreground/40'>Asking {peer}</div>}
+          <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/85'>{question}</p>
+        </div>
+      );
+    }
   }
 
-  return null;
+  const metadataEntries = Object.entries(d || {}).filter(([k, v]) => {
+    if (v == null || v === '') return false;
+    // These are already rendered in dedicated sections above.
+    if (k === 'args' || k === 'content' || k === 'plan' || k === 'strategy') return false;
+    return true;
+  });
+
+  const metadata = metadataEntries.length > 0 ? (
+    <div className='rounded-lg border border-border/20 bg-muted/10 p-3 space-y-2'>
+      <span className='text-[10px] font-semibold uppercase text-muted-foreground/50'>Event Data</span>
+      {metadataEntries.map(([k, v]) => {
+        const value = formatEventDataValue(v);
+        const isMultiline = value.includes('\n') || value.length > 90;
+        return (
+          <div key={k} className='space-y-0.5'>
+            <span className='text-[10px] text-muted-foreground/50'>{formatEventDataKey(k)}</span>
+            {isMultiline ? (
+              <pre className='whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-[#EAEAEA]/80 bg-muted/20 rounded p-2'>
+                {value}
+              </pre>
+            ) : (
+              <p className='text-xs text-[#EAEAEA]/80 break-words'>{value}</p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  ) : null;
+
+  if (!specific && !metadata) return null;
+  return <div className='space-y-3'>{specific}{metadata}</div>;
 }
 
 function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: string }) {
   const [open, setOpen] = useState(false);
-  // Clickable if there's structured data with content, or the text itself is long enough to warrant a modal
-  const hasExtra = !!(ev.data && (
-    ev.data.content || ev.data.args || ev.data.plan || ev.data.question ||
-    ev.data.agents || ev.data.subtask
-  ));
-  const hasDetail = hasExtra || ev.content.length > 100;
+  const hasDetail = true;
+  const detailCfg = eventTypeDetailConfig[ev.type];
+  const detailTitle = detailCfg?.title || humanizeEventType(ev.type);
   return (
     <>
       <div
@@ -875,7 +985,7 @@ function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: stri
           <DialogHeader>
             <DialogTitle className='flex items-center gap-2 text-sm'>
               <span className='h-2 w-2 rounded-full shrink-0' style={{ backgroundColor: dot }} />
-              <span style={{ color: dot }}>{ev.agent_name ? `${ev.agent_name} · ` : ''}{label}</span>
+              <span style={{ color: dot }}>{ev.agent_name ? `${ev.agent_name} · ` : ''}{detailTitle}</span>
               <span className='ml-auto text-[10px] font-normal text-muted-foreground/50'>
                 {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
               </span>
@@ -883,6 +993,22 @@ function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: stri
           </DialogHeader>
           <ScrollArea className='flex-1 min-h-0 pr-1'>
             <div className='space-y-3 pb-2'>
+              <div className='rounded-lg border border-border/20 bg-muted/5 p-3 space-y-1.5'>
+                <div className='flex flex-wrap items-center gap-2'>
+                  <Badge variant='outline' className='text-[10px] border-border/40 bg-muted/10'>
+                    {humanizeEventType(ev.type)}
+                  </Badge>
+                  {ev.agent_name && (
+                    <Badge variant='outline' className='text-[10px] border-border/40 bg-muted/10'>
+                      Agent: {ev.agent_name}
+                    </Badge>
+                  )}
+                </div>
+                <p className='text-xs text-muted-foreground/70'>{detailCfg?.summary || 'Execution activity event emitted by the orchestrator.'}</p>
+                {detailCfg?.action && (
+                  <p className='text-xs text-[#FFBF47]/85'>Suggested action: {detailCfg.action}</p>
+                )}
+              </div>
               {/* Summary / status line */}
               {ev.content && (
                 <p className={`whitespace-pre-wrap break-words text-sm leading-relaxed ${ev.type === 'agent_error' ? 'text-red-400/80' : 'text-[#EAEAEA]/70'}`}>
