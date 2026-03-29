@@ -201,6 +201,13 @@ const maxConversationMemory = 10
 // maxHandoffChars is the max chars from a single upstream agent's output to include in handoff context.
 const maxHandoffChars = 3000
 
+// maxDiscussionContribChars caps each agent's discussion contribution stored for
+// subsequent agents and for the leader's synthesis prompt.
+const maxDiscussionContribChars = 500
+
+// maxRAGContextChars caps the total RAG/episodic-memory text injected per agent call.
+const maxRAGContextChars = 2000
+
 // maxToolResultHistoryChars caps tool results stored in the chat history to avoid
 // multi-round context blowup (the full result is still returned to the agent in the
 // current round — only subsequent rounds see the truncated version).
@@ -1098,6 +1105,9 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		if err != nil {
 			log.Printf("orchestrator: agent memory retrieval (%s): %v", agent.Name, err)
 		} else if mem != "" {
+			if len(mem) > maxRAGContextChars {
+				mem = mem[:maxRAGContextChars] + fmt.Sprintf("\n… (truncated, %d chars total)", len(mem))
+			}
 			agentMemoryCtx = mem
 		}
 	}
@@ -1513,6 +1523,9 @@ func (o *Orchestrator) buildConversationContext(ctx context.Context, execID, wor
 		if err != nil {
 			log.Printf("orchestrator: RAG retrieval: %v", err)
 		} else if ragCtx != "" {
+			if len(ragCtx) > maxRAGContextChars {
+				ragCtx = ragCtx[:maxRAGContextChars] + fmt.Sprintf("\n… (truncated, %d chars total)", len(ragCtx))
+			}
 			sections = append(sections, fmt.Sprintf("## Relevant Knowledge (from previous executions)\n%s", ragCtx))
 		}
 	}
@@ -2507,7 +2520,11 @@ func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution
 		}
 		o.store.CreateMessage(ctx, respMsg)
 
-		contributions = append(contributions, fmt.Sprintf("[%s]: %s", agent.Name, resp.Content))
+		contrib := resp.Content
+		if len(contrib) > maxDiscussionContribChars {
+			contrib = contrib[:maxDiscussionContribChars] + fmt.Sprintf("… (%d chars)", len(resp.Content))
+		}
+		contributions = append(contributions, fmt.Sprintf("[%s]: %s", agent.Name, contrib))
 
 		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &agentID, agent.Name,
 			models.EventTypeDiscussionTurn,
