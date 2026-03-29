@@ -64,7 +64,7 @@ export default function KnowledgePage() {
         api.listKnowledge(wfId)
       ]);
       if (wfRes.data) setWorkforce(wfRes.data);
-      if (entriesRes.data) setEntries(entriesRes.data);
+      if (entriesRes.data) setEntries(entriesRes.data.entries ?? []);
     } catch { /* ignore */ } finally {
       setLoading(false);
     }

@@ -357,7 +357,7 @@ export default function WorkforceDetailPage() {
           api.listKnowledge(wfId),
           api.countKnowledge(wfId)
         ]);
-        setKnowledgeEntries(kbRes.data || []);
+        setKnowledgeEntries(kbRes.data?.entries ?? []);
         setKnowledgeCount(kbCountRes.data?.count || 0);
       } catch {
         setKnowledgeEntries([]);
@@ -1197,7 +1197,7 @@ export default function WorkforceDetailPage() {
                       api.listKnowledge(wfId),
                       api.countKnowledge(wfId),
                     ]);
-                    setKnowledgeEntries(kbRes.data || []);
+                    setKnowledgeEntries(kbRes.data?.entries ?? []);
                     setKnowledgeCount(kbCountRes.data?.count || 0);
                   }}
                 >
