@@ -206,6 +206,35 @@ const maxHandoffChars = 3000
 // current round — only subsequent rounds see the truncated version).
 const maxToolResultHistoryChars = 4000
 
+// maxToolHistoryMessages is the max number of non-anchor messages retained in
+// the rolling tool-call history. Older rounds are evicted to prevent context
+// explosion on long-running agents. The first two messages (system prompt +
+// initial user task) are always kept as anchors regardless of this cap.
+const maxToolHistoryMessages = 40
+
+// trimHistory keeps history[0] (system prompt) and history[1] (user task) as
+// anchors, then retains only the most recent maxToolHistoryMessages messages.
+// The cut always falls on an assistant-message boundary to avoid orphaning
+// tool-result messages whose corresponding assistant message has been dropped.
+func trimHistory(history []engine.ChatMessage) []engine.ChatMessage {
+	const anchors = 2
+	if len(history) <= anchors+maxToolHistoryMessages {
+		return history
+	}
+	cutFrom := len(history) - maxToolHistoryMessages
+	// Walk forward to find the nearest assistant message boundary so we never
+	// orphan tool results from their paired assistant message.
+	for cutFrom < len(history) && history[cutFrom].Role != "assistant" {
+		cutFrom++
+	}
+	if cutFrom >= len(history) {
+		return history
+	}
+	trimmed := make([]engine.ChatMessage, anchors, anchors+(len(history)-cutFrom))
+	copy(trimmed, history[:anchors])
+	return append(trimmed, history[cutFrom:]...)
+}
+
 type Orchestrator struct {
 	store            *store.Store
 	eventBus         *eventbus.EventBus
@@ -1306,7 +1335,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				Model:     modelName,
 				Tools:     agent.Tools,
 				ToolDefs:  toolDefs,
-				History:   history,
+				History:   trimHistory(history),
 			})
 			if toolLoopErr == nil {
 				break
@@ -1373,7 +1402,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			Model:     modelName,
 			Tools:     agent.Tools,
 			ToolDefs:  toolDefs,
-			History:   history,
+			History:   trimHistory(history),
 		})
 		if err != nil {
 			o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
