@@ -1393,8 +1393,9 @@ export default function ExecutionDetailPage() {
   }, [execution?.plan, messages]);
 
   const loadData = useCallback(async () => {
+    if (!session?.accessToken) return; // wait for NextAuth session to initialise
     try {
-      if (session?.accessToken) api.setToken(session.accessToken);
+      api.setToken(session.accessToken);
 
       // First: fetch execution — need workforce_id before parallel calls
       const exRes = await api.getExecutionDirect(execId);
