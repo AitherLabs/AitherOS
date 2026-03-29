@@ -440,8 +440,12 @@ func (s *Store) ListExecutionsByProject(ctx context.Context, projectID uuid.UUID
 		); err != nil {
 			return nil, fmt.Errorf("scan execution: %w", err)
 		}
-		json.Unmarshal(inputsJSON, &e.Inputs)
-		json.Unmarshal(planJSON, &e.Plan)
+		if err := json.Unmarshal(inputsJSON, &e.Inputs); err != nil {
+			log.Printf("store: unmarshal execution inputs for %s: %v", e.ID, err)
+		}
+		if err := json.Unmarshal(planJSON, &e.Plan); err != nil {
+			log.Printf("store: unmarshal execution plan for %s: %v", e.ID, err)
+		}
 		if e.Plan == nil {
 			e.Plan = []models.ExecutionSubtask{}
 		}
