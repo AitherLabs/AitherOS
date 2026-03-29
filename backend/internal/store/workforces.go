@@ -330,6 +330,12 @@ func (s *Store) TryClaimWorkForceExecutionSlot(ctx context.Context, id uuid.UUID
 		return nil, "", false, fmt.Errorf("commit tx: %w", err)
 	}
 
+	// Load agent IDs after committing — the SELECT FOR UPDATE above only reads
+	// core columns; runPlanning needs AgentIDs to be populated.
+	if err := s.loadWorkForceAgentIDs(ctx, wf); err != nil {
+		return nil, "", false, fmt.Errorf("load agent ids: %w", err)
+	}
+
 	return wf, prevStatus, true, nil
 }
 
