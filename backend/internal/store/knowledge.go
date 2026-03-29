@@ -127,6 +127,50 @@ func (s *Store) SearchKnowledgeByAgent(ctx context.Context, agentID uuid.UUID, q
 	return results, nil
 }
 
+// SearchKnowledgeByProject finds the most similar project_fact entries for a given project.
+// Used for project-scoped RAG: inject relevant concrete facts into agent prompts.
+func (s *Store) SearchKnowledgeByProject(ctx context.Context, projectID uuid.UUID, queryEmbedding []float32, limit int) ([]models.KnowledgeEntry, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+
+	qv := pgvector.NewVector(queryEmbedding)
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at,
+		       1 - (embedding <=> $1) AS similarity
+		FROM knowledge_entries
+		WHERE project_id = $2 AND source_type = 'project_fact' AND embedding IS NOT NULL
+		ORDER BY embedding <=> $1
+		LIMIT $3`,
+		qv, projectID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search knowledge by project: %w", err)
+	}
+	defer rows.Close()
+
+	var results []models.KnowledgeEntry
+	for rows.Next() {
+		var e models.KnowledgeEntry
+		var metaJSON []byte
+		err := rows.Scan(
+			&e.ID, &e.WorkforceID, &e.ProjectID, &e.ExecutionID, &e.AgentID,
+			&e.SourceType, &e.Title, &e.Content, &metaJSON, &e.CreatedAt,
+			&e.Similarity,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan knowledge_entry: %w", err)
+		}
+		json.Unmarshal(metaJSON, &e.Metadata)
+		results = append(results, e)
+	}
+	return results, nil
+}
+
 // ListKnowledge lists knowledge entries for a workforce (no vector search, just chronological).
 func (s *Store) ListKnowledge(ctx context.Context, workforceID uuid.UUID, limit int) ([]models.KnowledgeEntry, error) {
 	if limit <= 0 {

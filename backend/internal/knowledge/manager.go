@@ -336,6 +336,85 @@ func (m *Manager) RetrieveRelevant(ctx context.Context, workforceID uuid.UUID, q
 	return strings.Join(parts, "\n\n---\n\n"), nil
 }
 
+// ProjectFact is a concrete, project-scoped fact extracted post-execution.
+// Examples: file paths, service names, commands, API endpoints, credentials keys.
+type ProjectFact struct {
+	Title   string
+	Content string
+}
+
+// IngestProjectFacts embeds and stores a set of project facts extracted from a completed execution.
+// Each fact is stored as a KnowledgeSourceFact entry tagged with both projectID and executionID.
+func (m *Manager) IngestProjectFacts(ctx context.Context, wfID, projectID, executionID uuid.UUID, facts []ProjectFact) {
+	if !m.embedder.Available() {
+		return
+	}
+	for _, f := range facts {
+		if f.Title == "" || f.Content == "" {
+			continue
+		}
+		textToEmbed := f.Title + "\n\n" + f.Content
+		embedding, err := m.embedder.Embed(ctx, textToEmbed)
+		if err != nil {
+			log.Printf("knowledge: embed project fact %q: %v", f.Title, err)
+			continue
+		}
+		entry := &models.KnowledgeEntry{
+			ID:          uuid.New(),
+			WorkforceID: wfID,
+			ProjectID:   &projectID,
+			ExecutionID: &executionID,
+			SourceType:  models.KnowledgeSourceFact,
+			Title:       truncate(f.Title, 120),
+			Content:     f.Content,
+			Embedding:   embedding,
+			Metadata:    map[string]any{"execution_id": executionID.String()},
+			CreatedAt:   time.Now(),
+		}
+		if err := m.store.CreateKnowledgeEntry(ctx, entry); err != nil {
+			log.Printf("knowledge: store project fact %q: %v", f.Title, err)
+		}
+	}
+}
+
+// RetrieveProjectFacts retrieves the top-K most relevant project facts for a given query.
+// Returns formatted context text for injection into agent prompts. Threshold is lower (0.2)
+// because project facts are concrete and should be surfaced aggressively.
+func (m *Manager) RetrieveProjectFacts(ctx context.Context, projectID uuid.UUID, query string, limit int) (string, error) {
+	if !m.embedder.Available() {
+		return "", nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+
+	embedding, err := m.embedder.Embed(ctx, query)
+	if err != nil {
+		return "", fmt.Errorf("embed query: %w", err)
+	}
+
+	results, err := m.store.SearchKnowledgeByProject(ctx, projectID, embedding, limit)
+	if err != nil {
+		return "", fmt.Errorf("search project facts: %w", err)
+	}
+
+	var parts []string
+	for _, r := range results {
+		if r.Similarity < 0.2 {
+			continue
+		}
+		content := r.Content
+		if len(content) > 800 {
+			content = content[:800] + "..."
+		}
+		parts = append(parts, fmt.Sprintf("**%s**\n%s", r.Title, content))
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return strings.Join(parts, "\n\n---\n\n"), nil
+}
+
 // RetrieveEmbedding exposes the embedding generation for use by API handlers.
 func (m *Manager) RetrieveEmbedding(ctx context.Context, text string) ([]float32, error) {
 	return m.embedder.Embed(ctx, text)

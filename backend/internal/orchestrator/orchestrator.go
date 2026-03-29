@@ -1096,6 +1096,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	// ── Per-agent episodic memory from Qdrant ──
 	// Retrieve what this specific agent has done in past executions (long-term memory)
 	agentMemoryCtx := ""
+	projectFactsCtx := ""
 	if o.knowledgeManager != nil {
 		subtaskQuery := p.exec.Objective
 		if p.subtask != nil {
@@ -1109,6 +1110,18 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				mem = mem[:maxRAGContextChars] + fmt.Sprintf("\n… (truncated, %d chars total)", len(mem))
 			}
 			agentMemoryCtx = mem
+		}
+		// Retrieve project-scoped facts if this execution belongs to a project
+		if p.exec.ProjectID != nil && *p.exec.ProjectID != uuid.Nil {
+			facts, ferr := o.knowledgeManager.RetrieveProjectFacts(ctx, *p.exec.ProjectID, subtaskQuery, 5)
+			if ferr != nil {
+				log.Printf("orchestrator: project facts retrieval (%s): %v", agent.Name, ferr)
+			} else if facts != "" {
+				if len(facts) > maxRAGContextChars {
+					facts = facts[:maxRAGContextChars] + fmt.Sprintf("\n… (truncated, %d chars total)", len(facts))
+				}
+				projectFactsCtx = facts
+			}
 		}
 	}
 
@@ -1129,6 +1142,9 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		if proj, err := o.store.GetProject(ctx, *p.exec.ProjectID); err == nil && proj.Brief != "" {
 			taskParts = append(taskParts, fmt.Sprintf("## Project Brief\n%s", proj.Brief))
 		}
+	}
+	if projectFactsCtx != "" {
+		taskParts = append(taskParts, fmt.Sprintf("## Project Knowledge (relevant facts)\n%s", projectFactsCtx))
 	}
 
 	taskParts = append(taskParts, fmt.Sprintf("## Your Assigned Subtask (step %d)\n%s", p.iteration, subtaskDesc))
@@ -1913,6 +1929,10 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 			log.Printf("knowledge: embedded agent messages for execution %s", execID)
 			// Extract and store structured lessons from this execution
 			go o.extractAndIngestLessons(context.Background(), wfID, execID, exec.Objective, result)
+			// Extract project-scoped facts if this execution belongs to a project
+			if exec.ProjectID != nil && *exec.ProjectID != uuid.Nil {
+				go o.extractAndIngestProjectFacts(context.Background(), wfID, execID, *exec.ProjectID, exec.Objective, result, msgs)
+			}
 		}()
 	}
 
