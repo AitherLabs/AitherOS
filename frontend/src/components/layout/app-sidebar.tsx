@@ -29,16 +29,16 @@ import {
   useSidebar
 } from '@/components/ui/sidebar';
 import { navItems } from '@/config/nav-config';
-import { useMediaQuery } from '@/hooks/use-media-query';
 import { useFilteredNavItems } from '@/hooks/use-nav';
 import {
   IconChevronRight,
   IconChevronsDown,
+  IconDoorEnter,
   IconLogout,
   IconSettings
 } from '@tabler/icons-react';
 import { useSession, signOut } from 'next-auth/react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import api from '@/lib/api';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -53,12 +53,9 @@ function resolveAvatarUrl(url?: string) {
 
 export default function AppSidebar() {
   const pathname = usePathname();
-  const { isOpen } = useMediaQuery();
   const { state: sidebarState } = useSidebar();
   const itemsToShow = useFilteredNavItems(navItems);
   const { data: session } = useSession();
-  const [xp, setXp] = useState(0);
-  const [xpLoaded, setXpLoaded] = useState(false);
   const [profileName, setProfileName] = useState('');
   const [profileAvatar, setProfileAvatar] = useState('');
 
@@ -83,20 +80,6 @@ export default function AppSidebar() {
     window.addEventListener('profileUpdated', handler);
     return () => window.removeEventListener('profileUpdated', handler);
   }, [fetchProfile]);
-
-  useEffect(() => {
-    if (!session?.accessToken) return;
-    api.setToken(session.accessToken);
-    Promise.all([api.listAgents(), api.listWorkforces(), api.listMCPServers()])
-      .then(([agRes, wfRes, mcpRes]) => {
-        const ag = (agRes.data || []).length;
-        const wf = (wfRes.data || []).length;
-        const mcp = (mcpRes.data || []).length;
-        setXp(ag * 200 + wf * 300 + mcp * 100);
-        setXpLoaded(true);
-      })
-      .catch(() => setXpLoaded(true));
-  }, [session]);
 
   return (
     <Sidebar collapsible='icon'>
@@ -182,49 +165,34 @@ export default function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
-        {/* ── Operator Level Widget ── */}
-        {xpLoaded && sidebarState === 'expanded' && (() => {
-          const LEVELS = [
-            { min: 0,    label: 'INITIATE',  color: '#888899' },
-            { min: 300,  label: 'CADET',     color: '#56D090' },
-            { min: 800,  label: 'OPERATOR',  color: '#14FFF7' },
-            { min: 1600, label: 'PILOT',     color: '#9A66FF' },
-            { min: 3500, label: 'NAVIGATOR', color: '#FFBF47' },
-            { min: 7000, label: 'COMMANDER', color: '#FF9900' }
-          ];
-          const lvIdx = LEVELS.reduce((best, l, i) => xp >= l.min ? i : best, 0);
-          const level = LEVELS[lvIdx];
-          const next = LEVELS[lvIdx + 1];
-          const pct = next ? Math.round(((xp - level.min) / (next.min - level.min)) * 100) : 100;
-          return (
-            <div className='mx-2 mb-1 rounded-lg border border-border/30 bg-background/40 p-2.5'>
-              <div className='mb-1.5 flex items-center justify-between'>
-                <div className='flex items-center gap-1.5'>
-                  <div className='h-1.5 w-1.5 rounded-full' style={{ backgroundColor: level.color, boxShadow: `0 0 5px ${level.color}` }} />
-                  <span className='font-mono text-[10px] font-bold tracking-widest' style={{ color: level.color }}>
-                    LVL {lvIdx + 1} · {level.label}
-                  </span>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              asChild
+              tooltip='Enter your Office'
+              className='mb-1 h-auto border border-[#14FFF7]/20 bg-[#14FFF7]/7 px-2.5 py-2.5 hover:bg-[#14FFF7]/12 hover:text-foreground'
+            >
+              <Link href='/dashboard/office'>
+                <div className='flex size-8 shrink-0 items-center justify-center rounded-md bg-[#14FFF7]/16 text-[#14FFF7]'>
+                  <IconDoorEnter className='size-4' />
                 </div>
-                <span className='font-mono text-[9px] text-muted-foreground/50'>{xp.toLocaleString()} XP</span>
-              </div>
-              <div className='relative h-1 overflow-hidden rounded-full bg-muted/40'>
-                <div
-                  className='h-full rounded-full transition-all duration-1000'
-                  style={{
-                    width: `${pct}%`,
-                    background: `linear-gradient(90deg, ${level.color}80, ${level.color})`,
-                    boxShadow: `0 0 6px ${level.color}60`
-                  }}
-                />
-              </div>
-              {next && (
-                <p className='mt-1 text-right font-mono text-[8px] text-muted-foreground/40'>
-                  {(next.min - xp).toLocaleString()} XP → {next.label}
-                </p>
-              )}
-            </div>
-          );
-        })()}
+                {sidebarState === 'expanded' && (
+                  <div className='grid flex-1 text-left leading-tight'>
+                    <span className='truncate text-[11px] font-semibold text-[#14FFF7]'>
+                      Enter your Office
+                    </span>
+                    <span className='truncate text-[10px] text-muted-foreground/70'>
+                      See your teams in-room
+                    </span>
+                  </div>
+                )}
+                {sidebarState === 'expanded' && (
+                  <IconChevronRight className='ml-auto size-3.5 text-muted-foreground/50' />
+                )}
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
         <SidebarMenu>
           <SidebarMenuItem>
             <DropdownMenu>
@@ -297,7 +265,7 @@ export default function AppSidebar() {
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => signOut({ callbackUrl: `${process.env.NEXT_PUBLIC_APP_URL || window.location.origin}/auth/sign-in` })}
+                  onClick={() => signOut({ callbackUrl: `${window.location.origin}/auth/sign-in` })}
                 >
                   <IconLogout className='mr-2 h-4 w-4' />
                   Sign out

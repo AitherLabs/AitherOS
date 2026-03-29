@@ -1,7 +1,16 @@
 'use client';
-import React from 'react';
-import { SessionProvider } from 'next-auth/react';
+import React, { useEffect } from 'react';
+import { SessionProvider, useSession } from 'next-auth/react';
 import { ActiveThemeProvider } from '../themes/active-theme';
+import api from '@/lib/api';
+
+function TokenSync() {
+  const { data: session } = useSession();
+  useEffect(() => {
+    api.setToken((session as any)?.accessToken ?? null);
+  }, [session]);
+  return null;
+}
 
 export default function Providers({
   activeThemeValue,
@@ -12,6 +21,7 @@ export default function Providers({
 }) {
   return (
     <SessionProvider>
+      <TokenSync />
       <ActiveThemeProvider initialTheme={activeThemeValue}>
         {children}
       </ActiveThemeProvider>

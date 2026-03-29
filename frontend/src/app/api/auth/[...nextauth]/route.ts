@@ -4,6 +4,10 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080';
 
 export const authOptions: AuthOptions = {
+  // Allow NextAuth to operate on whatever host the app is actually served from.
+  // Without this, CSRF checks fail when NEXTAUTH_URL doesn't match the request origin.
+  // @ts-expect-error trustHost is valid in next-auth v4.22+
+  trustHost: true,
   providers: [
     CredentialsProvider({
       name: 'AitherOS',
