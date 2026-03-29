@@ -23,9 +23,11 @@ import {
   IconPlayerPlay,
   IconPlus,
   IconRobot,
+  IconTrash,
   IconX,
 } from '@tabler/icons-react';
-import api, { Agent, KanbanStatus, KanbanTask, KanbanQAStatus, Project, Workforce } from '@/lib/api';
+import api, { Agent, ExecutionMode, KanbanStatus, KanbanTask, KanbanQAStatus, Project, Workforce } from '@/lib/api';
+import { EntityAvatar } from '@/components/entity-avatar';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -89,6 +91,11 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   const [runningId, setRunningId] = useState<string | null>(null);
   const [autonomousToggling, setAutonomousToggling] = useState(false);
 
+  // Run dialog (mode selection for Kanban execution)
+  const [runTaskTarget, setRunTaskTarget] = useState<KanbanTask | null>(null);
+  const [runMode, setRunMode] = useState<ExecutionMode>('all_agents');
+  const [runSingleAgentId, setRunSingleAgentId] = useState('');
+
   // Task detail / edit dialog
   const [selectedTask, setSelectedTask] = useState<KanbanTask | null>(null);
   const [editingTask, setEditingTask] = useState(false);
@@ -98,6 +105,9 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   const [editAssignee, setEditAssignee] = useState('');
   const [editTaskProjectId, setEditTaskProjectId] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deletingTask, setDeletingTask] = useState(false);
+  const [confirmCardDeleteId, setConfirmCardDeleteId] = useState<string | null>(null);
 
   // Drag detection — prevents detail dialog opening when dragging
   const didDragRef = useRef(false);
@@ -178,17 +188,31 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   }
 
   async function deleteTask(task: KanbanTask) {
-    await api.deleteKanbanTask(task.id);
-    setTasks(prev => prev.filter(t => t.id !== task.id));
+    setDeletingTask(true);
+    try {
+      await api.deleteKanbanTask(task.id);
+      setTasks(prev => prev.filter(t => t.id !== task.id));
+      setSelectedTask(null);
+      setConfirmDelete(false);
+    } finally {
+      setDeletingTask(false);
+    }
   }
 
-  async function runTask(task: KanbanTask) {
+  async function runTask(task: KanbanTask, mode: ExecutionMode = 'all_agents', singleAgentId?: string) {
     setRunningId(task.id);
     try {
       const objective = task.description
         ? `${task.title}\n\n${task.description}`
         : task.title;
-      const execRes = await api.startExecution(workforceId, objective, undefined, task.project_id);
+      const execRes = await api.startExecution(
+        workforceId,
+        objective,
+        undefined,
+        task.project_id,
+        mode,
+        mode === 'single_agent' ? singleAgentId : undefined
+      );
       if (!execRes.data?.id) return;
       const execId = execRes.data.id;
       const updated = await api.updateKanbanTask(task.id, {
@@ -207,7 +231,22 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
     const next = tasks
       .filter(t => t.status === 'todo')
       .sort((a, b) => b.priority - a.priority || a.position - b.position)[0];
-    if (next) await runTask(next);
+    if (next) openRunTaskDialog(next);
+  }
+
+  function openRunTaskDialog(task: KanbanTask) {
+    setRunTaskTarget(task);
+    setRunMode('all_agents');
+    const fallbackAgentId = task.assigned_to || agents[0]?.id || '';
+    setRunSingleAgentId(fallbackAgentId);
+  }
+
+  async function confirmRunTask() {
+    if (!runTaskTarget) return;
+    if (runMode === 'single_agent' && !runSingleAgentId) return;
+    const task = runTaskTarget;
+    setRunTaskTarget(null);
+    await runTask(task, runMode, runMode === 'single_agent' ? runSingleAgentId : undefined);
   }
 
   async function handleCreateProject() {
@@ -251,6 +290,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   function openDetail(task: KanbanTask) {
     setSelectedTask(task);
     setEditingTask(false);
+    setConfirmDelete(false);
     setEditTitle(task.title);
     setEditDesc(task.description || '');
     setEditPriority(task.priority);
@@ -487,12 +527,25 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                       style={{ borderLeft: `3px solid ${priorityColor(task.priority)}` }}
                     >
                       {/* Delete */}
-                      <button
-                        onClick={e => { e.stopPropagation(); deleteTask(task); }}
-                        className='absolute right-2 top-2 hidden rounded p-0.5 text-muted-foreground hover:text-destructive group-hover:block'
-                      >
-                        <IconX className='h-3 w-3' />
-                      </button>
+                      {confirmCardDeleteId === task.id ? (
+                        <div className='absolute right-1 top-1 flex items-center gap-1' onClick={e => e.stopPropagation()}>
+                          <button
+                            onClick={() => setConfirmCardDeleteId(null)}
+                            className='rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground'
+                          >Cancel</button>
+                          <button
+                            onClick={() => { setConfirmCardDeleteId(null); deleteTask(task); }}
+                            className='rounded bg-destructive/20 px-1 py-0.5 text-[10px] text-destructive hover:bg-destructive/30'
+                          >Delete</button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={e => { e.stopPropagation(); setConfirmCardDeleteId(task.id); }}
+                          className='absolute right-2 top-2 hidden rounded p-0.5 text-muted-foreground hover:text-destructive group-hover:block'
+                        >
+                          <IconTrash className='h-3 w-3' />
+                        </button>
+                      )}
 
                       {/* Title */}
                       <p className='mb-1 pr-4 text-sm font-medium leading-snug text-foreground line-clamp-2'>
@@ -597,7 +650,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                         <div className='mt-2 flex flex-wrap gap-1'>
                           {task.status === 'todo' && (
                             <button
-                              onClick={e => { e.stopPropagation(); runTask(task); }}
+                              onClick={e => { e.stopPropagation(); openRunTaskDialog(task); }}
                               disabled={runningId !== null}
                               className='flex items-center gap-0.5 rounded bg-[#9A66FF]/15 px-1.5 py-0.5 text-[10px] font-semibold text-[#9A66FF] hover:bg-[#9A66FF]/25 disabled:opacity-40'
                             >
@@ -724,6 +777,110 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
             >
               {creatingProject ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : null}
               Create Project
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Run Task Dialog ─────────────────────────────────────────────── */}
+      <Dialog
+        open={runTaskTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRunTaskTarget(null);
+            setRunMode('all_agents');
+            setRunSingleAgentId('');
+          }
+        }}
+      >
+        <DialogContent className='max-w-md'>
+          <DialogHeader>
+            <DialogTitle>Run Task</DialogTitle>
+            <DialogDescription>
+              Choose how this task should execute before launching.
+            </DialogDescription>
+          </DialogHeader>
+          <div className='space-y-3 py-1'>
+            {runTaskTarget && (
+              <p className='rounded-lg bg-muted/20 px-3 py-2 text-sm font-medium leading-snug text-foreground line-clamp-3'>
+                {runTaskTarget.title}
+              </p>
+            )}
+
+            <div className='space-y-2'>
+              <Label>Execution mode</Label>
+              <div className='grid grid-cols-2 gap-2'>
+                <button
+                  type='button'
+                  className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
+                    runMode === 'all_agents'
+                      ? 'border-[#9A66FF]/50 bg-[#9A66FF]/10 text-[#9A66FF]'
+                      : 'border-border/40 bg-background/40 text-muted-foreground hover:bg-muted/20'
+                  }`}
+                  onClick={() => setRunMode('all_agents')}
+                >
+                  <p className='font-semibold'>All agents</p>
+                  <p className='mt-0.5 text-[10px] opacity-80'>With approval gate</p>
+                </button>
+                <button
+                  type='button'
+                  className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
+                    runMode === 'single_agent'
+                      ? 'border-[#56D090]/50 bg-[#56D090]/10 text-[#56D090]'
+                      : 'border-border/40 bg-background/40 text-muted-foreground hover:bg-muted/20'
+                  }`}
+                  onClick={() => {
+                    setRunMode('single_agent');
+                    if (!runSingleAgentId && agents.length > 0) setRunSingleAgentId(agents[0].id);
+                  }}
+                >
+                  <p className='font-semibold'>Single agent</p>
+                  <p className='mt-0.5 text-[10px] opacity-80'>Simple run, no approval</p>
+                </button>
+              </div>
+            </div>
+
+            {runMode === 'single_agent' && (
+              <div className='space-y-1.5 rounded-md border border-[#56D090]/20 bg-[#56D090]/5 p-2.5'>
+                <Label className='text-[11px] text-[#56D090]'>Agent</Label>
+                <div className='grid gap-1.5'>
+                  {agents.map((agent) => {
+                    const selected = runSingleAgentId === agent.id;
+                    return (
+                      <button
+                        key={agent.id}
+                        type='button'
+                        onClick={() => setRunSingleAgentId(agent.id)}
+                        className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
+                          selected
+                            ? 'border-[#56D090]/60 bg-[#56D090]/12 text-[#56D090]'
+                            : 'border-border/40 bg-background/60 text-muted-foreground hover:bg-muted/20'
+                        }`}
+                      >
+                        <EntityAvatar
+                          icon={agent.icon}
+                          color={agent.color}
+                          avatarUrl={agent.avatar_url}
+                          name={agent.name}
+                          size='xs'
+                        />
+                        <span className='font-medium'>{agent.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant='outline' onClick={() => setRunTaskTarget(null)}>Cancel</Button>
+            <Button
+              onClick={confirmRunTask}
+              disabled={runningId !== null || (runMode === 'single_agent' && !runSingleAgentId)}
+              className='bg-[#56D090] text-[#0A0D11] hover:bg-[#56D090]/90'
+            >
+              {runningId ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : <IconPlayerPlay className='mr-1 h-4 w-4' />}
+              {runningId ? 'Starting...' : 'Run Task'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -985,8 +1142,32 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                         Save Changes
                       </Button>
                     </>
+                  ) : confirmDelete ? (
+                    <>
+                      <span className='mr-auto text-sm text-muted-foreground'>Delete this task?</span>
+                      <Button variant='outline' size='sm' onClick={() => setConfirmDelete(false)}>Cancel</Button>
+                      <Button
+                        size='sm'
+                        variant='destructive'
+                        disabled={deletingTask}
+                        onClick={() => deleteTask(selectedTask)}
+                      >
+                        {deletingTask ? <IconLoader2 className='mr-1 h-3.5 w-3.5 animate-spin' /> : <IconTrash className='mr-1 h-3.5 w-3.5' />}
+                        Delete
+                      </Button>
+                    </>
                   ) : (
                     <>
+                      <Button
+                        variant='ghost'
+                        size='sm'
+                        className='mr-auto text-muted-foreground hover:text-destructive'
+                        onClick={() => setConfirmDelete(true)}
+                      >
+                        <IconTrash className='mr-1 h-3.5 w-3.5' />
+                        Delete
+                      </Button>
+
                       <Button variant='outline' size='sm' onClick={() => setEditingTask(true)}>
                         <IconEdit className='mr-1 h-3.5 w-3.5' />
                         Edit
@@ -1012,7 +1193,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                           disabled={runningId !== null}
                           onClick={() => {
                             setSelectedTask(null);
-                            runTask(selectedTask);
+                            openRunTaskDialog(selectedTask);
                           }}
                         >
                           <IconPlayerPlay className='mr-1 h-3.5 w-3.5' />
