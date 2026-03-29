@@ -23,11 +23,13 @@ import api, { Skill } from '@/lib/api';
 
 const CATEGORY_ICONS: Record<string, React.ElementType> = {
   content: IconWriting,
+  writing: IconWriting,
   security: IconLock,
   engineering: IconCode,
   documentation: IconBook2,
   analytics: IconChartBar,
   growth: IconRocket,
+  marketing: IconRocket,
 };
 
 const SOURCE_COLOR = {
