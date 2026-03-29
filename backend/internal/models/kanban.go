@@ -29,6 +29,7 @@ const (
 type KanbanTask struct {
 	ID          uuid.UUID      `json:"id" db:"id"`
 	WorkforceID uuid.UUID      `json:"workforce_id" db:"workforce_id"`
+	ProjectID   *uuid.UUID     `json:"project_id,omitempty" db:"project_id"`
 	Title       string         `json:"title" db:"title"`
 	Description string         `json:"description" db:"description"`
 	Status      KanbanStatus   `json:"status" db:"status"`
@@ -50,6 +51,7 @@ type CreateKanbanTaskRequest struct {
 	Priority    int     `json:"priority" validate:"min=0,max=3"`
 	AssignedTo  *string `json:"assigned_to,omitempty"`
 	CreatedBy   string  `json:"created_by"` // "human" or agent name
+	ProjectID   *string `json:"project_id,omitempty"`
 }
 
 type UpdateKanbanTaskRequest struct {
@@ -62,4 +64,5 @@ type UpdateKanbanTaskRequest struct {
 	Notes       *string         `json:"notes,omitempty"`
 	QAStatus    *KanbanQAStatus `json:"qa_status,omitempty"`
 	QANotes     *string         `json:"qa_notes,omitempty"`
+	ProjectID   *string         `json:"project_id,omitempty"` // "" to clear
 }

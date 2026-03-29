@@ -46,6 +46,13 @@ func (h *ExecutionHandler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ProjectID != nil && *req.ProjectID != "" {
+		if pid, parseErr := uuid.Parse(*req.ProjectID); parseErr == nil {
+			_ = h.store.SetExecutionProject(r.Context(), exec.ID, pid)
+			exec.ProjectID = &pid
+		}
+	}
+
 	writeJSON(w, http.StatusCreated, exec)
 }
 

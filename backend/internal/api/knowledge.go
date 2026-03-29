@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/aitheros/backend/internal/knowledge"
 	"github.com/aitheros/backend/internal/models"
@@ -20,6 +21,7 @@ func NewKnowledgeHandler(s *store.Store, km *knowledge.Manager) *KnowledgeHandle
 }
 
 // ListKnowledge returns knowledge entries for a workforce.
+// Accepts ?limit=N (default 30, max 200) and ?offset=N for pagination.
 func (h *KnowledgeHandler) List(w http.ResponseWriter, r *http.Request) {
 	wfID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
@@ -27,7 +29,20 @@ func (h *KnowledgeHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries, err := h.store.ListKnowledge(r.Context(), wfID, 100)
+	limit := 30
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	entries, total, err := h.store.ListKnowledgePaged(r.Context(), wfID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -35,7 +50,7 @@ func (h *KnowledgeHandler) List(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []models.KnowledgeEntry{}
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "total": total, "limit": limit, "offset": offset})
 }
 
 // Search performs a semantic search in the workforce knowledge base.

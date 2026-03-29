@@ -12,7 +12,7 @@ import (
 
 func (s *Store) ListKanbanTasks(ctx context.Context, workforceID uuid.UUID) ([]*models.KanbanTask, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, workforce_id, title, description, status, priority,
+		SELECT id, workforce_id, project_id, title, description, status, priority,
 		       assigned_to, created_by, execution_id, notes, position,
 		       qa_status, qa_notes, created_at, updated_at
 		FROM kanban_tasks
@@ -27,7 +27,7 @@ func (s *Store) ListKanbanTasks(ctx context.Context, workforceID uuid.UUID) ([]*
 	for rows.Next() {
 		t := &models.KanbanTask{}
 		if err := rows.Scan(
-			&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
+			&t.ID, &t.WorkforceID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority,
 			&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
 			&t.QAStatus, &t.QANotes, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
@@ -43,7 +43,7 @@ func (s *Store) ListKanbanTasks(ctx context.Context, workforceID uuid.UUID) ([]*
 func (s *Store) GetNextTodoKanbanTask(ctx context.Context, workforceID uuid.UUID) (*models.KanbanTask, error) {
 	t := &models.KanbanTask{}
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workforce_id, title, description, status, priority,
+		SELECT id, workforce_id, project_id, title, description, status, priority,
 		       assigned_to, created_by, execution_id, notes, position,
 		       qa_status, qa_notes, created_at, updated_at
 		FROM kanban_tasks
@@ -51,7 +51,7 @@ func (s *Store) GetNextTodoKanbanTask(ctx context.Context, workforceID uuid.UUID
 		ORDER BY priority DESC, position ASC, created_at ASC
 		LIMIT 1`, workforceID,
 	).Scan(
-		&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
+		&t.ID, &t.WorkforceID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
 		&t.QAStatus, &t.QANotes, &t.CreatedAt, &t.UpdatedAt,
 	)
@@ -85,6 +85,11 @@ func (s *Store) CreateKanbanTask(ctx context.Context, workforceID uuid.UUID, req
 			t.AssignedTo = &id
 		}
 	}
+	if req.ProjectID != nil && *req.ProjectID != "" {
+		if pid, err := uuid.Parse(*req.ProjectID); err == nil {
+			t.ProjectID = &pid
+		}
+	}
 
 	// Position = max existing position + 1 for this status
 	var maxPos int
@@ -93,9 +98,9 @@ func (s *Store) CreateKanbanTask(ctx context.Context, workforceID uuid.UUID, req
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO kanban_tasks
-		  (id, workforce_id, title, description, status, priority, assigned_to, created_by, notes, position, qa_status, qa_notes, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		t.ID, t.WorkforceID, t.Title, t.Description, t.Status, t.Priority,
+		  (id, workforce_id, project_id, title, description, status, priority, assigned_to, created_by, notes, position, qa_status, qa_notes, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		t.ID, t.WorkforceID, t.ProjectID, t.Title, t.Description, t.Status, t.Priority,
 		t.AssignedTo, t.CreatedBy, t.Notes, t.Position, t.QAStatus, t.QANotes, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
@@ -107,12 +112,12 @@ func (s *Store) CreateKanbanTask(ctx context.Context, workforceID uuid.UUID, req
 func (s *Store) GetKanbanTask(ctx context.Context, id uuid.UUID) (*models.KanbanTask, error) {
 	t := &models.KanbanTask{}
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workforce_id, title, description, status, priority,
+		SELECT id, workforce_id, project_id, title, description, status, priority,
 		       assigned_to, created_by, execution_id, notes, position,
 		       qa_status, qa_notes, created_at, updated_at
 		FROM kanban_tasks WHERE id = $1`, id,
 	).Scan(
-		&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
+		&t.ID, &t.WorkforceID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
 		&t.QAStatus, &t.QANotes, &t.CreatedAt, &t.UpdatedAt,
 	)
@@ -166,17 +171,24 @@ func (s *Store) UpdateKanbanTask(ctx context.Context, id uuid.UUID, req models.U
 			t.ExecutionID = &eid
 		}
 	}
+	if req.ProjectID != nil {
+		if *req.ProjectID == "" {
+			t.ProjectID = nil
+		} else if pid, err2 := uuid.Parse(*req.ProjectID); err2 == nil {
+			t.ProjectID = &pid
+		}
+	}
 	t.UpdatedAt = time.Now()
 
 	_, err = s.pool.Exec(ctx, `
 		UPDATE kanban_tasks
 		SET title=$2, description=$3, status=$4, priority=$5,
 		    assigned_to=$6, execution_id=$7, notes=$8,
-		    qa_status=$9, qa_notes=$10, updated_at=$11
+		    qa_status=$9, qa_notes=$10, updated_at=$11, project_id=$12
 		WHERE id=$1`,
 		t.ID, t.Title, t.Description, t.Status, t.Priority,
 		t.AssignedTo, t.ExecutionID, t.Notes,
-		t.QAStatus, t.QANotes, t.UpdatedAt,
+		t.QAStatus, t.QANotes, t.UpdatedAt, t.ProjectID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update kanban task: %w", err)
@@ -188,12 +200,12 @@ func (s *Store) UpdateKanbanTask(ctx context.Context, id uuid.UUID, req models.U
 func (s *Store) FindKanbanTaskByExecutionID(ctx context.Context, execID uuid.UUID) (*models.KanbanTask, error) {
 	t := &models.KanbanTask{}
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workforce_id, title, description, status, priority,
+		SELECT id, workforce_id, project_id, title, description, status, priority,
 		       assigned_to, created_by, execution_id, notes, position,
 		       qa_status, qa_notes, created_at, updated_at
 		FROM kanban_tasks WHERE execution_id = $1 LIMIT 1`, execID,
 	).Scan(
-		&t.ID, &t.WorkforceID, &t.Title, &t.Description, &t.Status, &t.Priority,
+		&t.ID, &t.WorkforceID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
 		&t.QAStatus, &t.QANotes, &t.CreatedAt, &t.UpdatedAt,
 	)

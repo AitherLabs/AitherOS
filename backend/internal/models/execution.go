@@ -59,6 +59,7 @@ type ExecutionSubtask struct {
 type Execution struct {
 	ID              uuid.UUID          `json:"id" db:"id"`
 	WorkForceID     uuid.UUID          `json:"workforce_id" db:"workforce_id"`
+	ProjectID       *uuid.UUID         `json:"project_id,omitempty" db:"project_id"`
 	Objective       string             `json:"objective" db:"objective"`
 	Strategy        string             `json:"strategy" db:"strategy"`
 	Plan            []ExecutionSubtask `json:"plan" db:"plan"`
@@ -84,6 +85,7 @@ type Execution struct {
 type StartExecutionRequest struct {
 	Objective string            `json:"objective" validate:"required"`
 	Inputs    map[string]string `json:"inputs,omitempty"` // Variable values for agent prompt interpolation
+	ProjectID *string           `json:"project_id,omitempty"`
 }
 
 type ApproveExecutionRequest struct {

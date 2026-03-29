@@ -29,9 +29,9 @@ func (s *Store) CreateKnowledgeEntry(ctx context.Context, entry *models.Knowledg
 	}
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO knowledge_entries (id, workforce_id, execution_id, agent_id, source_type, title, content, embedding, metadata, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		entry.ID, entry.WorkforceID, entry.ExecutionID, entry.AgentID,
+		INSERT INTO knowledge_entries (id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, embedding, metadata, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		entry.ID, entry.WorkforceID, entry.ProjectID, entry.ExecutionID, entry.AgentID,
 		entry.SourceType, entry.Title, entry.Content, emb, metaJSON, entry.CreatedAt,
 	)
 	if err != nil {
@@ -52,7 +52,7 @@ func (s *Store) SearchKnowledge(ctx context.Context, workforceID uuid.UUID, quer
 	qv := pgvector.NewVector(queryEmbedding)
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, workforce_id, execution_id, agent_id, source_type, title, content, metadata, created_at,
+		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at,
 		       1 - (embedding <=> $1) AS similarity
 		FROM knowledge_entries
 		WHERE workforce_id = $2 AND embedding IS NOT NULL
@@ -70,7 +70,7 @@ func (s *Store) SearchKnowledge(ctx context.Context, workforceID uuid.UUID, quer
 		var e models.KnowledgeEntry
 		var metaJSON []byte
 		err := rows.Scan(
-			&e.ID, &e.WorkforceID, &e.ExecutionID, &e.AgentID,
+			&e.ID, &e.WorkforceID, &e.ProjectID, &e.ExecutionID, &e.AgentID,
 			&e.SourceType, &e.Title, &e.Content, &metaJSON, &e.CreatedAt,
 			&e.Similarity,
 		)
@@ -96,7 +96,7 @@ func (s *Store) SearchKnowledgeByAgent(ctx context.Context, agentID uuid.UUID, q
 	qv := pgvector.NewVector(queryEmbedding)
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, workforce_id, execution_id, agent_id, source_type, title, content, metadata, created_at,
+		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at,
 		       1 - (embedding <=> $1) AS similarity
 		FROM knowledge_entries
 		WHERE agent_id = $2 AND embedding IS NOT NULL
@@ -114,7 +114,7 @@ func (s *Store) SearchKnowledgeByAgent(ctx context.Context, agentID uuid.UUID, q
 		var e models.KnowledgeEntry
 		var metaJSON []byte
 		err := rows.Scan(
-			&e.ID, &e.WorkforceID, &e.ExecutionID, &e.AgentID,
+			&e.ID, &e.WorkforceID, &e.ProjectID, &e.ExecutionID, &e.AgentID,
 			&e.SourceType, &e.Title, &e.Content, &metaJSON, &e.CreatedAt,
 			&e.Similarity,
 		)
@@ -134,7 +134,7 @@ func (s *Store) ListKnowledge(ctx context.Context, workforceID uuid.UUID, limit 
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, workforce_id, execution_id, agent_id, source_type, title, content, metadata, created_at
+		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at
 		FROM knowledge_entries
 		WHERE workforce_id = $1
 		ORDER BY created_at DESC
@@ -151,7 +151,7 @@ func (s *Store) ListKnowledge(ctx context.Context, workforceID uuid.UUID, limit 
 		var e models.KnowledgeEntry
 		var metaJSON []byte
 		err := rows.Scan(
-			&e.ID, &e.WorkforceID, &e.ExecutionID, &e.AgentID,
+			&e.ID, &e.WorkforceID, &e.ProjectID, &e.ExecutionID, &e.AgentID,
 			&e.SourceType, &e.Title, &e.Content, &metaJSON, &e.CreatedAt,
 		)
 		if err != nil {
@@ -163,15 +163,53 @@ func (s *Store) ListKnowledge(ctx context.Context, workforceID uuid.UUID, limit 
 	return results, nil
 }
 
+// ListKnowledgePaged lists knowledge entries with pagination and returns the total count.
+func (s *Store) ListKnowledgePaged(ctx context.Context, workforceID uuid.UUID, limit, offset int) ([]models.KnowledgeEntry, int, error) {
+	var total int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM knowledge_entries WHERE workforce_id = $1`, workforceID,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count knowledge: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at
+		FROM knowledge_entries
+		WHERE workforce_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3`,
+		workforceID, limit, offset,
+	)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list knowledge paged: %w", err)
+	}
+	defer rows.Close()
+
+	var results []models.KnowledgeEntry
+	for rows.Next() {
+		var e models.KnowledgeEntry
+		var metaJSON []byte
+		if err := rows.Scan(
+			&e.ID, &e.WorkforceID, &e.ProjectID, &e.ExecutionID, &e.AgentID,
+			&e.SourceType, &e.Title, &e.Content, &metaJSON, &e.CreatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan knowledge_entry: %w", err)
+		}
+		json.Unmarshal(metaJSON, &e.Metadata)
+		results = append(results, e)
+	}
+	return results, total, nil
+}
+
 // GetKnowledgeEntry retrieves a single knowledge entry by ID.
 func (s *Store) GetKnowledgeEntry(ctx context.Context, id uuid.UUID) (*models.KnowledgeEntry, error) {
 	var e models.KnowledgeEntry
 	var metaJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workforce_id, execution_id, agent_id, source_type, title, content, metadata, created_at
+		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at
 		FROM knowledge_entries WHERE id = $1`, id,
 	).Scan(
-		&e.ID, &e.WorkforceID, &e.ExecutionID, &e.AgentID,
+		&e.ID, &e.WorkforceID, &e.ProjectID, &e.ExecutionID, &e.AgentID,
 		&e.SourceType, &e.Title, &e.Content, &metaJSON, &e.CreatedAt,
 	)
 	if err != nil {

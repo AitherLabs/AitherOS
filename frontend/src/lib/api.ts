@@ -172,14 +172,14 @@ class ApiClient {
     return this.request<KanbanTask[]>(`/api/v1/workforces/${workforceId}/kanban`);
   }
 
-  async createKanbanTask(workforceId: string, data: { title: string; description?: string; priority?: number; assigned_to?: string; created_by?: string }) {
+  async createKanbanTask(workforceId: string, data: { title: string; description?: string; priority?: number; assigned_to?: string; created_by?: string; project_id?: string }) {
     return this.request<KanbanTask>(`/api/v1/workforces/${workforceId}/kanban`, {
       method: 'POST',
       body: JSON.stringify(data)
     });
   }
 
-  async updateKanbanTask(taskId: string, data: Partial<{ title: string; description: string; status: KanbanStatus; priority: number; assigned_to: string; execution_id: string; notes: string; qa_status: KanbanQAStatus; qa_notes: string }>) {
+  async updateKanbanTask(taskId: string, data: Partial<{ title: string; description: string; status: KanbanStatus; priority: number; assigned_to: string; execution_id: string; notes: string; qa_status: KanbanQAStatus; qa_notes: string; project_id: string }>) {
     return this.request<KanbanTask>(`/api/v1/kanban/${taskId}`, {
       method: 'PATCH',
       body: JSON.stringify(data)
@@ -188,6 +188,33 @@ class ApiClient {
 
   async deleteKanbanTask(taskId: string) {
     return this.request<null>(`/api/v1/kanban/${taskId}`, { method: 'DELETE' });
+  }
+
+  // ── Projects ──────────────────────────────────────────
+  async listProjects(workforceId: string) {
+    return this.request<Project[]>(`/api/v1/workforces/${workforceId}/projects`);
+  }
+
+  async createProject(workforceId: string, data: CreateProjectRequest) {
+    return this.request<Project>(`/api/v1/workforces/${workforceId}/projects`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+
+  async getProject(projectId: string) {
+    return this.request<Project>(`/api/v1/projects/${projectId}`);
+  }
+
+  async updateProject(projectId: string, data: UpdateProjectRequest) {
+    return this.request<Project>(`/api/v1/projects/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    });
+  }
+
+  async deleteProject(projectId: string) {
+    return this.request<null>(`/api/v1/projects/${projectId}`, { method: 'DELETE' });
   }
 
   // ── Credentials ───────────────────────────────────────
@@ -475,8 +502,10 @@ class ApiClient {
   }
 
   // ── Knowledge Base ─────────────────────────────────────
-  async listKnowledge(workforceId: string) {
-    return this.request<KnowledgeEntry[]>(`/api/v1/workforces/${workforceId}/knowledge`);
+  async listKnowledge(workforceId: string, limit = 30, offset = 0) {
+    return this.request<{ entries: KnowledgeEntry[]; total: number; limit: number; offset: number }>(
+      `/api/v1/workforces/${workforceId}/knowledge?limit=${limit}&offset=${offset}`
+    );
   }
 
   async createKnowledge(workforceId: string, data: { title: string; content: string }) {
@@ -626,6 +655,7 @@ export type KanbanQAStatus = 'pending' | 'passed' | 'needs_review' | 'skipped';
 export interface KanbanTask {
   id: string;
   workforce_id: string;
+  project_id?: string;
   title: string;
   description: string;
   status: KanbanStatus;
@@ -655,6 +685,7 @@ export interface ExecutionSubtask {
 export interface Execution {
   id: string;
   workforce_id: string;
+  project_id?: string;
   objective: string;
   strategy: string;
   plan: ExecutionSubtask[];
@@ -831,6 +862,7 @@ export interface UpdateMCPServerRequest {
 export interface KnowledgeEntry {
   id: string;
   workforce_id: string;
+  project_id?: string;
   execution_id?: string;
   agent_id?: string;
   source_type: 'execution_result' | 'agent_message' | 'manual' | 'tool_result';
@@ -840,6 +872,38 @@ export interface KnowledgeEntry {
   metadata?: Record<string, any>;
   similarity?: number;
   created_at: string;
+}
+
+// ── Project Types ────────────────────────────────────────
+
+export type ProjectStatus = 'active' | 'paused' | 'completed' | 'archived';
+
+export interface Project {
+  id: string;
+  workforce_id: string;
+  name: string;
+  description: string;
+  status: ProjectStatus;
+  icon: string;
+  color: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProjectRequest {
+  name: string;
+  description?: string;
+  status?: ProjectStatus;
+  icon?: string;
+  color?: string;
+}
+
+export interface UpdateProjectRequest {
+  name?: string;
+  description?: string;
+  status?: ProjectStatus;
+  icon?: string;
+  color?: string;
 }
 
 // ── Approval Types ───────────────────────────────────────

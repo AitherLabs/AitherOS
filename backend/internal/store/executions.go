@@ -78,10 +78,10 @@ func (s *Store) GetExecution(ctx context.Context, id uuid.UUID) (*models.Executi
 	exec := &models.Execution{}
 	var inputsJSON, planJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workforce_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
+		SELECT id, workforce_id, project_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
 		FROM executions WHERE id = $1`, id,
 	).Scan(
-		&exec.ID, &exec.WorkForceID, &exec.Objective, &exec.Strategy, &planJSON, &exec.Status,
+		&exec.ID, &exec.WorkForceID, &exec.ProjectID, &exec.Objective, &exec.Strategy, &planJSON, &exec.Status,
 		&inputsJSON, &exec.TokensUsed, &exec.Iterations, &exec.Title, &exec.Description, &exec.ImageURL,
 		&exec.Result, &exec.ErrorMessage, &exec.StartedAt, &exec.EndedAt, &exec.CreatedAt, &exec.UpdatedAt,
 	)
@@ -109,10 +109,10 @@ func (s *Store) GetLatestExecution(ctx context.Context, workforceID uuid.UUID) (
 	e := &models.Execution{}
 	var inputsJSON, planJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workforce_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
+		SELECT id, workforce_id, project_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
 		FROM executions WHERE workforce_id = $1 ORDER BY created_at DESC LIMIT 1`, workforceID,
 	).Scan(
-		&e.ID, &e.WorkForceID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
+		&e.ID, &e.WorkForceID, &e.ProjectID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
 		&inputsJSON, &e.TokensUsed, &e.Iterations, &e.Title, &e.Description, &e.ImageURL,
 		&e.Result, &e.ErrorMessage, &e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.UpdatedAt,
 	)
@@ -133,7 +133,7 @@ func (s *Store) ListExecutions(ctx context.Context, workforceID uuid.UUID, limit
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, workforce_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
+		SELECT id, workforce_id, project_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
 		FROM executions WHERE workforce_id = $1
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, workforceID, limit, offset,
 	)
@@ -147,7 +147,7 @@ func (s *Store) ListExecutions(ctx context.Context, workforceID uuid.UUID, limit
 		e := &models.Execution{}
 		var inputsJSON, planJSON []byte
 		if err := rows.Scan(
-			&e.ID, &e.WorkForceID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
+			&e.ID, &e.WorkForceID, &e.ProjectID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
 			&inputsJSON, &e.TokensUsed, &e.Iterations, &e.Title, &e.Description, &e.ImageURL,
 			&e.Result, &e.ErrorMessage, &e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.UpdatedAt,
 		); err != nil {
@@ -362,7 +362,7 @@ func (s *Store) ListAllExecutions(ctx context.Context, limit, offset int) ([]*Ex
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT
-			e.id, e.workforce_id, e.objective, e.strategy, e.plan, e.status,
+			e.id, e.workforce_id, e.project_id, e.objective, e.strategy, e.plan, e.status,
 			e.inputs, e.tokens_used, e.iterations, e.title, e.description,
 			e.image_url, e.result, e.error_message, e.started_at, e.ended_at,
 			e.created_at, e.updated_at,
@@ -383,7 +383,7 @@ func (s *Store) ListAllExecutions(ctx context.Context, limit, offset int) ([]*Ex
 		var inputsJSON, planJSON []byte
 		var workforceName *string
 		if err := rows.Scan(
-			&e.ID, &e.WorkForceID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
+			&e.ID, &e.WorkForceID, &e.ProjectID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
 			&inputsJSON, &e.TokensUsed, &e.Iterations, &e.Title, &e.Description, &e.ImageURL,
 			&e.Result, &e.ErrorMessage, &e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.UpdatedAt,
 			&workforceName,
@@ -407,4 +407,13 @@ func (s *Store) ListAllExecutions(ctx context.Context, limit, offset int) ([]*Ex
 	}
 
 	return execs, total, nil
+}
+
+// SetExecutionProject links an execution to a project. Called immediately after StartExecution.
+func (s *Store) SetExecutionProject(ctx context.Context, execID, projectID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE executions SET project_id = $2 WHERE id = $1`, execID, projectID)
+	if err != nil {
+		return fmt.Errorf("set execution project: %w", err)
+	}
+	return nil
 }

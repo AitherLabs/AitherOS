@@ -24,7 +24,7 @@ import {
   IconRobot,
   IconX,
 } from '@tabler/icons-react';
-import api, { Agent, KanbanStatus, KanbanTask, KanbanQAStatus, Workforce } from '@/lib/api';
+import api, { Agent, KanbanStatus, KanbanTask, KanbanQAStatus, Project, Workforce } from '@/lib/api';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -107,7 +107,11 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState(1);
   const [newAssignee, setNewAssignee] = useState('');
+  const [newProjectId, setNewProjectId] = useState('');
   const [adding, setAdding] = useState(false);
+
+  // Projects for this workforce
+  const [projects, setProjects] = useState<Project[]>([]);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
@@ -123,6 +127,10 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   }, [workforceId]);
 
   useEffect(() => { loadTasks(); }, [loadTasks]);
+
+  useEffect(() => {
+    api.listProjects(workforceId).then(res => setProjects(res.data || [])).catch(() => {});
+  }, [workforceId]);
 
   // ── Task actions ───────────────────────────────────────────────────────────
 
@@ -203,10 +211,11 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
         priority: newPriority,
         assigned_to: newAssignee || undefined,
         created_by: 'human',
+        project_id: newProjectId || undefined,
       });
       if (res.data) setTasks(prev => [...prev, res.data!]);
       setAddOpen(false);
-      setNewTitle(''); setNewDesc(''); setNewPriority(1); setNewAssignee('');
+      setNewTitle(''); setNewDesc(''); setNewPriority(1); setNewAssignee(''); setNewProjectId('');
     } finally {
       setAdding(false);
     }
@@ -855,7 +864,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
         open={addOpen}
         onOpenChange={o => {
           setAddOpen(o);
-          if (!o) { setNewTitle(''); setNewDesc(''); setNewPriority(1); setNewAssignee(''); }
+          if (!o) { setNewTitle(''); setNewDesc(''); setNewPriority(1); setNewAssignee(''); setNewProjectId(''); }
         }}
       >
         <DialogContent className='max-w-md'>
@@ -912,6 +921,21 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                 </select>
               </div>
             </div>
+            {projects.length > 0 && (
+              <div className='space-y-1.5'>
+                <Label>Project</Label>
+                <select
+                  value={newProjectId}
+                  onChange={e => setNewProjectId(e.target.value)}
+                  className='w-full rounded-md border border-border/50 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                >
+                  <option value=''>No project</option>
+                  {projects.map(p => (
+                    <option key={p.id} value={p.id}>{p.icon} {p.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant='outline' onClick={() => setAddOpen(false)}>Cancel</Button>

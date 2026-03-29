@@ -45,7 +45,8 @@ import {
   IconLogout,
   IconActivity,
   IconTool,
-  IconBuildingStore
+  IconBuildingStore,
+  IconLayoutList
 } from '@tabler/icons-react';
 
 export type Icon = React.ComponentType<IconProps>;
@@ -97,5 +98,6 @@ export const Icons = {
   terminal: IconTerminal2,
   activity: IconActivity,
   mcp: IconTool,
-  marketplace: IconBuildingStore
+  marketplace: IconBuildingStore,
+  projects: IconLayoutList
 };

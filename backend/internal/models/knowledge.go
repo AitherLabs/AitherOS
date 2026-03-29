@@ -19,6 +19,7 @@ const (
 type KnowledgeEntry struct {
 	ID          uuid.UUID           `json:"id" db:"id"`
 	WorkforceID uuid.UUID           `json:"workforce_id" db:"workforce_id"`
+	ProjectID   *uuid.UUID          `json:"project_id,omitempty" db:"project_id"`
 	ExecutionID *uuid.UUID          `json:"execution_id,omitempty" db:"execution_id"`
 	AgentID     *uuid.UUID          `json:"agent_id,omitempty" db:"agent_id"`
 	SourceType  KnowledgeSourceType `json:"source_type" db:"source_type"`
