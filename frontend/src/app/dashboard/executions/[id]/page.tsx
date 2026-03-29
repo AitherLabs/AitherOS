@@ -10,10 +10,12 @@ import { Textarea } from '@/components/ui/textarea';
 import {
   IconArrowLeft,
   IconArrowsMaximize,
+  IconBolt,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconDownload,
+  IconExternalLink,
   IconHandStop,
   IconKey,
   IconLoader2,
@@ -21,6 +23,7 @@ import {
   IconPencil,
   IconPlayerPlay,
   IconRefresh,
+  IconRobot,
   IconTrash,
   IconSend,
   IconTool,
@@ -32,7 +35,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog';
-import api, { Agent, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
+import api, { Agent, ChatReply, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { Input } from '@/components/ui/input';
@@ -1341,10 +1344,14 @@ export default function ExecutionDetailPage() {
   const [credSaving, setCredSaving] = useState(false);
   const [interveneErrMsg, setInterveneErrMsg] = useState('');
 
-  // Q&A
-  const [qaItems, setQaItems] = useState<ExecutionQA[]>([]);
-  const [qaQuestion, setQaQuestion] = useState('');
-  const [qaLoading, setQaLoading] = useState(false);
+  // Chat
+  type ChatEntry =
+    | { kind: 'answer'; id: string; input: string; answer: string }
+    | { kind: 'action'; id: string; input: string; loading: boolean; action?: ChatReply['action']; error?: string };
+  const [chatEntries, setChatEntries] = useState<ChatEntry[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Metadata editing
   const [metaEditOpen, setMetaEditOpen] = useState(false);
@@ -1419,8 +1426,15 @@ export default function ExecutionDetailPage() {
       if (revResult.status === 'fulfilled')
         setReviewMessages(revResult.value.data || []);
 
-      if (qaResult.status === 'fulfilled')
-        setQaItems(qaResult.value.data || []);
+      if (qaResult.status === 'fulfilled') {
+        const loaded = (qaResult.value.data || []) as ExecutionQA[];
+        setChatEntries(loaded.map(qa => {
+          if (qa.question.startsWith('[send] ') || qa.question.startsWith('[instruct] ')) {
+            return { kind: 'action' as const, id: qa.id, input: qa.question.replace(/^\[(send|instruct)\] /, ''), loading: false, action: undefined };
+          }
+          return { kind: 'answer' as const, id: qa.id, input: qa.question, answer: qa.answer };
+        }));
+      }
 
       if (evResult.status === 'fulfilled') {
         const historical: LiveEvent[] = (evResult.value.data || []).map((e: ExecutionEvent) => ({
@@ -1776,19 +1790,44 @@ export default function ExecutionDetailPage() {
     }
   }
 
-  async function handleAskQA() {
-    if (!qaQuestion.trim() || qaLoading) return;
-    setQaLoading(true);
+  async function handleChat(mode: 'ask' | 'instruct') {
+    const msg = chatInput.trim();
+    if (!msg || chatLoading) return;
+    setChatInput('');
+    setChatLoading(true);
+
+    // Build history for multi-turn context (only ask entries)
+    const history = chatEntries.flatMap(e => {
+      if (e.kind !== 'answer') return [];
+      return [{ role: 'user', content: e.input }, { role: 'assistant', content: e.answer }];
+    });
+
+    const tempId = `tmp-${Date.now()}`;
+    if (mode === 'instruct') {
+      setChatEntries(prev => [...prev, { kind: 'action', id: tempId, input: msg, loading: true }]);
+    }
+
     try {
-      const res = await api.askExecutionQA(execId, qaQuestion.trim());
+      const res = await api.executionChat(execId, mode, msg, history);
       if (res.data) {
-        setQaItems(prev => [...prev, res.data]);
-        setQaQuestion('');
+        if (mode === 'ask') {
+          setChatEntries(prev => [...prev, { kind: 'answer', id: res.data.id, input: msg, answer: res.data.answer! }]);
+        } else {
+          setChatEntries(prev => prev.map(e => e.id === tempId
+            ? { kind: 'action', id: res.data.id, input: msg, loading: false, action: res.data.action }
+            : e));
+        }
+        setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
       }
     } catch (err) {
-      console.error('QA failed:', err);
+      if (mode === 'instruct') {
+        setChatEntries(prev => prev.map(e => e.id === tempId
+          ? { ...e, loading: false, error: 'Failed to send instruction' }
+          : e));
+      }
+      console.error('Chat failed:', err);
     } finally {
-      setQaLoading(false);
+      setChatLoading(false);
     }
   }
 
@@ -2297,58 +2336,105 @@ export default function ExecutionDetailPage() {
               />
             )}
 
-            {/* Post-execution Q&A — ask anything about what happened */}
-            {execution.status === 'completed' && (
-              <div className='rounded-xl border border-[#14FFF7]/20 bg-[#14FFF7]/5 overflow-hidden'>
-                <div className='flex items-center gap-2 border-b border-border/30 px-4 py-2.5'>
-                  <IconMessageQuestion className='h-3.5 w-3.5 text-[#14FFF7]' />
-                  <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Ask about this execution</span>
-                  {qaItems.length > 0 && (
-                    <span className='ml-auto text-[10px] text-muted-foreground/40'>{qaItems.length} question{qaItems.length !== 1 ? 's' : ''}</span>
-                  )}
-                </div>
+            {/* Execution Chat — ask questions or send instructions to agents */}
+            <div className='rounded-xl border border-border/30 bg-background/30 overflow-hidden flex flex-col'>
+              <div className='flex items-center gap-2 border-b border-border/30 px-4 py-2.5 shrink-0'>
+                <IconMessageQuestion className='h-3.5 w-3.5 text-[#14FFF7]' />
+                <span className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Agent Chat</span>
+                <span className='ml-auto text-[10px] text-muted-foreground/40'>
+                  {execution.status === 'halted' ? 'Send instructions to resume' : execution.status === 'running' ? 'Running — intervene anytime' : 'Ask or instruct'}
+                </span>
+              </div>
 
-                {/* Existing Q&A pairs */}
-                {qaItems.length > 0 && (
-                  <div className='divide-y divide-border/20'>
-                    {qaItems.map((qa) => (
-                      <div key={qa.id} className='px-4 py-3 space-y-2'>
-                        <div className='flex items-start gap-2'>
-                          <span className='mt-0.5 text-[10px] font-semibold text-[#FFBF47] shrink-0'>Q</span>
-                          <p className='text-xs text-foreground/80 leading-relaxed'>{qa.question}</p>
-                        </div>
-                        <div className='flex items-start gap-2'>
-                          <span className='mt-0.5 text-[10px] font-semibold text-[#14FFF7] shrink-0'>A</span>
-                          <p className='whitespace-pre-wrap text-xs text-foreground/70 leading-relaxed'>{qa.answer}</p>
+              {/* Message thread */}
+              <div className='flex flex-col gap-3 p-3 max-h-96 overflow-y-auto'>
+                {chatEntries.length === 0 && (
+                  <p className='text-center text-[10px] text-muted-foreground/30 py-4'>
+                    Ask anything about this execution, or send instructions to the agents.
+                  </p>
+                )}
+                {chatEntries.map((entry) => (
+                  <div key={entry.id} className='flex flex-col gap-2'>
+                    {/* User message */}
+                    <div className='flex justify-end'>
+                      <div className='max-w-[80%] rounded-2xl rounded-tr-sm bg-[#9A66FF]/20 border border-[#9A66FF]/20 px-3 py-2'>
+                        <p className='text-xs text-foreground/90 leading-relaxed'>{entry.input}</p>
+                      </div>
+                    </div>
+                    {/* Response */}
+                    {entry.kind === 'answer' && (
+                      <div className='flex justify-start'>
+                        <div className='max-w-[85%] rounded-2xl rounded-tl-sm bg-[#14FFF7]/5 border border-[#14FFF7]/15 px-3 py-2'>
+                          <p className='whitespace-pre-wrap text-xs text-foreground/75 leading-relaxed'>{entry.answer}</p>
                         </div>
                       </div>
-                    ))}
+                    )}
+                    {entry.kind === 'action' && (
+                      <div className='flex justify-start'>
+                        {entry.loading ? (
+                          <div className='flex items-center gap-2 text-xs text-muted-foreground/50'>
+                            <IconLoader2 className='h-3 w-3 animate-spin' />
+                            <span>Sending to agents…</span>
+                          </div>
+                        ) : entry.error ? (
+                          <div className='rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-400'>{entry.error}</div>
+                        ) : entry.action ? (
+                          <div className='rounded-xl border border-[#9A66FF]/25 bg-[#9A66FF]/8 px-3 py-2 flex items-start gap-2'>
+                            <IconBolt className='h-3.5 w-3.5 text-[#9A66FF] mt-0.5 shrink-0' />
+                            <div className='flex flex-col gap-1'>
+                              <p className='text-xs text-[#9A66FF] font-medium'>
+                                {entry.action.type === 'resumed' ? 'Execution resumed' : entry.action.type === 'new_execution' ? 'New execution started' : 'Message delivered'}
+                              </p>
+                              <p className='text-[11px] text-muted-foreground/60'>{entry.action.message}</p>
+                              {entry.action.execution_id && entry.action.type === 'new_execution' && (
+                                <a
+                                  href={`/dashboard/executions/${entry.action.execution_id}`}
+                                  className='mt-0.5 inline-flex items-center gap-1 text-[10px] text-[#9A66FF]/70 hover:text-[#9A66FF] transition-colors'
+                                >
+                                  <IconExternalLink className='h-2.5 w-2.5' />
+                                  View new execution
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
-                )}
+                ))}
+                <div ref={chatEndRef} />
+              </div>
 
-                {/* Input */}
-                <div className='p-3 flex gap-2'>
-                  <Textarea
-                    value={qaQuestion}
-                    onChange={(e) => setQaQuestion(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAskQA(); } }}
-                    placeholder='Ask anything about what happened in this execution…'
-                    className='min-h-[60px] resize-none text-xs bg-background/40 border-border/40 focus:border-[#14FFF7]/40'
-                    disabled={qaLoading}
-                  />
+              {/* Input */}
+              <div className='border-t border-border/30 p-3 flex flex-col gap-2 shrink-0'>
+                <Textarea
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleChat('ask'); } }}
+                  placeholder='Ask a question or give an instruction…'
+                  className='min-h-[56px] resize-none text-xs bg-background/40 border-border/40 focus:border-[#9A66FF]/40'
+                  disabled={chatLoading}
+                />
+                <div className='flex gap-2'>
                   <button
-                    onClick={handleAskQA}
-                    disabled={qaLoading || !qaQuestion.trim()}
-                    className='shrink-0 flex items-center justify-center h-9 w-9 self-end rounded-lg border border-[#14FFF7]/30 bg-[#14FFF7]/10 text-[#14FFF7] hover:bg-[#14FFF7]/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors'
+                    onClick={() => handleChat('ask')}
+                    disabled={chatLoading || !chatInput.trim()}
+                    className='flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[#14FFF7]/30 bg-[#14FFF7]/8 text-[#14FFF7] text-[11px] font-medium hover:bg-[#14FFF7]/15 disabled:opacity-40 disabled:cursor-not-allowed transition-colors'
                   >
-                    {qaLoading
-                      ? <IconLoader2 className='h-3.5 w-3.5 animate-spin' />
-                      : <IconSend className='h-3.5 w-3.5' />
-                    }
+                    <IconMessageQuestion className='h-3 w-3' />
+                    Ask
+                  </button>
+                  <button
+                    onClick={() => handleChat('instruct')}
+                    disabled={chatLoading || !chatInput.trim()}
+                    className='flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[#9A66FF]/30 bg-[#9A66FF]/10 text-[#9A66FF] text-[11px] font-medium hover:bg-[#9A66FF]/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors'
+                  >
+                    {chatLoading ? <IconLoader2 className='h-3 w-3 animate-spin' /> : <IconRobot className='h-3 w-3' />}
+                    Send to agents
                   </button>
                 </div>
               </div>
-            )}
+            </div>
 
             <div ref={messagesEndRef} />
           </div>

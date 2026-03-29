@@ -130,6 +130,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.Handle("GET /api/v1/executions/{execID}/review", protect(http.HandlerFunc(executions.ReviewMessages)))
 	mux.Handle("POST /api/v1/executions/{execID}/qa", protect(http.HandlerFunc(executions.AskQA)))
 	mux.Handle("GET /api/v1/executions/{execID}/qa", protect(http.HandlerFunc(executions.ListQA)))
+	mux.Handle("POST /api/v1/executions/{execID}/chat", protect(http.HandlerFunc(executions.Chat)))
 	mux.Handle("GET /api/v1/executions/{execID}/events", protect(http.HandlerFunc(executions.Events)))
 
 	// File uploads

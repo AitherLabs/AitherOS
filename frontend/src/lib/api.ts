@@ -289,6 +289,13 @@ class ApiClient {
     });
   }
 
+  async executionChat(execId: string, mode: 'ask' | 'instruct', message: string, history: Array<{ role: string; content: string }> = []) {
+    return this.request<ChatReply>(`/api/v1/executions/${execId}/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ mode, message, history })
+    });
+  }
+
   async preflightWorkforce(wfId: string) {
     return this.request<{ ok: boolean; checks: { name: string; ok: boolean; detail: string }[] }>(
       `/api/v1/workforces/${wfId}/preflight`
@@ -908,6 +915,18 @@ export interface ExecutionQA {
   question: string;
   answer: string;
   created_at: string;
+}
+
+export interface ChatReply {
+  kind: 'answer' | 'action';
+  id: string;
+  input: string;
+  answer?: string;
+  action?: {
+    type: 'resumed' | 'new_execution' | 'intervened';
+    execution_id: string;
+    message: string;
+  };
 }
 
 export const api = new ApiClient();

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aitheros/backend/internal/engine"
 	"github.com/aitheros/backend/internal/models"
 	"github.com/aitheros/backend/internal/orchestrator"
 	"github.com/aitheros/backend/internal/store"
@@ -334,7 +335,7 @@ func (h *ExecutionHandler) AskQA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, err := h.orchestrator.AnswerQuestion(r.Context(), execID, body.Question)
+	answer, err := h.orchestrator.AnswerQuestion(r.Context(), execID, body.Question, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "qa failed: "+err.Error())
 		return
@@ -347,6 +348,106 @@ func (h *ExecutionHandler) AskQA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, qa)
+}
+
+// Chat is the interactive execution chatbot endpoint.
+//   - mode "ask": answers a question using the execution transcript (multi-turn)
+//   - mode "instruct": sends an instruction to agents — resumes halted executions,
+//     injects into running ones, or starts a follow-up execution when complete
+func (h *ExecutionHandler) Chat(w http.ResponseWriter, r *http.Request) {
+	execID, err := uuid.Parse(r.PathValue("execID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid execution id")
+		return
+	}
+
+	var body struct {
+		Mode    string `json:"mode"` // "ask" | "instruct"
+		Message string `json:"message"`
+		History []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"history"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Message) == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+
+	type actionResult struct {
+		Type        string `json:"type"`
+		ExecutionID string `json:"execution_id,omitempty"`
+		Message     string `json:"message"`
+	}
+	type chatReply struct {
+		Kind   string        `json:"kind"` // "answer" | "action"
+		ID     string        `json:"id"`
+		Input  string        `json:"input"`
+		Answer string        `json:"answer,omitempty"`
+		Action *actionResult `json:"action,omitempty"`
+	}
+
+	if body.Mode == "instruct" {
+		exec, err := h.store.GetExecution(r.Context(), execID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "execution not found")
+			return
+		}
+
+		reply := chatReply{Kind: "action", ID: uuid.New().String(), Input: body.Message}
+		var ar actionResult
+
+		switch exec.Status {
+		case models.ExecutionStatusHalted:
+			if err := h.orchestrator.ResumeWithInstruction(r.Context(), execID, body.Message); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to resume: "+err.Error())
+				return
+			}
+			ar = actionResult{Type: "resumed", ExecutionID: execID.String(), Message: "Execution resumed with your instruction. Agents are back to work."}
+		case models.ExecutionStatusRunning:
+			if err := h.orchestrator.InjectIntervention(execID, body.Message); err != nil {
+				writeError(w, http.StatusConflict, "cannot deliver message: "+err.Error())
+				return
+			}
+			ar = actionResult{Type: "intervened", ExecutionID: execID.String(), Message: "Message delivered to running agents."}
+		default:
+			newExec, err := h.orchestrator.ContinueExecution(r.Context(), execID, body.Message)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to start follow-up: "+err.Error())
+				return
+			}
+			ar = actionResult{Type: "new_execution", ExecutionID: newExec.ID.String(), Message: "Started a new execution with your instruction."}
+		}
+
+		reply.Action = &ar
+		summary := ar.Message
+		if ar.ExecutionID != "" && ar.ExecutionID != execID.String() {
+			summary += " (new execution " + ar.ExecutionID[:8] + "…)"
+		}
+		h.store.CreateExecutionQA(r.Context(), execID, "[send] "+body.Message, summary)
+		writeJSON(w, http.StatusOK, reply)
+		return
+	}
+
+	// "ask" mode — convert history for the orchestrator
+	var hist []engine.ChatMessage
+	for _, m := range body.History {
+		hist = append(hist, engine.ChatMessage{Role: m.Role, Content: m.Content})
+	}
+
+	answer, err := h.orchestrator.AnswerQuestion(r.Context(), execID, body.Message, hist)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "chat failed: "+err.Error())
+		return
+	}
+
+	qa, err := h.store.CreateExecutionQA(r.Context(), execID, body.Message, answer)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, chatReply{Kind: "answer", ID: qa.ID.String(), Input: body.Message, Answer: answer})
 }
 
 // Events returns the persisted event log for an execution (action-level events only).

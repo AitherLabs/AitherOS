@@ -3072,7 +3072,45 @@ func joinResults(results []string) string {
 
 // AnswerQuestion answers a user question about a finished execution using the
 // full agent transcript as context. Returns the LLM answer as a string.
-func (o *Orchestrator) AnswerQuestion(ctx context.Context, execID uuid.UUID, question string) (string, error) {
+// ContinueExecution starts a new execution on the same workforce with the user's instruction
+// and a compact summary of what the previous execution accomplished as context.
+func (o *Orchestrator) ContinueExecution(ctx context.Context, prevExecID uuid.UUID, instruction string) (*models.Execution, error) {
+	prevExec, err := o.store.GetExecution(ctx, prevExecID)
+	if err != nil {
+		return nil, fmt.Errorf("previous execution not found: %w", err)
+	}
+
+	contextNote := fmt.Sprintf("Previous objective: %s", prevExec.Objective)
+	if prevExec.Result != "" {
+		result := prevExec.Result
+		if len(result) > 800 {
+			result = result[:800] + "…"
+		}
+		contextNote += "\nPrevious outcome: " + result
+	}
+
+	objective := instruction + "\n\n[Continuing from execution " + prevExecID.String()[:8] + "]\n" + contextNote
+	return o.StartExecution(ctx, prevExec.WorkForceID, objective, nil)
+}
+
+// ResumeWithInstruction resumes a halted execution and injects the operator's instruction
+// as an intervention message that agents will see on the next iteration.
+func (o *Orchestrator) ResumeWithInstruction(ctx context.Context, execID uuid.UUID, instruction string) error {
+	// Store the instruction as a message so agents see it after resume
+	msg := &models.Message{
+		ID:        uuid.New(),
+		ExecutionID: execID,
+		Iteration: 0,
+		Role:      models.MessageRoleUser,
+		AgentName: "operator",
+		Content:   "[Operator instruction]: " + instruction,
+		CreatedAt: time.Now(),
+	}
+	o.store.CreateMessage(ctx, msg)
+	return o.ResumeExecution(ctx, execID)
+}
+
+func (o *Orchestrator) AnswerQuestion(ctx context.Context, execID uuid.UUID, question string, history []engine.ChatMessage) (string, error) {
 	// Load execution
 	exec, err := o.store.GetExecution(ctx, execID)
 	if err != nil {
@@ -3110,14 +3148,25 @@ func (o *Orchestrator) AnswerQuestion(ctx context.Context, execID uuid.UUID, que
 		transcript = transcript[:12000] + "\n\n...(transcript truncated)"
 	}
 
-	systemPrompt := "You are an expert analyst reviewing an AI agent execution. " +
-		"Answer the user's question concisely and factually based solely on the execution transcript provided. " +
+	systemPrompt := "You are an intelligent assistant with full context of an AI agent execution. " +
+		"Answer questions concisely and factually based on the execution transcript. " +
+		"If asked about files, outputs, or results, be specific about what agents produced. " +
 		"If the answer cannot be determined from the transcript, say so clearly."
 
-	message := fmt.Sprintf(
-		"## Execution: %s\n**Objective:** %s\n\n## Agent Transcript\n\n%s\n\n---\n\n## Question\n%s",
-		execID, exec.Objective, transcript, question,
+	// Build the context message (only sent once, as the first user turn)
+	contextMsg := fmt.Sprintf(
+		"## Execution Context\n**ID:** %s\n**Status:** %s\n**Objective:** %s\n\n## Agent Transcript\n\n%s",
+		execID, exec.Status, exec.Objective, transcript,
 	)
+
+	// Build full history: context first, then prior conversation, then current question
+	fullHistory := []engine.ChatMessage{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: contextMsg},
+		{Role: "assistant", Content: "Understood. I have reviewed the execution context and agent transcript. What would you like to know?"},
+	}
+	fullHistory = append(fullHistory, history...)
+	fullHistory = append(fullHistory, engine.ChatMessage{Role: "user", Content: question})
 
 	// Resolve connector via default provider
 	var eng engine.Connector
@@ -3154,10 +3203,9 @@ func (o *Orchestrator) AnswerQuestion(ctx context.Context, execID uuid.UUID, que
 	}
 
 	resp, err := eng.Submit(ctx, engine.TaskRequest{
-		AgentName:    "qa-analyst",
-		SystemPrompt: systemPrompt,
-		Message:      message,
-		Model:        modelName,
+		AgentName: "qa-analyst",
+		Model:     modelName,
+		History:   fullHistory,
 	})
 	if err != nil {
 		return "", fmt.Errorf("llm call: %w", err)
