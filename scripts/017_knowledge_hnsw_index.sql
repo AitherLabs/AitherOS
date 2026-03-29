@@ -7,7 +7,9 @@
 --
 -- Requires: pgvector >= 0.5.0 (ships with postgresql-16-pgvector on Debian/Ubuntu)
 
+-- Cast to the actual embedding dimension (768 from text-embedding-3-small / nomic-embed-text).
+-- The column has no fixed dimension, so the index requires an explicit cast.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_knowledge_embedding_hnsw
     ON knowledge_entries
-    USING hnsw (embedding vector_cosine_ops)
+    USING hnsw ((embedding::vector(768)) vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
