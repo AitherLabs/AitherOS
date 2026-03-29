@@ -18,6 +18,7 @@ import {
   IconBolt,
   IconEdit,
   IconExternalLink,
+  IconFolder,
   IconLoader2,
   IconPlayerPlay,
   IconPlus,
@@ -113,6 +114,14 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   // Projects for this workforce
   const [projects, setProjects] = useState<Project[]>([]);
 
+  // New project dialog
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [projName, setProjName] = useState('');
+  const [projDesc, setProjDesc] = useState('');
+  const [projIcon, setProjIcon] = useState('📁');
+  const [projColor, setProjColor] = useState('#9A66FF');
+  const [creatingProject, setCreatingProject] = useState(false);
+
   // ── Data fetching ──────────────────────────────────────────────────────────
 
   const loadTasks = useCallback(async () => {
@@ -199,6 +208,24 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
       .filter(t => t.status === 'todo')
       .sort((a, b) => b.priority - a.priority || a.position - b.position)[0];
     if (next) await runTask(next);
+  }
+
+  async function handleCreateProject() {
+    if (!projName.trim()) return;
+    setCreatingProject(true);
+    try {
+      const res = await api.createProject(workforceId, {
+        name: projName.trim(),
+        description: projDesc.trim(),
+        icon: projIcon,
+        color: projColor,
+      });
+      if (res.data) setProjects(prev => [...prev, res.data!]);
+      setProjectOpen(false);
+      setProjName(''); setProjDesc(''); setProjIcon('📁'); setProjColor('#9A66FF');
+    } finally {
+      setCreatingProject(false);
+    }
   }
 
   async function handleAddTask() {
@@ -359,6 +386,15 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
             </Button>
           )}
 
+          <Button
+            size='sm'
+            variant='outline'
+            className='border-[#14FFF7]/30 text-[#14FFF7]/70 hover:bg-[#14FFF7]/10'
+            onClick={() => setProjectOpen(true)}
+          >
+            <IconFolder className='mr-1 h-3.5 w-3.5' />
+            New Project
+          </Button>
           <Button
             size='sm'
             variant='outline'
@@ -626,6 +662,72 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
           <IconLoader2 className='h-5 w-5 animate-spin text-muted-foreground' />
         </div>
       )}
+
+      {/* ── New Project Dialog ─────────────────────────────────────── */}
+      <Dialog open={projectOpen} onOpenChange={o => { setProjectOpen(o); if (!o) { setProjName(''); setProjDesc(''); setProjIcon('📁'); setProjColor('#9A66FF'); } }}>
+        <DialogContent className='max-w-sm'>
+          <DialogHeader>
+            <DialogTitle>New Project</DialogTitle>
+            <DialogDescription>Create a project to group tasks and executions for this workforce.</DialogDescription>
+          </DialogHeader>
+          <div className='space-y-3 py-1'>
+            <div className='space-y-1.5'>
+              <Label>Name <span className='text-destructive'>*</span></Label>
+              <Input
+                placeholder='e.g. Q2 Campaign'
+                value={projName}
+                onChange={e => setProjName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleCreateProject()}
+                autoFocus
+              />
+            </div>
+            <div className='space-y-1.5'>
+              <Label>Description</Label>
+              <Textarea
+                placeholder='What is this project about?'
+                value={projDesc}
+                onChange={e => setProjDesc(e.target.value)}
+                rows={2}
+                className='resize-none text-xs'
+              />
+            </div>
+            <div className='flex gap-4'>
+              <div className='space-y-1.5'>
+                <Label>Icon</Label>
+                <div className='flex flex-wrap gap-1 w-36'>
+                  {['📁', '🎨', '⚡', '🚀', '💡', '🔧', '🌐', '📊', '🤖', '🎯', '🏗️', '📝'].map(ic => (
+                    <button key={ic} onClick={() => setProjIcon(ic)}
+                      className={`flex h-7 w-7 items-center justify-center rounded text-base transition-all ${projIcon === ic ? 'bg-[#9A66FF]/20 ring-1 ring-[#9A66FF]' : 'hover:bg-accent'}`}
+                    >{ic}</button>
+                  ))}
+                </div>
+              </div>
+              <div className='space-y-1.5'>
+                <Label>Color</Label>
+                <div className='flex flex-wrap gap-1.5'>
+                  {['#9A66FF', '#56D090', '#14FFF7', '#FFBF47', '#EF4444', '#3B82F6', '#EC4899', '#F97316'].map(c => (
+                    <button key={c} onClick={() => setProjColor(c)}
+                      className={`h-6 w-6 rounded-full transition-all ${projColor === c ? 'ring-2 ring-offset-1 ring-offset-background' : ''}`}
+                      style={{ backgroundColor: c, boxShadow: projColor === c ? `0 0 0 2px ${c}` : undefined }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant='outline' onClick={() => setProjectOpen(false)}>Cancel</Button>
+            <Button
+              disabled={!projName.trim() || creatingProject}
+              className='bg-[#9A66FF] hover:bg-[#9A66FF]/90'
+              onClick={handleCreateProject}
+            >
+              {creatingProject ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : null}
+              Create Project
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Move Reason Dialog (Open → To Do) ──────────────────────────── */}
       <Dialog
