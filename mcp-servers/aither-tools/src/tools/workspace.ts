@@ -180,7 +180,10 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
 
   async notes_read(args) {
     await fs.mkdir(NOTES_DIR, { recursive: true });
-    const file = path.join(NOTES_DIR, (args.file as string) || 'notes.md');
+    // Use path.basename to strip any directory components — notes are flat files only.
+    // This prevents traversal like "../../workspace/secrets" escaping NOTES_DIR.
+    const baseName = path.basename((args.file as string) || 'notes.md');
+    const file = path.join(NOTES_DIR, baseName);
     try {
       const content = await fs.readFile(file, 'utf8');
       return content || '(notes file is empty)';
@@ -191,7 +194,8 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
 
   async notes_write(args) {
     await fs.mkdir(NOTES_DIR, { recursive: true });
-    const file    = path.join(NOTES_DIR, (args.file as string) || 'notes.md');
+    const baseName = path.basename((args.file as string) || 'notes.md');
+    const file    = path.join(NOTES_DIR, baseName);
     const content = args.content as string;
     const append  = args.append !== false;
     if (append) {

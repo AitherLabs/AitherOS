@@ -18,7 +18,7 @@ import fs   from 'node:fs/promises';
 import path from 'node:path';
 import https from 'node:https';
 import http  from 'node:http';
-import { WORKSPACE } from '../config.js';
+import { WORKSPACE, safeResolve } from '../config.js';
 
 const IMAGE_API_KEY  = process.env.AITHER_IMAGE_API_KEY  ?? '';
 const IMAGE_BASE_URL = process.env.AITHER_IMAGE_BASE_URL ?? '';
@@ -217,10 +217,10 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
     const aspectRatio = (args.aspect_ratio as string | undefined) || '1:1';
     const { openaiSize, falSize } = resolveSize(aspectRatio);
 
-    // Resolve output path relative to workspace
-    const absPath = path.isAbsolute(outputPath)
-      ? outputPath
-      : path.join(WORKSPACE, outputPath);
+    // Resolve output path and enforce workspace boundary.
+    // safeResolve rejects paths outside WORKSPACE/NOTES_DIR/TOOLS_DIR,
+    // preventing agents from writing images to arbitrary filesystem locations.
+    const absPath = safeResolve(outputPath, WORKSPACE);
 
     // Ensure parent directory exists
     await fs.mkdir(path.dirname(absPath), { recursive: true });

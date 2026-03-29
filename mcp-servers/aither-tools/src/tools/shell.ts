@@ -40,16 +40,38 @@ function safeChildEnv(extra: Record<string, string> = {}): Record<string, string
   return safe;
 }
 
-/** Check whether a shell command contains references to blocked paths. */
+/** Check whether a shell command contains references to blocked paths.
+ *
+ * Defense-in-depth only — not a proper sandbox. For real isolation use Docker/seccomp.
+ * Normalizes the command string before checking to catch common bypass attempts:
+ *   - Removes shell quoting tricks: '', "", $'...'
+ *   - Strips ANSI/backslash escapes within paths
+ *   - Catches variable-assignment + direct use patterns
+ */
 function assertCommandSafe(command: string): void {
+  // Build a normalized version for pattern matching while keeping original for error messages.
+  // Strip common quoting escape tricks used to break string prefix matches.
+  const normalized = command
+    .replace(/['"]/g, '')           // strip single/double quotes
+    .replace(/\\\s/g, '')           // strip backslash-space
+    .replace(/\$'\S*'/g, '')        // strip $'...' ANSI-C quoting
+    .replace(/\s+/g, ' ');          // collapse whitespace
+
   for (const prefix of BLOCKED_PATH_PREFIXES) {
-    // Simple string scan — catches most cases; not a perfect sandbox (use Docker for that).
-    if (command.includes(prefix)) {
+    if (command.includes(prefix) || normalized.includes(prefix)) {
       throw new Error(
         `Command blocked: references restricted path '${prefix}'. ` +
         `Agents may only access the workforce workspace and allowed directories.`
       );
     }
+  }
+
+  // Block attempts to cd to a restricted directory then use relative paths.
+  // e.g. "cd / && cat etc/passwd" or "cd /etc; ls"
+  if (/\bcd\s+\/\s*[;&|]/.test(command)) {
+    throw new Error(
+      `Command blocked: 'cd /' followed by a chained command is not permitted.`
+    );
   }
 }
 
