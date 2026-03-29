@@ -185,6 +185,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.Handle("PATCH /api/v1/projects/{projectID}", protect(http.HandlerFunc(projects.Update)))
 	mux.Handle("DELETE /api/v1/projects/{projectID}", protect(http.HandlerFunc(projects.Delete)))
 	mux.Handle("POST /api/v1/projects/{projectID}/brief/refresh", protect(http.HandlerFunc(projects.RefreshBrief)))
+	mux.Handle("GET /api/v1/projects/{projectID}/knowledge", protect(http.HandlerFunc(projects.ListKnowledge)))
 
 	// Approvals
 	mux.Handle("POST /api/v1/workforces/{id}/approvals", protect(http.HandlerFunc(approvals.Create)))

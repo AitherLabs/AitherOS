@@ -208,6 +208,10 @@ const maxDiscussionContribChars = 500
 // maxRAGContextChars caps the total RAG/episodic-memory text injected per agent call.
 const maxRAGContextChars = 2000
 
+// maxBriefContextChars caps the project brief text injected per agent call.
+// The brief can grow large over time; 6000 chars ≈ 1500 tokens is generous but bounded.
+const maxBriefContextChars = 6000
+
 // maxToolResultHistoryChars caps tool results stored in the chat history to avoid
 // multi-round context blowup (the full result is still returned to the agent in the
 // current round — only subsequent rounds see the truncated version).
@@ -1140,7 +1144,11 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	// This replaces the need for agents to re-scan directories or rediscover known state.
 	if p.exec.ProjectID != nil && *p.exec.ProjectID != uuid.Nil {
 		if proj, err := o.store.GetProject(ctx, *p.exec.ProjectID); err == nil && proj.Brief != "" {
-			taskParts = append(taskParts, fmt.Sprintf("## Project Brief\n%s", proj.Brief))
+			brief := proj.Brief
+			if len(brief) > maxBriefContextChars {
+				brief = brief[:maxBriefContextChars] + fmt.Sprintf("\n… (truncated, %d chars total)", len(proj.Brief))
+			}
+			taskParts = append(taskParts, fmt.Sprintf("## Project Brief\n%s", brief))
 		}
 	}
 	if projectFactsCtx != "" {

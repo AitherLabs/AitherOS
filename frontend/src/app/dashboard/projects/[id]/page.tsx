@@ -5,9 +5,9 @@ import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
   IconArrowLeft, IconCheck, IconChevronDown, IconChevronUp,
-  IconEdit, IconLoader2, IconRefresh, IconX
+  IconEdit, IconLoader2, IconRefresh, IconX, IconBrain
 } from '@tabler/icons-react';
-import api, { Execution, KanbanTask, Project, ProjectStatus, UpdateProjectRequest } from '@/lib/api';
+import api, { Execution, KanbanTask, KnowledgeEntry, Project, ProjectStatus, UpdateProjectRequest } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -71,6 +71,8 @@ export default function ProjectDetailPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<KanbanTask[]>([]);
   const [executions, setExecutions] = useState<Execution[]>([]);
+  const [facts, setFacts] = useState<KnowledgeEntry[]>([]);
+  const [factsExpanded, setFactsExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -105,12 +107,14 @@ export default function ProjectDetailPage() {
       setEditBrief(p.brief);
       setEditBriefInterval(p.brief_interval_m);
 
-      const [kanbanRes, execRes] = await Promise.all([
+      const [kanbanRes, execRes, factsRes] = await Promise.all([
         api.listKanbanTasks(p.workforce_id),
         api.listAllExecutions(),
+        api.listProjectKnowledge(projectId),
       ]);
       setTasks((kanbanRes.data || []).filter(t => t.project_id === projectId));
       setExecutions((execRes.data || []).filter(e => e.project_id === projectId));
+      setFacts(factsRes.data || []);
     } catch (err) {
       console.error('Failed to load project:', err);
     } finally {
@@ -290,6 +294,7 @@ export default function ProjectDetailPage() {
           <span><span className='font-semibold text-[#9A66FF]'>{activeTasks}</span> in progress</span>
           <span><span className='font-semibold text-foreground/80'>{executions.length}</span> executions</span>
           <span><span className='font-semibold text-[#56D090]'>{completedExecs}</span> completed</span>
+          <span><span className='font-semibold text-[#14FFF7]'>{facts.length}</span> facts</span>
         </div>
       </div>
 
@@ -400,6 +405,41 @@ export default function ProjectDetailPage() {
             </div>
           )}
         </div>
+
+        {/* ── Project Facts (extracted knowledge) ─────────────────────── */}
+        {facts.length > 0 && (
+          <div className='rounded-xl border border-border/40 bg-background/60'>
+            <button
+              className='flex w-full items-center justify-between px-4 py-3 border-b border-border/30 text-xs font-semibold uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground transition-colors'
+              onClick={() => setFactsExpanded(v => !v)}
+            >
+              <div className='flex items-center gap-2'>
+                <IconBrain className='h-3.5 w-3.5' />
+                Project Facts
+                <span
+                  className='ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold'
+                  style={{ backgroundColor: '#14FFF718', color: '#14FFF7' }}
+                >
+                  {facts.length}
+                </span>
+              </div>
+              {factsExpanded ? <IconChevronUp className='h-3.5 w-3.5' /> : <IconChevronDown className='h-3.5 w-3.5' />}
+            </button>
+            {factsExpanded && (
+              <div className='divide-y divide-border/20'>
+                {facts.map(fact => (
+                  <div key={fact.id} className='px-4 py-3'>
+                    <div className='flex items-start justify-between gap-2 mb-1'>
+                      <p className='text-xs font-semibold text-foreground/80'>{fact.title}</p>
+                      <span className='shrink-0 text-[10px] text-muted-foreground/40'>{timeAgo(fact.created_at)}</span>
+                    </div>
+                    <p className='text-[11px] text-muted-foreground/70 leading-relaxed whitespace-pre-wrap'>{fact.content}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── Tasks & Executions ──────────────────────────────────────── */}
         <div className='grid gap-6 lg:grid-cols-2'>

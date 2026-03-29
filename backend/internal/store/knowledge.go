@@ -245,6 +245,41 @@ func (s *Store) ListKnowledgePaged(ctx context.Context, workforceID uuid.UUID, l
 	return results, total, nil
 }
 
+// ListKnowledgeByProject lists project_fact entries for a project (chronological, newest first).
+func (s *Store) ListKnowledgeByProject(ctx context.Context, projectID uuid.UUID, limit int) ([]models.KnowledgeEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at
+		FROM knowledge_entries
+		WHERE project_id = $1 AND source_type = 'project_fact'
+		ORDER BY created_at DESC
+		LIMIT $2`,
+		projectID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list knowledge by project: %w", err)
+	}
+	defer rows.Close()
+
+	var results []models.KnowledgeEntry
+	for rows.Next() {
+		var e models.KnowledgeEntry
+		var metaJSON []byte
+		if err := rows.Scan(
+			&e.ID, &e.WorkforceID, &e.ProjectID, &e.ExecutionID, &e.AgentID,
+			&e.SourceType, &e.Title, &e.Content, &metaJSON, &e.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan knowledge_entry: %w", err)
+		}
+		json.Unmarshal(metaJSON, &e.Metadata)
+		results = append(results, e)
+	}
+	return results, nil
+}
+
 // GetKnowledgeEntry retrieves a single knowledge entry by ID.
 func (s *Store) GetKnowledgeEntry(ctx context.Context, id uuid.UUID) (*models.KnowledgeEntry, error) {
 	var e models.KnowledgeEntry

@@ -536,6 +536,10 @@ class ApiClient {
     return this.request<{ count: number }>(`/api/v1/workforces/${workforceId}/knowledge/count`);
   }
 
+  async listProjectKnowledge(projectId: string) {
+    return this.request<KnowledgeEntry[]>(`/api/v1/projects/${projectId}/knowledge`);
+  }
+
   // ── Approvals ───────────────────────────────────────────
   async listApprovals(workforceId: string, status?: string) {
     const qs = status ? `?status=${status}` : '';
@@ -871,7 +875,7 @@ export interface KnowledgeEntry {
   project_id?: string;
   execution_id?: string;
   agent_id?: string;
-  source_type: 'execution_result' | 'agent_message' | 'manual' | 'tool_result';
+  source_type: 'execution_result' | 'agent_message' | 'manual' | 'tool_result' | 'lesson' | 'project_fact';
   title: string;
   content: string;
   embedding?: number[] | null;

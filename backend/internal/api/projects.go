@@ -101,6 +101,24 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "project deleted"})
 }
 
+// ListKnowledge returns project_fact knowledge entries for a project (newest first).
+func (h *ProjectHandler) ListKnowledge(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("projectID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	entries, err := h.store.ListKnowledgeByProject(r.Context(), id, 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []models.KnowledgeEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
 // RefreshBrief triggers an LLM-based brief regeneration for the project.
 // Synchronous — waits for the LLM call to complete (up to 3 minutes) and returns the updated project.
 func (h *ProjectHandler) RefreshBrief(w http.ResponseWriter, r *http.Request) {
