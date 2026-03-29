@@ -53,10 +53,10 @@ func (s *Store) SearchKnowledge(ctx context.Context, workforceID uuid.UUID, quer
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at,
-		       1 - (embedding <=> $1) AS similarity
+		       1 - (embedding::vector(768) <=> $1) AS similarity
 		FROM knowledge_entries
 		WHERE workforce_id = $2 AND embedding IS NOT NULL
-		ORDER BY embedding <=> $1
+		ORDER BY embedding::vector(768) <=> $1
 		LIMIT $3`,
 		qv, workforceID, limit,
 	)
@@ -97,10 +97,10 @@ func (s *Store) SearchKnowledgeByAgent(ctx context.Context, agentID uuid.UUID, q
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at,
-		       1 - (embedding <=> $1) AS similarity
+		       1 - (embedding::vector(768) <=> $1) AS similarity
 		FROM knowledge_entries
 		WHERE agent_id = $2 AND embedding IS NOT NULL
-		ORDER BY embedding <=> $1
+		ORDER BY embedding::vector(768) <=> $1
 		LIMIT $3`,
 		qv, agentID, limit,
 	)
@@ -141,10 +141,10 @@ func (s *Store) SearchKnowledgeByProject(ctx context.Context, projectID uuid.UUI
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, workforce_id, project_id, execution_id, agent_id, source_type, title, content, metadata, created_at,
-		       1 - (embedding <=> $1) AS similarity
+		       1 - (embedding::vector(768) <=> $1) AS similarity
 		FROM knowledge_entries
 		WHERE project_id = $2 AND source_type = 'project_fact' AND embedding IS NOT NULL
-		ORDER BY embedding <=> $1
+		ORDER BY embedding::vector(768) <=> $1
 		LIMIT $3`,
 		qv, projectID, limit,
 	)
