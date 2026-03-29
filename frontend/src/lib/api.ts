@@ -217,6 +217,10 @@ class ApiClient {
     return this.request<null>(`/api/v1/projects/${projectId}`, { method: 'DELETE' });
   }
 
+  async refreshProjectBrief(projectId: string) {
+    return this.request<Project>(`/api/v1/projects/${projectId}/brief/refresh`, { method: 'POST' });
+  }
+
   // ── Credentials ───────────────────────────────────────
   async listCredentials(workforceId: string) {
     return this.request<Credential[]>(`/api/v1/workforces/${workforceId}/credentials`);
@@ -886,6 +890,9 @@ export interface Project {
   status: ProjectStatus;
   icon: string;
   color: string;
+  brief: string;
+  brief_updated_at?: string;
+  brief_interval_m: number;
   created_at: string;
   updated_at: string;
 }
@@ -896,6 +903,7 @@ export interface CreateProjectRequest {
   status?: ProjectStatus;
   icon?: string;
   color?: string;
+  brief_interval_m?: number;
 }
 
 export interface UpdateProjectRequest {
@@ -904,6 +912,8 @@ export interface UpdateProjectRequest {
   status?: ProjectStatus;
   icon?: string;
   color?: string;
+  brief?: string;
+  brief_interval_m?: number;
 }
 
 // ── Approval Types ───────────────────────────────────────

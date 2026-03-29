@@ -4,8 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
-  IconArrowLeft, IconBolt, IconCheck, IconCircleDashed, IconEdit,
-  IconLoader2, IconPause, IconArchive, IconX
+  IconArrowLeft, IconCheck, IconChevronDown, IconChevronUp,
+  IconEdit, IconLoader2, IconRefresh, IconX
 } from '@tabler/icons-react';
 import api, { Execution, KanbanTask, Project, ProjectStatus, UpdateProjectRequest } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,15 @@ const KANBAN_STATUS_CFG: Record<string, { color: string; label: string }> = {
 const ICON_OPTIONS = ['📁', '🎨', '⚡', '🚀', '💡', '🔧', '🌐', '📊', '🤖', '🎯', '🏗️', '📝'];
 const COLOR_OPTIONS = ['#9A66FF', '#56D090', '#14FFF7', '#FFBF47', '#EF4444', '#3B82F6', '#EC4899', '#F97316'];
 
+const INTERVAL_OPTIONS = [
+  { value: 0,   label: 'Manual only' },
+  { value: 30,  label: 'Every 30 min' },
+  { value: 60,  label: 'Every hour' },
+  { value: 120, label: 'Every 2 hours' },
+  { value: 240, label: 'Every 4 hours' },
+  { value: 480, label: 'Every 8 hours' },
+];
+
 function timeAgo(date: string): string {
   const diff = Date.now() - new Date(date).getTime();
   const mins = Math.floor(diff / 60000);
@@ -66,12 +75,20 @@ export default function ProjectDetailPage() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Edit state
+  // Project edit state
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [editStatus, setEditStatus] = useState<ProjectStatus>('active');
   const [editIcon, setEditIcon] = useState('📁');
   const [editColor, setEditColor] = useState('#9A66FF');
+
+  // Brief state
+  const [briefExpanded, setBriefExpanded] = useState(true);
+  const [editingBrief, setEditingBrief] = useState(false);
+  const [editBrief, setEditBrief] = useState('');
+  const [editBriefInterval, setEditBriefInterval] = useState(0);
+  const [savingBrief, setSavingBrief] = useState(false);
+  const [refreshingBrief, setRefreshingBrief] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -85,8 +102,9 @@ export default function ProjectDetailPage() {
       setEditStatus(p.status);
       setEditIcon(p.icon);
       setEditColor(p.color);
+      setEditBrief(p.brief);
+      setEditBriefInterval(p.brief_interval_m);
 
-      // Load tasks and executions for this project's workforce
       const [kanbanRes, execRes] = await Promise.all([
         api.listKanbanTasks(p.workforce_id),
         api.listAllExecutions(),
@@ -121,6 +139,37 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function handleSaveBrief() {
+    if (!project) return;
+    setSavingBrief(true);
+    try {
+      const res = await api.updateProject(project.id, {
+        brief: editBrief,
+        brief_interval_m: editBriefInterval,
+      });
+      if (res.data) setProject(res.data);
+      setEditingBrief(false);
+    } finally {
+      setSavingBrief(false);
+    }
+  }
+
+  async function handleRefreshBrief() {
+    if (!project) return;
+    setRefreshingBrief(true);
+    try {
+      const res = await api.refreshProjectBrief(project.id);
+      if (res.data) {
+        setProject(res.data);
+        setEditBrief(res.data.brief);
+      }
+    } catch (err) {
+      console.error('Brief refresh failed:', err);
+    } finally {
+      setRefreshingBrief(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className='flex h-[calc(100vh-64px)] items-center justify-center'>
@@ -142,6 +191,7 @@ export default function ProjectDetailPage() {
   const doneTasks = tasks.filter(t => t.status === 'done').length;
   const activeTasks = tasks.filter(t => t.status === 'in_progress').length;
   const completedExecs = executions.filter(e => e.status === 'completed').length;
+  const intervalLabel = INTERVAL_OPTIONS.find(o => o.value === project.brief_interval_m)?.label ?? `Every ${project.brief_interval_m} min`;
 
   return (
     <div className='flex flex-col h-[calc(100vh-64px)]'>
@@ -244,80 +294,189 @@ export default function ProjectDetailPage() {
       </div>
 
       {/* Content */}
-      <div className='flex-1 overflow-y-auto px-6 py-4 grid gap-6 lg:grid-cols-2 content-start'>
-        {/* Kanban Tasks */}
-        <div>
-          <h3 className='mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground/50'>
-            Tasks ({tasks.length})
-          </h3>
-          {tasks.length === 0 ? (
-            <div className='flex h-24 items-center justify-center rounded-xl border border-dashed border-border/50'>
-              <p className='text-xs text-muted-foreground'>No tasks linked to this project yet.</p>
+      <div className='flex-1 overflow-y-auto px-6 py-4 space-y-6'>
+
+        {/* ── Project Brief ────────────────────────────────────────────── */}
+        <div className='rounded-xl border border-border/40 bg-background/60'>
+          {/* Brief header */}
+          <div className='flex items-center justify-between px-4 py-3 border-b border-border/30'>
+            <div className='flex items-center gap-3'>
+              <button
+                onClick={() => setBriefExpanded(v => !v)}
+                className='flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground/50 hover:text-muted-foreground transition-colors'
+              >
+                {briefExpanded ? <IconChevronUp className='h-3.5 w-3.5' /> : <IconChevronDown className='h-3.5 w-3.5' />}
+                Project Brief
+              </button>
+              <div className='flex items-center gap-1.5'>
+                <div
+                  className='rounded px-1.5 py-0.5 text-[10px] font-medium'
+                  style={{ backgroundColor: '#9A66FF18', color: '#9A66FF' }}
+                >
+                  {intervalLabel}
+                </div>
+                {project.brief_updated_at && (
+                  <span className='text-[10px] text-muted-foreground/40'>
+                    updated {timeAgo(project.brief_updated_at)}
+                  </span>
+                )}
+              </div>
             </div>
-          ) : (
-            <div className='space-y-2'>
-              {tasks.map(task => {
-                const kcfg = KANBAN_STATUS_CFG[task.status] || { color: '#888', label: task.status };
-                return (
-                  <div
-                    key={task.id}
-                    className='flex items-start gap-3 rounded-xl border border-border/40 bg-background/60 px-4 py-3'
-                    style={{ borderLeftColor: kcfg.color + '60', borderLeftWidth: 3 }}
-                  >
-                    <div className='flex-1 min-w-0'>
-                      <p className='text-sm font-medium line-clamp-1'>{task.title}</p>
-                      {task.description && (
-                        <p className='text-[11px] text-muted-foreground/60 line-clamp-1 mt-0.5'>{task.description}</p>
-                      )}
-                    </div>
-                    <div
-                      className='shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold'
-                      style={{ backgroundColor: kcfg.color + '18', color: kcfg.color }}
+            <div className='flex items-center gap-1.5'>
+              {!editingBrief && (
+                <Button
+                  size='sm'
+                  variant='outline'
+                  className='h-7 px-2 text-xs border-[#9A66FF]/30 text-[#9A66FF] hover:bg-[#9A66FF]/10'
+                  onClick={handleRefreshBrief}
+                  disabled={refreshingBrief}
+                >
+                  {refreshingBrief
+                    ? <IconLoader2 className='h-3 w-3 animate-spin mr-1' />
+                    : <IconRefresh className='h-3 w-3 mr-1' />
+                  }
+                  {refreshingBrief ? 'Refreshing…' : 'AI Refresh'}
+                </Button>
+              )}
+              {editingBrief ? (
+                <>
+                  <Button size='sm' variant='outline' className='h-7 px-2 text-xs' onClick={() => { setEditingBrief(false); setEditBrief(project.brief); setEditBriefInterval(project.brief_interval_m); }}>
+                    Cancel
+                  </Button>
+                  <Button size='sm' className='h-7 px-2 text-xs' onClick={handleSaveBrief} disabled={savingBrief}>
+                    {savingBrief ? <IconLoader2 className='h-3 w-3 animate-spin mr-1' /> : <IconCheck className='h-3 w-3 mr-1' />}
+                    Save Brief
+                  </Button>
+                </>
+              ) : (
+                <Button size='sm' variant='outline' className='h-7 px-2 text-xs' onClick={() => { setEditingBrief(true); setBriefExpanded(true); }}>
+                  <IconEdit className='h-3 w-3 mr-1' />
+                  Edit
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Brief body */}
+          {briefExpanded && (
+            <div className='px-4 py-3'>
+              {editingBrief ? (
+                <div className='space-y-3'>
+                  <Textarea
+                    value={editBrief}
+                    onChange={e => setEditBrief(e.target.value)}
+                    rows={18}
+                    className='font-mono text-xs resize-y w-full'
+                    placeholder={`# Project: ${project.name}\n\n## Objective\n...\n\n## Workspace\n...\n\n## What Works\n...\n\n## Avoid\n...`}
+                  />
+                  <div className='flex items-center gap-3'>
+                    <Label className='text-xs text-muted-foreground shrink-0'>Auto-refresh interval</Label>
+                    <select
+                      value={editBriefInterval}
+                      onChange={e => setEditBriefInterval(Number(e.target.value))}
+                      className='rounded-md border border-border/50 bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
                     >
-                      {kcfg.label}
-                    </div>
+                      {INTERVAL_OPTIONS.map(o => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                    <span className='text-[10px] text-muted-foreground/50'>
+                      Runs after each execution completion when interval {'>'} 0
+                    </span>
                   </div>
-                );
-              })}
+                </div>
+              ) : project.brief ? (
+                <pre className='whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/80 max-h-96 overflow-y-auto'>
+                  {project.brief}
+                </pre>
+              ) : (
+                <div className='flex flex-col items-center justify-center py-8 gap-2'>
+                  <p className='text-sm text-muted-foreground/50'>No brief yet.</p>
+                  <p className='text-xs text-muted-foreground/40'>
+                    Click <span className='text-[#9A66FF]'>AI Refresh</span> to generate from execution history, or <span className='text-foreground/60'>Edit</span> to write manually.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Executions */}
-        <div>
-          <h3 className='mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground/50'>
-            Executions ({executions.length})
-          </h3>
-          {executions.length === 0 ? (
-            <div className='flex h-24 items-center justify-center rounded-xl border border-dashed border-border/50'>
-              <p className='text-xs text-muted-foreground'>No executions linked to this project yet.</p>
-            </div>
-          ) : (
-            <div className='space-y-2'>
-              {executions.map(exec => {
-                const ecfg = EXEC_STATUS_CFG[exec.status] || { color: '#888', label: exec.status };
-                return (
-                  <div
-                    key={exec.id}
-                    className='flex cursor-pointer items-start gap-3 rounded-xl border border-border/40 bg-background/60 px-4 py-3 transition-all hover:border-border/80'
-                    style={{ borderLeftColor: ecfg.color + '60', borderLeftWidth: 3 }}
-                    onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
-                  >
-                    <div className='flex-1 min-w-0'>
-                      <p className='text-sm font-medium line-clamp-1'>{exec.title || exec.objective}</p>
-                      <p className='text-[10px] text-muted-foreground/50 mt-0.5'>{timeAgo(exec.created_at)}</p>
-                    </div>
+        {/* ── Tasks & Executions ──────────────────────────────────────── */}
+        <div className='grid gap-6 lg:grid-cols-2'>
+          {/* Kanban Tasks */}
+          <div>
+            <h3 className='mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground/50'>
+              Tasks ({tasks.length})
+            </h3>
+            {tasks.length === 0 ? (
+              <div className='flex h-24 items-center justify-center rounded-xl border border-dashed border-border/50'>
+                <p className='text-xs text-muted-foreground'>No tasks linked to this project yet.</p>
+              </div>
+            ) : (
+              <div className='space-y-2'>
+                {tasks.map(task => {
+                  const kcfg = KANBAN_STATUS_CFG[task.status] || { color: '#888', label: task.status };
+                  return (
                     <div
-                      className='shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold'
-                      style={{ backgroundColor: ecfg.color + '18', color: ecfg.color }}
+                      key={task.id}
+                      className='flex items-start gap-3 rounded-xl border border-border/40 bg-background/60 px-4 py-3'
+                      style={{ borderLeftColor: kcfg.color + '60', borderLeftWidth: 3 }}
                     >
-                      {ecfg.label}
+                      <div className='flex-1 min-w-0'>
+                        <p className='text-sm font-medium line-clamp-1'>{task.title}</p>
+                        {task.description && (
+                          <p className='text-[11px] text-muted-foreground/60 line-clamp-1 mt-0.5'>{task.description}</p>
+                        )}
+                      </div>
+                      <div
+                        className='shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold'
+                        style={{ backgroundColor: kcfg.color + '18', color: kcfg.color }}
+                      >
+                        {kcfg.label}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Executions */}
+          <div>
+            <h3 className='mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground/50'>
+              Executions ({executions.length})
+            </h3>
+            {executions.length === 0 ? (
+              <div className='flex h-24 items-center justify-center rounded-xl border border-dashed border-border/50'>
+                <p className='text-xs text-muted-foreground'>No executions linked to this project yet.</p>
+              </div>
+            ) : (
+              <div className='space-y-2'>
+                {executions.map(exec => {
+                  const ecfg = EXEC_STATUS_CFG[exec.status] || { color: '#888', label: exec.status };
+                  return (
+                    <div
+                      key={exec.id}
+                      className='flex cursor-pointer items-start gap-3 rounded-xl border border-border/40 bg-background/60 px-4 py-3 transition-all hover:border-border/80'
+                      style={{ borderLeftColor: ecfg.color + '60', borderLeftWidth: 3 }}
+                      onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
+                    >
+                      <div className='flex-1 min-w-0'>
+                        <p className='text-sm font-medium line-clamp-1'>{exec.title || exec.objective}</p>
+                        <p className='text-[10px] text-muted-foreground/50 mt-0.5'>{timeAgo(exec.created_at)}</p>
+                      </div>
+                      <div
+                        className='shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold'
+                        style={{ backgroundColor: ecfg.color + '18', color: ecfg.color }}
+                      >
+                        {ecfg.label}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

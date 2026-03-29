@@ -26,7 +26,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	kb := NewKnowledgeHandler(s, km)
 	approvals := NewApprovalHandler(s)
 	kanban := NewKanbanHandler(s)
-	projects := NewProjectHandler(s)
+	projects := NewProjectHandler(s, o)
 	creds := NewCredentialHandler(s)
 	activity := NewActivityHandler(s)
 	agentChat := NewAgentChatHandler(s, km)
@@ -184,6 +184,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.Handle("GET /api/v1/projects/{projectID}", protect(http.HandlerFunc(projects.Get)))
 	mux.Handle("PATCH /api/v1/projects/{projectID}", protect(http.HandlerFunc(projects.Update)))
 	mux.Handle("DELETE /api/v1/projects/{projectID}", protect(http.HandlerFunc(projects.Delete)))
+	mux.Handle("POST /api/v1/projects/{projectID}/brief/refresh", protect(http.HandlerFunc(projects.RefreshBrief)))
 
 	// Approvals
 	mux.Handle("POST /api/v1/workforces/{id}/approvals", protect(http.HandlerFunc(approvals.Create)))

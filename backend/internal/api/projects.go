@@ -4,16 +4,18 @@ import (
 	"net/http"
 
 	"github.com/aitheros/backend/internal/models"
+	"github.com/aitheros/backend/internal/orchestrator"
 	"github.com/aitheros/backend/internal/store"
 	"github.com/google/uuid"
 )
 
 type ProjectHandler struct {
 	store *store.Store
+	orch  *orchestrator.Orchestrator
 }
 
-func NewProjectHandler(s *store.Store) *ProjectHandler {
-	return &ProjectHandler{store: s}
+func NewProjectHandler(s *store.Store, o *orchestrator.Orchestrator) *ProjectHandler {
+	return &ProjectHandler{store: s, orch: o}
 }
 
 func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -97,4 +99,24 @@ func (h *ProjectHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "project deleted"})
+}
+
+// RefreshBrief triggers an LLM-based brief regeneration for the project.
+// Synchronous — waits for the LLM call to complete (up to 3 minutes) and returns the updated project.
+func (h *ProjectHandler) RefreshBrief(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("projectID"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	if err := h.orch.RefreshProjectBrief(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "brief refresh failed: "+err.Error())
+		return
+	}
+	p, err := h.store.GetProject(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
 }

@@ -417,3 +417,35 @@ func (s *Store) SetExecutionProject(ctx context.Context, execID, projectID uuid.
 	}
 	return nil
 }
+
+// ListExecutionsByProject returns the most recent executions for a project, newest first.
+func (s *Store) ListExecutionsByProject(ctx context.Context, projectID uuid.UUID, limit int) ([]*models.Execution, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, workforce_id, project_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
+		FROM executions WHERE project_id = $1
+		ORDER BY created_at DESC LIMIT $2`, projectID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list executions by project: %w", err)
+	}
+	defer rows.Close()
+
+	var execs []*models.Execution
+	for rows.Next() {
+		e := &models.Execution{}
+		var inputsJSON, planJSON []byte
+		if err := rows.Scan(
+			&e.ID, &e.WorkForceID, &e.ProjectID, &e.Objective, &e.Strategy, &planJSON, &e.Status,
+			&inputsJSON, &e.TokensUsed, &e.Iterations, &e.Title, &e.Description, &e.ImageURL,
+			&e.Result, &e.ErrorMessage, &e.StartedAt, &e.EndedAt, &e.CreatedAt, &e.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan execution: %w", err)
+		}
+		json.Unmarshal(inputsJSON, &e.Inputs)
+		json.Unmarshal(planJSON, &e.Plan)
+		if e.Plan == nil {
+			e.Plan = []models.ExecutionSubtask{}
+		}
+		execs = append(execs, e)
+	}
+	return execs, nil
+}

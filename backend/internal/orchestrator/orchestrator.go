@@ -1121,6 +1121,16 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	// ── Build task message ──
 	var taskParts []string
 	taskParts = append(taskParts, fmt.Sprintf("## Overall Objective\n%s", p.exec.Objective))
+
+	// ── Project Brief injection ───────────────────────────────────────────────
+	// If this execution belongs to a project, inject its living state document.
+	// This replaces the need for agents to re-scan directories or rediscover known state.
+	if p.exec.ProjectID != nil && *p.exec.ProjectID != uuid.Nil {
+		if proj, err := o.store.GetProject(ctx, *p.exec.ProjectID); err == nil && proj.Brief != "" {
+			taskParts = append(taskParts, fmt.Sprintf("## Project Brief\n%s", proj.Brief))
+		}
+	}
+
 	taskParts = append(taskParts, fmt.Sprintf("## Your Assigned Subtask (step %d)\n%s", p.iteration, subtaskDesc))
 
 	if p.handoffCtx != "" {
@@ -1652,6 +1662,9 @@ func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
 			}
 		}
 	}
+
+	// Check and refresh stale project briefs
+	o.runBriefSchedulerTick(ctx)
 }
 
 // isObjectiveComplete checks if the agent's response contains a structured completion signal.
@@ -1902,6 +1915,21 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 			go o.extractAndIngestLessons(context.Background(), wfID, execID, exec.Objective, result)
 		}()
 	}
+
+	// Refresh project brief if this execution was part of a project and auto-refresh is enabled
+	go func() {
+		exec, err := o.store.GetExecution(context.Background(), execID)
+		if err != nil || exec.ProjectID == nil || *exec.ProjectID == uuid.Nil {
+			return
+		}
+		proj, err := o.store.GetProject(context.Background(), *exec.ProjectID)
+		if err != nil || proj.BriefIntervalM == 0 {
+			return
+		}
+		if err := o.RefreshProjectBrief(context.Background(), *exec.ProjectID); err != nil {
+			log.Printf("orchestrator: post-exec brief refresh for %s: %v", *exec.ProjectID, err)
+		}
+	}()
 }
 
 // extractAndIngestLessons runs a lightweight LLM call to distill 3-5 reusable lessons

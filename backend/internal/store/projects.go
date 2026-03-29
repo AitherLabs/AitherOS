@@ -10,11 +10,21 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const projectSelectCols = `id, workforce_id, name, description, status, icon, color, brief, brief_updated_at, brief_interval_m, created_at, updated_at`
+
+func scanProject(row interface{ Scan(...any) error }) (*models.Project, error) {
+	p := &models.Project{}
+	return p, row.Scan(
+		&p.ID, &p.WorkforceID, &p.Name, &p.Description, &p.Status,
+		&p.Icon, &p.Color, &p.Brief, &p.BriefUpdatedAt, &p.BriefIntervalM,
+		&p.CreatedAt, &p.UpdatedAt,
+	)
+}
+
 func (s *Store) ListProjects(ctx context.Context, workforceID uuid.UUID) ([]*models.Project, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, workforce_id, name, description, status, icon, color, created_at, updated_at
-		FROM projects
-		WHERE workforce_id = $1
+		SELECT `+projectSelectCols+`
+		FROM projects WHERE workforce_id = $1
 		ORDER BY created_at DESC`, workforceID)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -23,8 +33,8 @@ func (s *Store) ListProjects(ctx context.Context, workforceID uuid.UUID) ([]*mod
 
 	projects := []*models.Project{}
 	for rows.Next() {
-		p := &models.Project{}
-		if err := rows.Scan(&p.ID, &p.WorkforceID, &p.Name, &p.Description, &p.Status, &p.Icon, &p.Color, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanProject(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
 		}
 		projects = append(projects, p)
@@ -33,11 +43,9 @@ func (s *Store) ListProjects(ctx context.Context, workforceID uuid.UUID) ([]*mod
 }
 
 func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (*models.Project, error) {
-	p := &models.Project{}
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, workforce_id, name, description, status, icon, color, created_at, updated_at
-		FROM projects WHERE id = $1`, id,
-	).Scan(&p.ID, &p.WorkforceID, &p.Name, &p.Description, &p.Status, &p.Icon, &p.Color, &p.CreatedAt, &p.UpdatedAt)
+	p, err := scanProject(s.pool.QueryRow(ctx, `
+		SELECT `+projectSelectCols+`
+		FROM projects WHERE id = $1`, id))
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("project not found: %s", id)
@@ -49,15 +57,16 @@ func (s *Store) GetProject(ctx context.Context, id uuid.UUID) (*models.Project, 
 
 func (s *Store) CreateProject(ctx context.Context, workforceID uuid.UUID, req models.CreateProjectRequest) (*models.Project, error) {
 	p := &models.Project{
-		ID:          uuid.New(),
-		WorkforceID: workforceID,
-		Name:        req.Name,
-		Description: req.Description,
-		Status:      models.ProjectStatusActive,
-		Icon:        req.Icon,
-		Color:       req.Color,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		ID:             uuid.New(),
+		WorkforceID:    workforceID,
+		Name:           req.Name,
+		Description:    req.Description,
+		Status:         models.ProjectStatusActive,
+		Icon:           req.Icon,
+		Color:          req.Color,
+		BriefIntervalM: req.BriefIntervalM,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	}
 	if p.Icon == "" {
 		p.Icon = "📁"
@@ -70,9 +79,9 @@ func (s *Store) CreateProject(ctx context.Context, workforceID uuid.UUID, req mo
 	}
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO projects (id, workforce_id, name, description, status, icon, color, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		p.ID, p.WorkforceID, p.Name, p.Description, p.Status, p.Icon, p.Color, p.CreatedAt, p.UpdatedAt,
+		INSERT INTO projects (id, workforce_id, name, description, status, icon, color, brief, brief_interval_m, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8, $9, $10)`,
+		p.ID, p.WorkforceID, p.Name, p.Description, p.Status, p.Icon, p.Color, p.BriefIntervalM, p.CreatedAt, p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert project: %w", err)
@@ -101,12 +110,21 @@ func (s *Store) UpdateProject(ctx context.Context, id uuid.UUID, req models.Upda
 	if req.Color != nil {
 		p.Color = *req.Color
 	}
+	if req.Brief != nil {
+		p.Brief = *req.Brief
+		now := time.Now()
+		p.BriefUpdatedAt = &now
+	}
+	if req.BriefIntervalM != nil {
+		p.BriefIntervalM = *req.BriefIntervalM
+	}
 	p.UpdatedAt = time.Now()
 
 	_, err = s.pool.Exec(ctx, `
-		UPDATE projects SET name=$2, description=$3, status=$4, icon=$5, color=$6, updated_at=$7
+		UPDATE projects
+		SET name=$2, description=$3, status=$4, icon=$5, color=$6, brief=$7, brief_updated_at=$8, brief_interval_m=$9, updated_at=$10
 		WHERE id=$1`,
-		p.ID, p.Name, p.Description, p.Status, p.Icon, p.Color, p.UpdatedAt,
+		p.ID, p.Name, p.Description, p.Status, p.Icon, p.Color, p.Brief, p.BriefUpdatedAt, p.BriefIntervalM, p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update project: %w", err)
@@ -123,4 +141,42 @@ func (s *Store) DeleteProject(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("project not found: %s", id)
 	}
 	return nil
+}
+
+// UpdateProjectBrief writes a new brief and stamps brief_updated_at. Called by the brief updater.
+func (s *Store) UpdateProjectBrief(ctx context.Context, id uuid.UUID, brief string) error {
+	now := time.Now()
+	_, err := s.pool.Exec(ctx, `
+		UPDATE projects SET brief=$2, brief_updated_at=$3, updated_at=$3 WHERE id=$1`,
+		id, brief, now)
+	if err != nil {
+		return fmt.Errorf("update project brief: %w", err)
+	}
+	return nil
+}
+
+// ListProjectsWithStaleBriefs returns projects whose brief_interval_m > 0 and whose
+// brief is either null or older than brief_interval_m minutes.
+func (s *Store) ListProjectsWithStaleBriefs(ctx context.Context) ([]*models.Project, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+projectSelectCols+`
+		FROM projects
+		WHERE brief_interval_m > 0
+		  AND (brief_updated_at IS NULL
+		       OR brief_updated_at < now() - (brief_interval_m * interval '1 minute'))
+		ORDER BY brief_updated_at ASC NULLS FIRST`)
+	if err != nil {
+		return nil, fmt.Errorf("list stale briefs: %w", err)
+	}
+	defer rows.Close()
+
+	var projects []*models.Project
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan project: %w", err)
+		}
+		projects = append(projects, p)
+	}
+	return projects, nil
 }
