@@ -37,17 +37,15 @@ const COLUMNS: { status: KanbanStatus; label: string; color: string }[] = [
 ];
 
 function priorityLabel(p: number): string {
-  if (p >= 9) return 'Critical';
-  if (p >= 7) return 'High';
-  if (p >= 5) return 'Medium';
-  if (p >= 3) return 'Normal';
+  if (p >= 3) return 'Urgent';
+  if (p >= 2) return 'High';
+  if (p >= 1) return 'Normal';
   return 'Low';
 }
 function priorityColor(p: number): string {
-  if (p >= 9) return '#EF4444';
-  if (p >= 7) return '#FFBF47';
-  if (p >= 5) return '#14FFF7';
-  if (p >= 3) return '#9A66FF';
+  if (p >= 3) return '#EF4444';
+  if (p >= 2) return '#FFBF47';
+  if (p >= 1) return '#9A66FF';
   return '#6B7280';
 }
 
@@ -774,15 +772,15 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                   {editingTask && (
                     <div className='space-y-3'>
                       <div className='space-y-1.5'>
-                        <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Priority (0–10)</p>
+                        <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Priority</p>
                         <div className='flex items-center gap-3'>
                           <input
-                            type='range' min={0} max={10} value={editPriority}
+                            type='range' min={0} max={3} value={editPriority}
                             onChange={e => setEditPriority(Number(e.target.value))}
                             className='flex-1 accent-[#9A66FF]'
                           />
                           <span className='w-20 text-right text-sm font-semibold' style={{ color: priorityColor(editPriority) }}>
-                            {editPriority} · {priorityLabel(editPriority)}
+                            {priorityLabel(editPriority)}
                           </span>
                         </div>
                       </div>
