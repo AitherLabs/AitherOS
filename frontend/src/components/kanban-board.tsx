@@ -96,6 +96,8 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   const [editTitle, setEditTitle] = useState('');
   const [editDesc, setEditDesc] = useState('');
   const [editPriority, setEditPriority] = useState(0);
+  const [editAssignee, setEditAssignee] = useState('');
+  const [editTaskProjectId, setEditTaskProjectId] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
 
   // Drag detection — prevents detail dialog opening when dragging
@@ -179,7 +181,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
       const objective = task.description
         ? `${task.title}\n\n${task.description}`
         : task.title;
-      const execRes = await api.startExecution(workforceId, objective);
+      const execRes = await api.startExecution(workforceId, objective, undefined, task.project_id);
       if (!execRes.data?.id) return;
       const execId = execRes.data.id;
       const updated = await api.updateKanbanTask(task.id, {
@@ -227,6 +229,8 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
     setEditTitle(task.title);
     setEditDesc(task.description || '');
     setEditPriority(task.priority);
+    setEditAssignee(task.assigned_to || '');
+    setEditTaskProjectId(task.project_id || '');
   }
 
   async function saveEdit() {
@@ -237,6 +241,8 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
         title: editTitle.trim(),
         description: editDesc.trim(),
         priority: editPriority,
+        assigned_to: editAssignee,
+        project_id: editTaskProjectId,
       });
       if (res.data) {
         setTasks(prev => prev.map(t => t.id === selectedTask.id ? res.data! : t));
@@ -478,6 +484,20 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                           {priorityLabel(task.priority)}
                         </span>
 
+                        {task.project_id && (() => {
+                          const proj = projects.find(p => p.id === task.project_id);
+                          if (!proj) return null;
+                          return (
+                            <span
+                              className='flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px]'
+                              style={{ background: `${proj.color}18`, color: proj.color }}
+                            >
+                              <span>{proj.icon}</span>
+                              <span className='max-w-[56px] truncate'>{proj.name}</span>
+                            </span>
+                          );
+                        })()}
+
                         {assignedAgent && (
                           <span
                             className='flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]'
@@ -699,6 +719,19 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                         by {selectedTask.created_by}
                       </span>
                     )}
+                    {/* Project badge */}
+                    {selectedTask.project_id && (() => {
+                      const proj = projects.find(p => p.id === selectedTask.project_id);
+                      if (!proj) return null;
+                      return (
+                        <span
+                          className='flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium'
+                          style={{ background: `${proj.color}18`, color: proj.color, border: `1px solid ${proj.color}30` }}
+                        >
+                          {proj.icon} {proj.name}
+                        </span>
+                      );
+                    })()}
                     {/* Execution link */}
                     {selectedTask.execution_id && (
                       <a
@@ -737,19 +770,51 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                     )}
                   </div>
 
-                  {/* Priority selector (edit mode) */}
+                  {/* Edit-mode fields: priority, assignee, project */}
                   {editingTask && (
-                    <div className='space-y-1.5'>
-                      <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Priority (0–10)</p>
-                      <div className='flex items-center gap-3'>
-                        <input
-                          type='range' min={0} max={10} value={editPriority}
-                          onChange={e => setEditPriority(Number(e.target.value))}
-                          className='flex-1 accent-[#9A66FF]'
-                        />
-                        <span className='w-20 text-right text-sm font-semibold' style={{ color: priorityColor(editPriority) }}>
-                          {editPriority} · {priorityLabel(editPriority)}
-                        </span>
+                    <div className='space-y-3'>
+                      <div className='space-y-1.5'>
+                        <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Priority (0–10)</p>
+                        <div className='flex items-center gap-3'>
+                          <input
+                            type='range' min={0} max={10} value={editPriority}
+                            onChange={e => setEditPriority(Number(e.target.value))}
+                            className='flex-1 accent-[#9A66FF]'
+                          />
+                          <span className='w-20 text-right text-sm font-semibold' style={{ color: priorityColor(editPriority) }}>
+                            {editPriority} · {priorityLabel(editPriority)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className='grid grid-cols-2 gap-3'>
+                        <div className='space-y-1.5'>
+                          <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Assign to</p>
+                          <select
+                            value={editAssignee}
+                            onChange={e => setEditAssignee(e.target.value)}
+                            className='w-full rounded border border-border/50 bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                          >
+                            <option value=''>Unassigned</option>
+                            {agents.map(a => (
+                              <option key={a.id} value={a.id}>{a.icon} {a.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {projects.length > 0 && (
+                          <div className='space-y-1.5'>
+                            <p className='text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'>Project</p>
+                            <select
+                              value={editTaskProjectId}
+                              onChange={e => setEditTaskProjectId(e.target.value)}
+                              className='w-full rounded border border-border/50 bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                            >
+                              <option value=''>No project</option>
+                              {projects.map(p => (
+                                <option key={p.id} value={p.id}>{p.icon} {p.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
@@ -785,9 +850,26 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                   )}
 
                   {/* Timestamps */}
-                  <p className='text-[10px] text-muted-foreground/30'>
-                    Created {new Date(selectedTask.created_at).toLocaleString()} · Updated {timeAgo(selectedTask.updated_at)}
-                  </p>
+                  <div className='space-y-0.5'>
+                    <p className='text-[10px] text-muted-foreground/30'>
+                      Created {new Date(selectedTask.created_at).toLocaleString()}
+                    </p>
+                    {selectedTask.started_at && (
+                      <p className='text-[10px] text-[#9A66FF]/50'>
+                        Started {new Date(selectedTask.started_at).toLocaleString()}
+                      </p>
+                    )}
+                    {selectedTask.done_at && (
+                      <p className='text-[10px] text-[#56D090]/50'>
+                        Completed {new Date(selectedTask.done_at).toLocaleString()}
+                      </p>
+                    )}
+                    {!selectedTask.done_at && (
+                      <p className='text-[10px] text-muted-foreground/30'>
+                        Last updated {timeAgo(selectedTask.updated_at)}
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 <DialogFooter className='flex-wrap gap-2'>

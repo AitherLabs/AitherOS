@@ -41,6 +41,8 @@ type KanbanTask struct {
 	Position    int            `json:"position" db:"position"`
 	QAStatus    KanbanQAStatus `json:"qa_status" db:"qa_status"`
 	QANotes     string         `json:"qa_notes" db:"qa_notes"`
+	StartedAt   *time.Time     `json:"started_at,omitempty" db:"started_at"`
+	DoneAt      *time.Time     `json:"done_at,omitempty" db:"done_at"`
 	CreatedAt   time.Time      `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at" db:"updated_at"`
 }

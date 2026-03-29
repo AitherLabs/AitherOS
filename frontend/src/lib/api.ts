@@ -240,10 +240,10 @@ class ApiClient {
   }
 
   // ── Executions ────────────────────────────────────────
-  async startExecution(workforceId: string, objective: string, inputs?: Record<string, string>) {
+  async startExecution(workforceId: string, objective: string, inputs?: Record<string, string>, projectId?: string) {
     return this.request<Execution>(`/api/v1/workforces/${workforceId}/executions`, {
       method: 'POST',
-      body: JSON.stringify({ objective, inputs })
+      body: JSON.stringify({ objective, inputs, project_id: projectId || undefined })
     });
   }
 
@@ -671,6 +671,8 @@ export interface KanbanTask {
   position: number;
   qa_status: KanbanQAStatus;
   qa_notes: string;
+  started_at?: string;
+  done_at?: string;
   created_at: string;
   updated_at: string;
 }

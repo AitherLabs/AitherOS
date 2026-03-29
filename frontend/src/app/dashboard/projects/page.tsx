@@ -45,6 +45,7 @@ export default function ProjectsPage() {
   const [newIcon, setNewIcon] = useState('📁');
   const [newColor, setNewColor] = useState('#9A66FF');
   const [newWfId, setNewWfId] = useState('');
+  const [newBriefInterval, setNewBriefInterval] = useState(0);
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
@@ -80,13 +81,14 @@ export default function ProjectsPage() {
         description: newDesc.trim(),
         icon: newIcon,
         color: newColor,
+        brief_interval_m: newBriefInterval,
       });
       if (res.data) {
         const wf = workforces.find(w => w.id === newWfId);
         setProjects(prev => [{ ...res.data!, workforce_name: wf?.name }, ...prev]);
       }
       setCreateOpen(false);
-      setNewName(''); setNewDesc(''); setNewIcon('📁'); setNewColor('#9A66FF');
+      setNewName(''); setNewDesc(''); setNewIcon('📁'); setNewColor('#9A66FF'); setNewBriefInterval(0);
     } finally {
       setCreating(false);
     }
@@ -251,6 +253,22 @@ export default function ProjectsPage() {
                 rows={2}
                 className='resize-none'
               />
+            </div>
+            <div className='space-y-1.5'>
+              <Label>Brief auto-refresh</Label>
+              <select
+                value={newBriefInterval}
+                onChange={e => setNewBriefInterval(Number(e.target.value))}
+                className='w-full rounded-md border border-border/50 bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+              >
+                <option value={0}>Manual only</option>
+                <option value={30}>Every 30 min</option>
+                <option value={60}>Every hour</option>
+                <option value={120}>Every 2 hours</option>
+                <option value={240}>Every 4 hours</option>
+                <option value={480}>Every 8 hours</option>
+              </select>
+              <p className='text-[11px] text-muted-foreground/50'>How often the AI refreshes the project brief after executions complete.</p>
             </div>
           </div>
           <DialogFooter>
