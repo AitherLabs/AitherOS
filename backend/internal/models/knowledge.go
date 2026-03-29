@@ -13,6 +13,7 @@ const (
 	KnowledgeSourceAgent     KnowledgeSourceType = "agent_message"
 	KnowledgeSourceManual    KnowledgeSourceType = "manual"
 	KnowledgeSourceTool      KnowledgeSourceType = "tool_result"
+	KnowledgeSourceLesson    KnowledgeSourceType = "lesson"
 )
 
 type KnowledgeEntry struct {

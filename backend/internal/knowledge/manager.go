@@ -155,6 +155,44 @@ func (m *Manager) IngestManual(ctx context.Context, workforceID uuid.UUID, title
 	return entry, nil
 }
 
+// Lesson is a distilled, reusable piece of knowledge extracted from a completed execution.
+type Lesson struct {
+	Title   string
+	Content string
+}
+
+// IngestLessons embeds and stores structured lessons extracted from a completed execution.
+func (m *Manager) IngestLessons(ctx context.Context, workforceID, executionID uuid.UUID, lessons []Lesson) {
+	if !m.embedder.Available() {
+		return
+	}
+	for _, l := range lessons {
+		if l.Title == "" || l.Content == "" {
+			continue
+		}
+		textToEmbed := l.Title + "\n\n" + l.Content
+		embedding, err := m.embedder.Embed(ctx, textToEmbed)
+		if err != nil {
+			log.Printf("knowledge: embed lesson %q: %v", l.Title, err)
+			continue
+		}
+		entry := &models.KnowledgeEntry{
+			ID:          uuid.New(),
+			WorkforceID: workforceID,
+			ExecutionID: &executionID,
+			SourceType:  models.KnowledgeSourceLesson,
+			Title:       truncate(l.Title, 120),
+			Content:     l.Content,
+			Embedding:   embedding,
+			Metadata:    map[string]any{},
+			CreatedAt:   time.Now(),
+		}
+		if err := m.store.CreateKnowledgeEntry(ctx, entry); err != nil {
+			log.Printf("knowledge: store lesson %q: %v", l.Title, err)
+		}
+	}
+}
+
 // RetrieveRelevantForAgent retrieves the top-K most relevant past interactions for a
 // specific agent across ALL executions. This gives agents long-term episodic memory:
 // Daedalus can recall that it documented the MCP system last week.
@@ -176,18 +214,26 @@ func (m *Manager) RetrieveRelevantForAgent(ctx context.Context, agentID uuid.UUI
 		return "", fmt.Errorf("search agent memory: %w", err)
 	}
 
-	var parts []string
+	var lessons, others []string
 	for _, r := range results {
-		if r.Similarity < 0.3 {
-			continue
-		}
 		content := r.Content
 		if len(content) > 1200 {
 			content = content[:1200] + "..."
 		}
-		parts = append(parts, fmt.Sprintf("[%s | %.0f%% match] %s", r.Title, r.Similarity*100, content))
+		if r.SourceType == models.KnowledgeSourceLesson {
+			if r.Similarity < 0.25 {
+				continue
+			}
+			lessons = append(lessons, fmt.Sprintf("[LESSON: %s] %s", r.Title, content))
+		} else {
+			if r.Similarity < 0.5 {
+				continue
+			}
+			others = append(others, fmt.Sprintf("[%s | %.0f%% match] %s", r.Title, r.Similarity*100, content))
+		}
 	}
 
+	parts := append(lessons, others...)
 	if len(parts) == 0 {
 		return "", nil
 	}
@@ -263,19 +309,26 @@ func (m *Manager) RetrieveRelevant(ctx context.Context, workforceID uuid.UUID, q
 		return "", nil
 	}
 
-	// Filter by minimum similarity threshold
-	var parts []string
+	var lessons, others []string
 	for _, r := range results {
-		if r.Similarity < 0.3 {
-			continue // Too dissimilar
-		}
 		content := r.Content
 		if len(content) > 1500 {
 			content = content[:1500] + "..."
 		}
-		parts = append(parts, fmt.Sprintf("[%s | %.0f%% match] %s", r.Title, r.Similarity*100, content))
+		if r.SourceType == models.KnowledgeSourceLesson {
+			if r.Similarity < 0.25 {
+				continue
+			}
+			lessons = append(lessons, fmt.Sprintf("[LESSON: %s] %s", r.Title, content))
+		} else {
+			if r.Similarity < 0.5 {
+				continue
+			}
+			others = append(others, fmt.Sprintf("[%s | %.0f%% match] %s", r.Title, r.Similarity*100, content))
+		}
 	}
 
+	parts := append(lessons, others...)
 	if len(parts) == 0 {
 		return "", nil
 	}

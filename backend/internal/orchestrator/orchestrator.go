@@ -1898,8 +1898,104 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 			}
 			o.knowledgeManager.IngestAgentMessages(bgCtx, wfID, execID, msgs)
 			log.Printf("knowledge: embedded agent messages for execution %s", execID)
+			// Extract and store structured lessons from this execution
+			go o.extractAndIngestLessons(context.Background(), wfID, execID, exec.Objective, result)
 		}()
 	}
+}
+
+// extractAndIngestLessons runs a lightweight LLM call to distill 3-5 reusable lessons
+// from a completed execution, then stores them as KnowledgeSourceLesson entries.
+// Runs in a background goroutine — failures are logged but never surface to the user.
+func (o *Orchestrator) extractAndIngestLessons(ctx context.Context, wfID, execID uuid.UUID, objective, result string) {
+	if o.knowledgeManager == nil {
+		return
+	}
+
+	// Find any available LLM connector (skip media/image agents)
+	wf, err := o.store.GetWorkForce(ctx, wfID)
+	if err != nil {
+		return
+	}
+	agents, err := o.loadWorkForceAgents(ctx, wf)
+	if err != nil || len(agents) == 0 {
+		return
+	}
+	var eng engine.Connector
+	var modelName string
+	for _, a := range agents {
+		if a.ModelType != "" && a.ModelType != string(models.ModelTypeLLM) {
+			continue
+		}
+		if e, m, err := o.resolveConnector(ctx, a); err == nil {
+			eng, modelName = e, m
+			break
+		}
+	}
+	if eng == nil {
+		return
+	}
+
+	truncResult := result
+	if len(truncResult) > 2000 {
+		truncResult = truncResult[:2000] + "\n…[truncated]"
+	}
+
+	prompt := fmt.Sprintf(
+		"You are extracting reusable lessons from a completed AI agent execution.\n\n"+
+			"OBJECTIVE: %s\n\n"+
+			"RESULT:\n%s\n\n"+
+			"Extract 3-5 lessons that future agents should know when working on similar tasks.\n"+
+			"Focus on: concrete facts discovered, patterns that worked, pitfalls to avoid, tool quirks.\n"+
+			"Skip generic advice like 'plan carefully' or 'communicate clearly'.\n\n"+
+			"Respond with ONLY this JSON (no markdown, no extra text):\n"+
+			`{"lessons":[{"title":"short title (max 80 chars)","content":"one or two concrete sentences"}]}`,
+		objective, truncResult,
+	)
+
+	resp, err := eng.Submit(ctx, engine.TaskRequest{
+		AgentName:    "lesson-extractor",
+		Model:        modelName,
+		SystemPrompt: "You are a knowledge distillation assistant. Extract only concrete, actionable facts. Respond only with the requested JSON.",
+		Message:      prompt,
+	})
+	if err != nil {
+		log.Printf("knowledge: lesson extraction LLM call failed for exec %s: %v", execID, err)
+		return
+	}
+
+	// Parse JSON — be lenient about surrounding text/markdown
+	raw := resp.Content
+	if start := strings.Index(raw, "{"); start >= 0 {
+		raw = raw[start:]
+	}
+	if end := strings.LastIndex(raw, "}"); end >= 0 {
+		raw = raw[:end+1]
+	}
+
+	var parsed struct {
+		Lessons []struct {
+			Title   string `json:"title"`
+			Content string `json:"content"`
+		} `json:"lessons"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		log.Printf("knowledge: lesson extraction parse failed for exec %s: %v (raw: %s)", execID, err, truncateStr(raw, 200))
+		return
+	}
+
+	lessons := make([]knowledge.Lesson, 0, len(parsed.Lessons))
+	for _, l := range parsed.Lessons {
+		if l.Title != "" && l.Content != "" {
+			lessons = append(lessons, knowledge.Lesson{Title: l.Title, Content: l.Content})
+		}
+	}
+	if len(lessons) == 0 {
+		return
+	}
+
+	o.knowledgeManager.IngestLessons(ctx, wfID, execID, lessons)
+	log.Printf("knowledge: ingested %d lessons for execution %s", len(lessons), execID)
 }
 
 // evaluateKanbanTaskCompletion runs a brief LLM review after an execution finishes
