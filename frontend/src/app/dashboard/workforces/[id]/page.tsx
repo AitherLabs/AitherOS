@@ -30,11 +30,15 @@ import {
   IconBolt,
   IconBrain,
   IconCheck,
+  IconChevronDown,
+  IconChevronUp,
   IconClock,
   IconCoins,
   IconDeviceFloppy,
+  IconEdit,
   IconEye,
   IconEyeOff,
+  IconExternalLink,
   IconFolder,
   IconKey,
   IconLink,
@@ -49,7 +53,17 @@ import {
   IconTrash,
   IconX
 } from '@tabler/icons-react';
-import api, { ActivityEvent, Agent, Approval, Credential, Execution, KanbanTask, KanbanStatus, KnowledgeEntry, MCPServer, MCPToolDefinition, Workforce } from '@/lib/api';
+
+const BRIEF_INTERVAL_OPTIONS = [
+  { value: 0,    label: 'Manual only' },
+  { value: 30,   label: 'Every 30 min' },
+  { value: 60,   label: 'Every hour' },
+  { value: 120,  label: 'Every 2 hours' },
+  { value: 240,  label: 'Every 4 hours' },
+  { value: 480,  label: 'Every 8 hours' },
+  { value: 1440, label: 'Every 24 hours' },
+];
+import api, { ActivityEvent, Agent, Approval, Credential, Execution, KanbanTask, KanbanStatus, KnowledgeEntry, MCPServer, MCPToolDefinition, Project, Workforce } from '@/lib/api';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { KanbanBoard } from '@/components/kanban-board';
@@ -290,6 +304,15 @@ export default function WorkforceDetailPage() {
   const [credShowValue, setCredShowValue] = useState(false);
   const [credError, setCredError] = useState('');
 
+  // Projects + briefs state
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [briefExpanded, setBriefExpanded] = useState<Record<string, boolean>>({});
+  const [briefEditing, setBriefEditing] = useState<Record<string, boolean>>({});
+  const [briefDraft, setBriefDraft] = useState<Record<string, string>>({});
+  const [briefIntervalDraft, setBriefIntervalDraft] = useState<Record<string, number>>({});
+  const [briefSaving, setBriefSaving] = useState<Record<string, boolean>>({});
+  const [briefRefreshing, setBriefRefreshing] = useState<Record<string, boolean>>({});
+
   // Kanban tasks are managed inside <KanbanBoard />
 
   const loadData = useCallback(async () => {
@@ -386,6 +409,14 @@ export default function WorkforceDetailPage() {
         setCredentials(credsRes.data || []);
       } catch {
         setCredentials([]);
+      }
+
+      // Load projects
+      try {
+        const projRes = await api.listProjects(wfId);
+        setProjects(projRes.data || []);
+      } catch {
+        setProjects([]);
       }
     } catch (err) {
       console.error('Failed to load workforce:', err);
@@ -788,6 +819,187 @@ export default function WorkforceDetailPage() {
             workforce={workforce}
             onWorkforceUpdate={setWorkforce}
           />
+
+          <Separator />
+
+          {/* ── Projects & Briefs ───────────────────────────────── */}
+          {projects.length > 0 && (
+            <div>
+              <div className='mb-3 flex items-center justify-between'>
+                <h3 className='text-sm font-semibold uppercase tracking-wider text-muted-foreground'>
+                  Projects
+                </h3>
+                <button
+                  onClick={() => router.push('/dashboard/projects')}
+                  className='flex items-center gap-1 text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors'
+                >
+                  <IconExternalLink className='h-3 w-3' />
+                  Manage all
+                </button>
+              </div>
+              <div className='space-y-3'>
+                {projects.map(proj => {
+                  const isExpanded = briefExpanded[proj.id] ?? false;
+                  const isEditing = briefEditing[proj.id] ?? false;
+                  const isRefreshing = briefRefreshing[proj.id] ?? false;
+                  const isSaving = briefSaving[proj.id] ?? false;
+                  const intervalLabel = BRIEF_INTERVAL_OPTIONS.find(o => o.value === proj.brief_interval_m)?.label ?? `Every ${proj.brief_interval_m} min`;
+
+                  async function saveBrief() {
+                    setBriefSaving(s => ({ ...s, [proj.id]: true }));
+                    try {
+                      const res = await api.updateProject(proj.id, {
+                        brief: briefDraft[proj.id] ?? proj.brief,
+                        brief_interval_m: briefIntervalDraft[proj.id] ?? proj.brief_interval_m,
+                      });
+                      if (res.data) setProjects(prev => prev.map(p => p.id === proj.id ? res.data! : p));
+                      setBriefEditing(s => ({ ...s, [proj.id]: false }));
+                    } finally {
+                      setBriefSaving(s => ({ ...s, [proj.id]: false }));
+                    }
+                  }
+
+                  async function refreshBrief() {
+                    setBriefRefreshing(s => ({ ...s, [proj.id]: true }));
+                    try {
+                      const res = await api.refreshProjectBrief(proj.id);
+                      if (res.data) {
+                        setProjects(prev => prev.map(p => p.id === proj.id ? res.data! : p));
+                        setBriefDraft(s => ({ ...s, [proj.id]: res.data!.brief }));
+                      }
+                    } finally {
+                      setBriefRefreshing(s => ({ ...s, [proj.id]: false }));
+                    }
+                  }
+
+                  return (
+                    <div key={proj.id} className='rounded-xl border border-border/40 bg-background/60 overflow-hidden'>
+                      {/* Project header */}
+                      <div className='flex items-center justify-between px-4 py-3 border-b border-border/30'>
+                        <div className='flex items-center gap-3 min-w-0'>
+                          <button
+                            onClick={() => setBriefExpanded(s => ({ ...s, [proj.id]: !isExpanded }))}
+                            className='flex items-center gap-2 min-w-0'
+                          >
+                            {isExpanded
+                              ? <IconChevronUp className='h-3.5 w-3.5 shrink-0 text-muted-foreground/50' />
+                              : <IconChevronDown className='h-3.5 w-3.5 shrink-0 text-muted-foreground/50' />
+                            }
+                            <span className='text-xl shrink-0'>{proj.icon}</span>
+                            <span className='font-semibold text-sm truncate'>{proj.name}</span>
+                          </button>
+                          <div className='flex items-center gap-1.5 shrink-0'>
+                            <span
+                              className='rounded px-1.5 py-0.5 text-[10px] font-medium'
+                              style={{ background: '#9A66FF18', color: '#9A66FF' }}
+                            >
+                              {intervalLabel}
+                            </span>
+                            {proj.brief_updated_at && (
+                              <span className='text-[10px] text-muted-foreground/40 hidden sm:inline'>
+                                updated {timeAgo(proj.brief_updated_at)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className='flex items-center gap-1.5 shrink-0'>
+                          {!isEditing && (
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              className='h-7 px-2 text-xs border-[#9A66FF]/30 text-[#9A66FF] hover:bg-[#9A66FF]/10'
+                              onClick={refreshBrief}
+                              disabled={isRefreshing}
+                            >
+                              {isRefreshing
+                                ? <IconLoader2 className='h-3 w-3 animate-spin mr-1' />
+                                : <IconRefresh className='h-3 w-3 mr-1' />
+                              }
+                              {isRefreshing ? 'Refreshing…' : 'AI Refresh'}
+                            </Button>
+                          )}
+                          {isEditing ? (
+                            <>
+                              <Button size='sm' variant='outline' className='h-7 px-2 text-xs'
+                                onClick={() => setBriefEditing(s => ({ ...s, [proj.id]: false }))}>
+                                Cancel
+                              </Button>
+                              <Button size='sm' className='h-7 px-2 text-xs bg-[#9A66FF] hover:bg-[#9A66FF]/90'
+                                onClick={saveBrief} disabled={isSaving}>
+                                {isSaving ? <IconLoader2 className='h-3 w-3 animate-spin mr-1' /> : <IconCheck className='h-3 w-3 mr-1' />}
+                                Save
+                              </Button>
+                            </>
+                          ) : (
+                            <Button size='sm' variant='outline' className='h-7 px-2 text-xs'
+                              onClick={() => {
+                                setBriefDraft(s => ({ ...s, [proj.id]: proj.brief }));
+                                setBriefIntervalDraft(s => ({ ...s, [proj.id]: proj.brief_interval_m }));
+                                setBriefEditing(s => ({ ...s, [proj.id]: true }));
+                                setBriefExpanded(s => ({ ...s, [proj.id]: true }));
+                              }}>
+                              <IconEdit className='h-3 w-3 mr-1' />
+                              Edit
+                            </Button>
+                          )}
+                          <button
+                            onClick={() => router.push(`/dashboard/projects/${proj.id}`)}
+                            className='p-1 rounded text-muted-foreground/40 hover:text-muted-foreground transition-colors'
+                            title='Open full project page'
+                          >
+                            <IconExternalLink className='h-3.5 w-3.5' />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Brief body */}
+                      {isExpanded && (
+                        <div className='px-4 py-3'>
+                          {isEditing ? (
+                            <div className='space-y-3'>
+                              <textarea
+                                value={briefDraft[proj.id] ?? proj.brief}
+                                onChange={e => setBriefDraft(s => ({ ...s, [proj.id]: e.target.value }))}
+                                rows={14}
+                                className='w-full rounded-md border border-border/50 bg-background/80 p-3 font-mono text-xs leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                                placeholder={`# ${proj.name}\n\n## Objective\n...\n\n## Current Status\n...\n\n## What's Working\n...\n\n## Next Steps\n...`}
+                              />
+                              <div className='flex items-center gap-3'>
+                                <span className='text-xs text-muted-foreground shrink-0'>Auto-refresh interval</span>
+                                <select
+                                  value={briefIntervalDraft[proj.id] ?? proj.brief_interval_m}
+                                  onChange={e => setBriefIntervalDraft(s => ({ ...s, [proj.id]: Number(e.target.value) }))}
+                                  className='rounded-md border border-border/50 bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                                >
+                                  {BRIEF_INTERVAL_OPTIONS.map(o => (
+                                    <option key={o.value} value={o.value}>{o.label}</option>
+                                  ))}
+                                </select>
+                                <span className='text-[10px] text-muted-foreground/50'>
+                                  Written by the team lead after each execution
+                                </span>
+                              </div>
+                            </div>
+                          ) : proj.brief ? (
+                            <pre className='whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/80 max-h-80 overflow-y-auto'>
+                              {proj.brief}
+                            </pre>
+                          ) : (
+                            <div className='flex flex-col items-center justify-center py-8 gap-2 text-center'>
+                              <p className='text-sm text-muted-foreground/50'>No brief yet.</p>
+                              <p className='text-xs text-muted-foreground/40'>
+                                Click <span className='text-[#9A66FF]'>AI Refresh</span> to generate from execution history, or <span className='text-foreground/60'>Edit</span> to write manually.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <Separator />
 
