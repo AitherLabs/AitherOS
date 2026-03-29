@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -128,15 +129,55 @@ func (s *Store) loadWorkForceAgentIDs(ctx context.Context, wf *models.WorkForce)
 	return nil
 }
 
-// LoadWorkForceAgents populates the Agents field with full Agent objects.
+// LoadWorkForceAgents populates the Agents field with full Agent objects via a single batch query.
+// Missing/deleted agents are silently skipped to tolerate stale agent_ids.
 func (s *Store) LoadWorkForceAgents(ctx context.Context, wf *models.WorkForce) error {
 	wf.Agents = make([]*models.Agent, 0, len(wf.AgentIDs))
-	for _, aid := range wf.AgentIDs {
-		agent, err := s.GetAgent(ctx, aid)
-		if err != nil {
-			continue // skip deleted/missing agents
+	if len(wf.AgentIDs) == 0 {
+		return nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT a.id, a.name, a.description, a.system_prompt, a.instructions,
+		       a.engine_type, a.engine_config, a.tools, a.model,
+		       a.provider_id, a.variables, a.strategy, a.max_iterations,
+		       a.icon, a.color, a.avatar_url, a.status, a.created_at, a.updated_at,
+		       pm.model_type
+		FROM agents a
+		LEFT JOIN provider_models pm ON pm.provider_id = a.provider_id
+		                             AND pm.model_name = a.model
+		                             AND pm.is_enabled = true
+		WHERE a.id = ANY($1)`, wf.AgentIDs)
+	if err != nil {
+		return fmt.Errorf("load workforce agents: %w", err)
+	}
+	defer rows.Close()
+
+	byID := make(map[uuid.UUID]*models.Agent, len(wf.AgentIDs))
+	for rows.Next() {
+		a := &models.Agent{}
+		var varsJSON []byte
+		var modelType *string
+		if err := rows.Scan(
+			&a.ID, &a.Name, &a.Description, &a.SystemPrompt, &a.Instructions,
+			&a.EngineType, &a.EngineConfig, &a.Tools, &a.Model,
+			&a.ProviderID, &varsJSON, &a.Strategy, &a.MaxIterations,
+			&a.Icon, &a.Color, &a.AvatarURL, &a.Status, &a.CreatedAt, &a.UpdatedAt,
+			&modelType,
+		); err != nil {
+			continue
 		}
-		wf.Agents = append(wf.Agents, agent)
+		if err := json.Unmarshal(varsJSON, &a.Variables); err != nil || a.Variables == nil {
+			a.Variables = []models.AgentVariable{}
+		}
+		if modelType != nil {
+			a.ModelType = *modelType
+		}
+		byID[a.ID] = a
+	}
+	for _, aid := range wf.AgentIDs {
+		if a, ok := byID[aid]; ok {
+			wf.Agents = append(wf.Agents, a)
+		}
 	}
 	return nil
 }

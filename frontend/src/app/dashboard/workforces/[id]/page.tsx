@@ -332,19 +332,17 @@ export default function WorkforceDetailPage() {
         setMcpServers(wfMcpData);
         setAllMcpServers(allMcpData);
 
-        // Load agent permissions for each attached server
+        // Load agent permissions for all (agent × server) pairs in parallel
+        const pairs = wfMcpData.flatMap(srv => resolved.map(ag => ({ agId: ag.id, srvId: srv.id })));
+        const results = await Promise.allSettled(pairs.map(({ agId, srvId }) => api.getAgentTools(agId, srvId)));
         const perms: Record<string, Record<string, string[]>> = {};
-        for (const srv of wfMcpData) {
-          for (const ag of resolved) {
-            try {
-              const toolsRes = await api.getAgentTools(ag.id, srv.id);
-              if (!perms[ag.id]) perms[ag.id] = {};
-              perms[ag.id][srv.id] = toolsRes.data || [];
-            } catch {
-              // No permissions set
-            }
+        pairs.forEach(({ agId, srvId }, i) => {
+          const r = results[i];
+          if (r.status === 'fulfilled') {
+            if (!perms[agId]) perms[agId] = {};
+            perms[agId][srvId] = r.value.data || [];
           }
-        }
+        });
         setAgentPerms(perms);
       } catch {
         setMcpServers([]);
@@ -353,12 +351,9 @@ export default function WorkforceDetailPage() {
 
       // Load knowledge data
       try {
-        const [kbRes, kbCountRes] = await Promise.all([
-          api.listKnowledge(wfId),
-          api.countKnowledge(wfId)
-        ]);
+        const kbRes = await api.listKnowledge(wfId);
         setKnowledgeEntries(kbRes.data?.entries ?? []);
-        setKnowledgeCount(kbCountRes.data?.count || 0);
+        setKnowledgeCount(kbRes.data?.total ?? 0);
       } catch {
         setKnowledgeEntries([]);
         setKnowledgeCount(0);
@@ -1193,12 +1188,9 @@ export default function WorkforceDetailPage() {
                   className='text-xs'
                   onClick={async () => {
                     if (session?.accessToken) api.setToken(session.accessToken);
-                    const [kbRes, kbCountRes] = await Promise.all([
-                      api.listKnowledge(wfId),
-                      api.countKnowledge(wfId),
-                    ]);
+                    const kbRes = await api.listKnowledge(wfId);
                     setKnowledgeEntries(kbRes.data?.entries ?? []);
-                    setKnowledgeCount(kbCountRes.data?.count || 0);
+                    setKnowledgeCount(kbRes.data?.total ?? 0);
                   }}
                 >
                   <IconRefresh className='h-3 w-3' />
