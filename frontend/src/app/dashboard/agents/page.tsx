@@ -32,7 +32,8 @@ import {
   IconBolt,
   IconTool,
   IconStar,
-  IconFlame
+  IconFlame,
+  IconSparkles
 } from '@tabler/icons-react';
 import api, { Agent, Provider } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
@@ -371,6 +372,12 @@ export default function AgentsPage() {
                         <span className='flex items-center gap-0.5 rounded border border-[#14FFF7]/20 bg-[#14FFF7]/5 px-1.5 py-0.5 text-[9px] text-[#14FFF7]/70'>
                           <IconTool className='h-2 w-2' />
                           {agent.tools.length}
+                        </span>
+                      )}
+                      {(agent.skill_count || 0) > 0 && (
+                        <span className='flex items-center gap-0.5 rounded border border-[#56D090]/20 bg-[#56D090]/5 px-1.5 py-0.5 text-[9px] text-[#56D090]/70'>
+                          <IconSparkles className='h-2 w-2' />
+                          {agent.skill_count}
                         </span>
                       )}
                     </div>

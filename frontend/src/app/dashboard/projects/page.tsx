@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import {
   IconArchive, IconCheck, IconCircleDashed, IconLoader2,
-  IconPause, IconPlus, IconTrash
+  IconPlayerPause, IconPlus, IconTrash
 } from '@tabler/icons-react';
 import api, { Project, ProjectStatus, Workforce } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -21,7 +21,7 @@ import {
 
 const STATUS_CFG: Record<ProjectStatus, { label: string; color: string; icon: React.ReactNode }> = {
   active:    { label: 'Active',     color: '#56D090', icon: <IconCircleDashed className='h-3 w-3' /> },
-  paused:    { label: 'Paused',     color: '#FFBF47', icon: <IconPause className='h-3 w-3' /> },
+  paused:    { label: 'Paused',     color: '#FFBF47', icon: <IconPlayerPause className='h-3 w-3' /> },
   completed: { label: 'Completed',  color: '#14FFF7', icon: <IconCheck className='h-3 w-3' /> },
   archived:  { label: 'Archived',   color: '#6B7280', icon: <IconArchive className='h-3 w-3' /> },
 };

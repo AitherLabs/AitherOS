@@ -177,7 +177,8 @@ func (s *Store) ListAgents(ctx context.Context, limit, offset int) ([]*models.Ag
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.id, a.name, a.description, a.system_prompt, a.instructions, a.engine_type, a.engine_config, a.tools, a.model,
 			a.provider_id, a.variables, a.strategy, a.max_iterations, a.icon, a.color, a.avatar_url, a.status, a.created_at, a.updated_at,
-			pm.model_type
+			pm.model_type,
+			(SELECT COUNT(*) FROM agent_skills ags WHERE ags.agent_id = a.id) AS skill_count
 		FROM agents a
 		LEFT JOIN provider_models pm ON pm.provider_id = a.provider_id AND pm.model_name = a.model AND pm.is_enabled = true
 		WHERE a.status != 'archived'
@@ -199,7 +200,7 @@ func (s *Store) ListAgents(ctx context.Context, limit, offset int) ([]*models.Ag
 			&a.EngineType, &a.EngineConfig, &a.Tools, &a.Model,
 			&a.ProviderID, &varsJSON, &a.Strategy, &a.MaxIterations, &a.Icon, &a.Color, &a.AvatarURL,
 			&a.Status, &a.CreatedAt, &a.UpdatedAt,
-			&modelType,
+			&modelType, &a.SkillCount,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan agent: %w", err)
 		}

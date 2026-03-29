@@ -644,6 +644,7 @@ export interface Agent {
   color: string;
   avatar_url: string;
   status: string;
+  skill_count: number;
   created_at: string;
   updated_at: string;
 }
