@@ -42,9 +42,11 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconHistory,
-  IconExternalLink
+  IconExternalLink,
+  IconSparkles,
+  IconSearch
 } from '@tabler/icons-react';
-import api, { Agent, AgentVariable, MCPServer, MCPToolDefinition, Provider } from '@/lib/api';
+import api, { Agent, AgentVariable, MCPServer, MCPToolDefinition, Provider, Skill } from '@/lib/api';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { IconPicker } from '@/components/icon-picker';
@@ -165,8 +167,14 @@ export default function AgentDetailPage() {
   const [varInputs, setVarInputs] = useState<Record<string, string>>({});
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  // Skills
+  const [agentSkills, setAgentSkills] = useState<Skill[]>([]);
+  const [allSkills, setAllSkills] = useState<Skill[]>([]);
+  const [skillSearch, setSkillSearch] = useState('');
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+
   // Right panel tabs + tool expansion
-  const [rightTab, setRightTab] = useState<'debug' | 'tools' | 'memory'>('debug');
+  const [rightTab, setRightTab] = useState<'debug' | 'tools' | 'memory' | 'skills'>('debug');
   const [expandedTool, setExpandedTool] = useState<string | null>(null);
 
   const loadAgent = useCallback(async () => {
@@ -200,6 +208,16 @@ export default function AgentDetailPage() {
         const mcpRes = await api.listAgentMCPServers(agentId);
         setMcpTools(mcpRes.data || []);
       } catch { /* MCP load optional */ }
+
+      // Load skills
+      try {
+        const [skillsRes, allSkillsRes] = await Promise.all([
+          api.listAgentSkills(agentId),
+          api.listSkills()
+        ]);
+        setAgentSkills(skillsRes.data || []);
+        setAllSkills(allSkillsRes.data || []);
+      } catch { /* skills load optional */ }
     } catch (err) {
       console.error('Failed to load agent:', err);
     } finally {
@@ -338,6 +356,26 @@ export default function AgentDetailPage() {
   function removeVariable(idx: number) {
     setVariables(variables.filter((_, i) => i !== idx));
     markChanged();
+  }
+
+  async function handleAssignSkill(skill: Skill) {
+    try {
+      const res = await api.assignSkill(agentId, { skill_id: skill.id, position: agentSkills.length });
+      setAgentSkills(res.data || []);
+      setSkillPickerOpen(false);
+      setSkillSearch('');
+    } catch (err) {
+      console.error('Assign skill failed:', err);
+    }
+  }
+
+  async function handleRemoveSkill(skillId: string) {
+    try {
+      const res = await api.removeSkill(agentId, skillId);
+      setAgentSkills(res.data || []);
+    } catch (err) {
+      console.error('Remove skill failed:', err);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -619,6 +657,58 @@ export default function AgentDetailPage() {
         <div className='flex-1 overflow-y-auto border-r border-border/50'>
           <div className='space-y-5 p-5'>
 
+            {/* Context Budget Bar */}
+            {(() => {
+              const SKILL_LIMIT = 4000;
+              const PROMPT_SOFT = 2000;
+              const INSTR_SOFT = 1500;
+              const skillsChars = agentSkills.reduce((s, sk) => s + sk.content.length, 0);
+              const total = systemPrompt.length + instructions.length + skillsChars;
+              const totalBudget = PROMPT_SOFT + INSTR_SOFT + SKILL_LIMIT;
+              const pct = (n: number, cap: number) => Math.min(100, Math.round((n / cap) * 100));
+              const segments = [
+                { label: 'Prompt', chars: systemPrompt.length, cap: PROMPT_SOFT, color: '#9A66FF' },
+                { label: 'Instr.', chars: instructions.length, cap: INSTR_SOFT, color: '#FFBF47' },
+                { label: 'Skills', chars: skillsChars, cap: SKILL_LIMIT, color: '#56D090' },
+              ];
+              return (
+                <div className='rounded-lg border border-border/30 bg-background/30 p-3 space-y-2'>
+                  <div className='flex items-center justify-between'>
+                    <p className='font-mono text-[9px] font-bold uppercase tracking-widest text-muted-foreground/50'>Context Budget</p>
+                    <span className={`font-mono text-[9px] font-bold ${total > totalBudget * 0.9 ? 'text-red-400' : 'text-muted-foreground/40'}`}>
+                      {total.toLocaleString()} / {totalBudget.toLocaleString()} chars
+                    </span>
+                  </div>
+                  <div className='flex h-2 overflow-hidden rounded-full bg-muted/30 gap-px'>
+                    {segments.map((seg) => (
+                      <div
+                        key={seg.label}
+                        className='h-full rounded-sm transition-all'
+                        style={{ width: `${(seg.cap / totalBudget) * 100}%`, background: 'transparent', position: 'relative' }}
+                      >
+                        <div
+                          className='h-full rounded-sm transition-all'
+                          style={{ width: `${pct(seg.chars, seg.cap)}%`, background: seg.color, boxShadow: `0 0 4px ${seg.color}60`, opacity: seg.chars > seg.cap ? 1 : 0.85 }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className='flex gap-3'>
+                    {segments.map((seg) => (
+                      <div key={seg.label} className='flex items-center gap-1.5'>
+                        <div className='h-1.5 w-1.5 rounded-full' style={{ background: seg.color }} />
+                        <span className='font-mono text-[9px] text-muted-foreground/50'>{seg.label}</span>
+                        <span className={`font-mono text-[9px] font-bold ${seg.chars > seg.cap ? 'text-red-400' : 'text-muted-foreground/70'}`}>
+                          {seg.chars > 0 ? seg.chars.toLocaleString() : '—'}
+                        </span>
+                        <span className='font-mono text-[8px] text-muted-foreground/30'>/{seg.cap.toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* System Prompt */}
             <div className='space-y-2'>
               <div className='flex items-center justify-between'>
@@ -727,6 +817,7 @@ export default function AgentDetailPage() {
             {([
               { id: 'debug',  label: 'Debug',  Icon: IconMessage },
               { id: 'tools',  label: 'Tools',  Icon: IconTool    },
+              { id: 'skills', label: 'Skills', Icon: IconSparkles },
               { id: 'memory', label: 'Memory', Icon: IconHistory }
             ] as const).map(({ id, label, Icon }) => (
               <button
@@ -743,6 +834,11 @@ export default function AgentDetailPage() {
                 {id === 'tools' && mcpTools.length > 0 && (
                   <span className='rounded-full bg-[#9A66FF]/20 px-1.5 py-0 text-[8px] text-[#9A66FF]'>
                     {mcpTools.reduce((s, e) => s + (e.tools?.length ?? 0), 0)}
+                  </span>
+                )}
+                {id === 'skills' && agentSkills.length > 0 && (
+                  <span className='rounded-full bg-[#56D090]/20 px-1.5 py-0 text-[8px] text-[#56D090]'>
+                    {agentSkills.length}
                   </span>
                 )}
                 {id === 'memory' && messages.length > 0 && (
@@ -925,6 +1021,127 @@ export default function AgentDetailPage() {
                 )}
               </div>
             </ScrollArea>
+          )}
+
+          {/* ── Skills Tab ── */}
+          {rightTab === 'skills' && (
+            <div className='flex flex-1 flex-col overflow-hidden'>
+              {/* Header */}
+              <div className='shrink-0 border-b border-border/50 p-3'>
+                <div className='mb-2 flex items-center justify-between'>
+                  <div>
+                    <p className='font-mono text-[9px] font-bold uppercase tracking-wider text-muted-foreground/50'>Assigned Skills</p>
+                    <p className='text-[10px] text-muted-foreground/40 mt-0.5'>Injected into task messages as procedural knowledge</p>
+                  </div>
+                  <button
+                    onClick={() => setSkillPickerOpen(!skillPickerOpen)}
+                    className='flex items-center gap-1.5 rounded-lg border border-[#9A66FF]/40 bg-[#9A66FF]/10 px-2.5 py-1.5 font-mono text-[10px] font-bold text-[#9A66FF] hover:bg-[#9A66FF]/20 transition-colors'
+                  >
+                    <IconPlus className='h-3 w-3' />
+                    Add
+                  </button>
+                </div>
+                {/* Skills usage in budget */}
+                {agentSkills.length > 0 && (
+                  <div className='rounded-md border border-[#56D090]/20 bg-[#56D090]/5 px-2.5 py-2'>
+                    <div className='flex items-center justify-between mb-1'>
+                      <span className='font-mono text-[9px] text-[#56D090]/70'>Skills context usage</span>
+                      <span className={`font-mono text-[9px] font-bold ${agentSkills.reduce((s, sk) => s + sk.content.length, 0) > 4000 ? 'text-red-400' : 'text-[#56D090]'}`}>
+                        {agentSkills.reduce((s, sk) => s + sk.content.length, 0).toLocaleString()} / 4,000 chars
+                      </span>
+                    </div>
+                    <div className='h-1 rounded-full bg-muted/30 overflow-hidden'>
+                      <div
+                        className='h-full rounded-full transition-all'
+                        style={{
+                          width: `${Math.min(100, (agentSkills.reduce((s, sk) => s + sk.content.length, 0) / 4000) * 100)}%`,
+                          background: agentSkills.reduce((s, sk) => s + sk.content.length, 0) > 4000 ? '#ef4444' : '#56D090',
+                          boxShadow: '0 0 4px #56D09060'
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Skill Picker */}
+              {skillPickerOpen && (
+                <div className='shrink-0 border-b border-border/50 bg-background/60 p-3'>
+                  <div className='relative mb-2'>
+                    <IconSearch className='absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/40' />
+                    <input
+                      value={skillSearch}
+                      onChange={(e) => setSkillSearch(e.target.value)}
+                      placeholder='Search library...'
+                      className='w-full rounded-lg border border-border/50 bg-background/80 pl-7 pr-3 py-1.5 font-mono text-[11px] text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-[#9A66FF]/50'
+                    />
+                  </div>
+                  <div className='space-y-1 max-h-48 overflow-y-auto'>
+                    {allSkills
+                      .filter((s) => !agentSkills.some((as) => as.id === s.id))
+                      .filter((s) => {
+                        if (!skillSearch) return true;
+                        const q = skillSearch.toLowerCase();
+                        return s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q) || (s.tags || []).some((t) => t.toLowerCase().includes(q));
+                      })
+                      .map((skill) => (
+                        <button
+                          key={skill.id}
+                          onClick={() => handleAssignSkill(skill)}
+                          className='flex w-full items-center gap-2 rounded-lg p-2 text-left hover:bg-accent/30 transition-colors'
+                        >
+                          <span className='text-base'>{skill.icon || '✨'}</span>
+                          <div className='flex-1 min-w-0'>
+                            <p className='text-[11px] font-medium truncate'>{skill.name}</p>
+                            <p className='font-mono text-[9px] text-muted-foreground/50 capitalize'>{skill.category} · {skill.content.length} chars</p>
+                          </div>
+                          <span className='font-mono text-[9px] text-[#9A66FF]/60 shrink-0'>{skill.source}</span>
+                        </button>
+                      ))}
+                    {allSkills.filter((s) => !agentSkills.some((as) => as.id === s.id)).length === 0 && (
+                      <p className='py-4 text-center text-[11px] text-muted-foreground/50'>All skills assigned</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Assigned List */}
+              <ScrollArea className='flex-1'>
+                <div className='p-3 space-y-2'>
+                  {agentSkills.length === 0 ? (
+                    <div className='flex flex-col items-center gap-3 py-12 text-center'>
+                      <div className='flex h-12 w-12 items-center justify-center rounded-xl bg-[#9A66FF]/10'>
+                        <IconSparkles className='h-5 w-5 text-[#9A66FF]/50' />
+                      </div>
+                      <div>
+                        <p className='text-xs font-medium'>No skills assigned</p>
+                        <p className='mt-0.5 text-[11px] text-muted-foreground/60'>Add skills to teach this agent how to approach specific tasks.</p>
+                      </div>
+                    </div>
+                  ) : (
+                    agentSkills.map((skill) => (
+                      <div key={skill.id} className='flex items-start gap-2.5 rounded-xl border border-border/40 bg-card/50 p-3'>
+                        <span className='text-xl shrink-0 mt-0.5'>{skill.icon || '✨'}</span>
+                        <div className='flex-1 min-w-0'>
+                          <div className='flex items-center gap-2'>
+                            <p className='text-[11px] font-semibold truncate'>{skill.name}</p>
+                            <span className='font-mono text-[8px] text-muted-foreground/40 capitalize shrink-0'>{skill.category}</span>
+                          </div>
+                          <p className='text-[10px] text-muted-foreground/60 line-clamp-2 mt-0.5'>{skill.description}</p>
+                          <p className='font-mono text-[9px] text-muted-foreground/30 mt-1'>{skill.content.length} chars</p>
+                        </div>
+                        <button
+                          onClick={() => handleRemoveSkill(skill.id)}
+                          className='shrink-0 rounded p-1 text-muted-foreground/30 hover:text-red-400 hover:bg-red-400/10 transition-colors'
+                        >
+                          <IconX className='h-3.5 w-3.5' />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </ScrollArea>
+            </div>
           )}
 
           {/* ── Memory Tab ── */}

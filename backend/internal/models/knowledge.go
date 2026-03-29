@@ -14,6 +14,7 @@ const (
 	KnowledgeSourceManual    KnowledgeSourceType = "manual"
 	KnowledgeSourceTool      KnowledgeSourceType = "tool_result"
 	KnowledgeSourceLesson    KnowledgeSourceType = "lesson"
+	KnowledgeSourceFact      KnowledgeSourceType = "project_fact" // concrete facts extracted post-execution, project-scoped
 )
 
 type KnowledgeEntry struct {

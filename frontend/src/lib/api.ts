@@ -540,6 +540,28 @@ class ApiClient {
     return this.request<KnowledgeEntry[]>(`/api/v1/projects/${projectId}/knowledge`);
   }
 
+  // ── Skills ──────────────────────────────────────────────
+  async listSkills() {
+    return this.request<Skill[]>('/api/v1/skills');
+  }
+
+  async listAgentSkills(agentId: string) {
+    return this.request<Skill[]>(`/api/v1/agents/${agentId}/skills`);
+  }
+
+  async assignSkill(agentId: string, data: AssignSkillRequest) {
+    return this.request<Skill[]>(`/api/v1/agents/${agentId}/skills`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  }
+
+  async removeSkill(agentId: string, skillId: string) {
+    return this.request<Skill[]>(`/api/v1/agents/${agentId}/skills/${skillId}`, {
+      method: 'DELETE'
+    });
+  }
+
   // ── Approvals ───────────────────────────────────────────
   async listApprovals(workforceId: string, status?: string) {
     const qs = status ? `?status=${status}` : '';
@@ -1007,6 +1029,30 @@ export interface ChatReply {
     execution_id: string;
     message: string;
   };
+}
+
+// ── Skill Types ──────────────────────────────────────────
+
+export interface Skill {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  content: string;
+  category: string;
+  source: 'official' | 'community';
+  author: string;
+  repo_url: string;
+  version: string;
+  icon: string;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssignSkillRequest {
+  skill_id: string;
+  position?: number;
 }
 
 export const api = new ApiClient();

@@ -31,6 +31,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	activity := NewActivityHandler(s)
 	agentChat := NewAgentChatHandler(s, km)
 	upload := NewUploadHandler()
+	skills := NewSkillHandler(s)
 
 	// protect wraps a handler with JWT enforcement (no-op if jwtMgr is nil).
 	// Requests bearing the SERVICE_TOKEN bypass JWT — used by Aither-Tools
@@ -186,6 +187,12 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.Handle("DELETE /api/v1/projects/{projectID}", protect(http.HandlerFunc(projects.Delete)))
 	mux.Handle("POST /api/v1/projects/{projectID}/brief/refresh", protect(http.HandlerFunc(projects.RefreshBrief)))
 	mux.Handle("GET /api/v1/projects/{projectID}/knowledge", protect(http.HandlerFunc(projects.ListKnowledge)))
+
+	// Skills Library
+	mux.Handle("GET /api/v1/skills", protect(http.HandlerFunc(skills.List)))
+	mux.Handle("GET /api/v1/agents/{id}/skills", protect(http.HandlerFunc(skills.ListAgentSkills)))
+	mux.Handle("POST /api/v1/agents/{id}/skills", protect(http.HandlerFunc(skills.AssignSkill)))
+	mux.Handle("DELETE /api/v1/agents/{id}/skills/{skillID}", protect(http.HandlerFunc(skills.RemoveSkill)))
 
 	// Approvals
 	mux.Handle("POST /api/v1/workforces/{id}/approvals", protect(http.HandlerFunc(approvals.Create)))

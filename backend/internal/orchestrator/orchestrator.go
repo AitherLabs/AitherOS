@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -196,7 +198,7 @@ type completionSignal struct {
 }
 
 // maxConversationMemory is the number of recent messages to include as context.
-const maxConversationMemory = 10
+const defaultMaxConversationMemory = 24
 
 // maxHandoffChars is the max chars from a single upstream agent's output to include in handoff context.
 const maxHandoffChars = 3000
@@ -212,6 +214,9 @@ const maxRAGContextChars = 2000
 // The brief can grow large over time; 6000 chars ≈ 1500 tokens is generous but bounded.
 const maxBriefContextChars = 6000
 
+// maxSkillsContextChars caps the combined skills text injected per agent call (~1000 tokens).
+const maxSkillsContextChars = 4000
+
 // maxToolResultHistoryChars caps tool results stored in the chat history to avoid
 // multi-round context blowup (the full result is still returned to the agent in the
 // current round — only subsequent rounds see the truncated version).
@@ -221,7 +226,46 @@ const maxToolResultHistoryChars = 4000
 // the rolling tool-call history. Older rounds are evicted to prevent context
 // explosion on long-running agents. The first two messages (system prompt +
 // initial user task) are always kept as anchors regardless of this cap.
-const maxToolHistoryMessages = 40
+const defaultMaxToolHistoryMessages = 120
+
+// maxConversationMessageChars caps each historical message included in
+// conversation context to prevent oversized prompt fragments.
+const defaultMaxConversationMessageChars = 4000
+
+// needsHelpPollInterval is how often the execution loop re-checks for human
+// intervention while one or more subtasks are in needs_help.
+const defaultNeedsHelpPollInterval = 3 * time.Second
+
+// maxNeedsHelpWait is the maximum wall time an execution may remain paused on
+// needs_help before it is halted and surfaced to the operator explicitly.
+const defaultMaxNeedsHelpWait = 15 * time.Minute
+
+// needsHelpReminderInterval controls how often a reminder event is emitted
+// while waiting for operator intervention.
+const defaultNeedsHelpReminderInterval = 60 * time.Second
+
+// maxInterventionContextChars caps the accumulated operator intervention text
+// injected into a single execution round.
+const defaultMaxInterventionContextChars = 4000
+
+var (
+	// ORCH_MAX_CONVERSATION_MEMORY: number of recent execution messages to inject.
+	maxConversationMemory = envInt("ORCH_MAX_CONVERSATION_MEMORY", defaultMaxConversationMemory, 8, 300)
+	// ORCH_MAX_TOOL_HISTORY_MESSAGES: rolling tool-call history depth.
+	maxToolHistoryMessages = envInt("ORCH_MAX_TOOL_HISTORY_MESSAGES", defaultMaxToolHistoryMessages, 40, 600)
+	// ORCH_MAX_CONVERSATION_MESSAGE_CHARS: per-message cap for convo context.
+	maxConversationMessageChars = envInt("ORCH_MAX_CONVERSATION_MESSAGE_CHARS", defaultMaxConversationMessageChars, 1000, 12000)
+
+	// ORCH_NEEDS_HELP_POLL_INTERVAL: sleep between needs_help checks.
+	needsHelpPollInterval = envDuration("ORCH_NEEDS_HELP_POLL_INTERVAL", defaultNeedsHelpPollInterval, 500*time.Millisecond)
+	// ORCH_NEEDS_HELP_TIMEOUT: auto-halt timeout while waiting for intervention.
+	maxNeedsHelpWait = envDuration("ORCH_NEEDS_HELP_TIMEOUT", defaultMaxNeedsHelpWait, 30*time.Second)
+	// ORCH_NEEDS_HELP_REMINDER_INTERVAL: reminder cadence while paused.
+	needsHelpReminderInterval = envDuration("ORCH_NEEDS_HELP_REMINDER_INTERVAL", defaultNeedsHelpReminderInterval, 5*time.Second)
+
+	// ORCH_MAX_INTERVENTION_CONTEXT_CHARS: max accumulated operator instructions.
+	maxInterventionContextChars = envInt("ORCH_MAX_INTERVENTION_CONTEXT_CHARS", defaultMaxInterventionContextChars, 500, 20000)
+)
 
 // trimHistory keeps history[0] (system prompt) and history[1] (user task) as
 // anchors, then retains only the most recent maxToolHistoryMessages messages.
@@ -879,6 +923,8 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 
 	stepCount := 0
 	var pendingIntervention string
+	var needsHelpSince time.Time
+	var lastNeedsHelpReminder time.Time
 
 	for !allSubtasksDone(plan) {
 		// ── Cancellation ──
@@ -905,8 +951,17 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		}
 
 		// ── Drain intervention channel ──
-		select {
-		case msg := <-interventCh:
+		for {
+			var msg string
+			select {
+			case msg = <-interventCh:
+			default:
+				msg = ""
+			}
+			if msg == "" {
+				break
+			}
+
 			// Persist the human message so it appears in the chat
 			humanMsg := &models.Message{
 				ID: uuid.New(), ExecutionID: exec.ID,
@@ -925,25 +980,59 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 				return
 			}
 
-			pendingIntervention = msg
+			pendingIntervention = appendInterventionMessage(pendingIntervention, msg)
 			// Unblock any waiting subtasks
 			for i := range plan {
 				if plan[i].Status == models.SubtaskNeedsHelp || plan[i].Status == models.SubtaskBlocked {
 					plan[i].Status = models.SubtaskPending
+					plan[i].ErrorMsg = ""
 				}
 			}
 			o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
 			o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypeHumanIntervened,
 				"Human intervened: "+msg,
 				map[string]any{"message": msg}))
-		default:
 		}
 
 		// ── Pause if waiting for human ──
 		if hasNeedsHelp(plan) {
-			time.Sleep(3 * time.Second)
+			now := time.Now()
+			if needsHelpSince.IsZero() {
+				needsHelpSince = now
+				lastNeedsHelpReminder = now
+				o.eventBus.PublishSystem(ctx, exec.ID,
+					fmt.Sprintf("Execution paused: waiting for human input. Send a message to continue (auto-halt after %s).", maxNeedsHelpWait))
+			} else if now.Sub(lastNeedsHelpReminder) >= needsHelpReminderInterval {
+				elapsed := now.Sub(needsHelpSince).Round(time.Second)
+				remaining := (maxNeedsHelpWait - now.Sub(needsHelpSince)).Round(time.Second)
+				if remaining < 0 {
+					remaining = 0
+				}
+				o.eventBus.PublishSystem(ctx, exec.ID,
+					fmt.Sprintf("Still waiting for human input (%s elapsed, %s until auto-halt).", elapsed, remaining))
+				lastNeedsHelpReminder = now
+			}
+
+			if now.Sub(needsHelpSince) >= maxNeedsHelpWait {
+				reason := firstNeedsHelpReason(plan)
+				haltMsg := fmt.Sprintf("No human intervention received after %s while waiting in needs_help.", maxNeedsHelpWait)
+				if reason != "" {
+					haltMsg += " Last request: " + truncateStr(reason, 220)
+				}
+				o.haltExecution(ctx, exec.ID, wf.ID, haltMsg)
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				o.haltExecution(context.Background(), exec.ID, wf.ID, "Manual halt requested")
+				return
+			case <-time.After(needsHelpPollInterval):
+			}
 			continue
 		}
+		needsHelpSince = time.Time{}
+		lastNeedsHelpReminder = time.Time{}
 
 		// ── Find ready subtasks (deps met, status=pending) ──
 		ready := findReadySubtasks(plan)
@@ -956,9 +1045,12 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		}
 
 		// ── Execute each ready subtask (sequential for full observability) ──
+		interventionForRound := pendingIntervention
+		usedInterventionThisRound := false
 		for _, subtaskIdx := range ready {
 			subtask := &plan[subtaskIdx]
 			subtask.Status = models.SubtaskRunning
+			subtask.ErrorMsg = ""
 			o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
 
 			agent := findAgentByID(agents, subtask.AgentID)
@@ -987,14 +1079,14 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 				iteration:       stepCount + 1,
 				subtask:         subtask,
 				handoffCtx:      handoffCtx,
-				interventionMsg: pendingIntervention,
+				interventionMsg: interventionForRound,
 				convCtx:         convCtx,
 				mcpSession:      mcpSession,
 				execCtx:         execCtx,
 			})
-
-			// Consume the intervention message — it's been injected into this task
-			pendingIntervention = ""
+			if interventionForRound != "" {
+				usedInterventionThisRound = true
+			}
 
 			if res.Err != nil {
 				// Convert hard errors to needs_help so the execution pauses and the
@@ -1007,12 +1099,17 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 					map[string]any{"reason": res.Err.Error(), "subtask_id": subtask.ID}))
 			} else if res.NeedsHelp {
 				subtask.Status = models.SubtaskNeedsHelp
+				subtask.ErrorMsg = strings.TrimSpace(res.NeedsHelpReason)
+				if subtask.ErrorMsg == "" {
+					subtask.ErrorMsg = "Agent requested human input"
+				}
 				o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &subtask.AgentID, subtask.AgentName,
 					models.EventTypeHumanRequired,
-					fmt.Sprintf("[%s/%s] Needs human input: %s", subtask.ID, subtask.AgentName, res.NeedsHelpReason),
-					map[string]any{"reason": res.NeedsHelpReason, "subtask_id": subtask.ID}))
+					fmt.Sprintf("[%s/%s] Needs human input: %s", subtask.ID, subtask.AgentName, subtask.ErrorMsg),
+					map[string]any{"reason": subtask.ErrorMsg, "subtask_id": subtask.ID}))
 			} else {
 				subtask.Status = models.SubtaskDone
+				subtask.ErrorMsg = ""
 				// Prefer summary from completion signal when available
 				if res.Summary != "" {
 					subtask.Output = res.Summary + "\n\n" + res.Content
@@ -1045,6 +1142,9 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 			o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypeIterationDone,
 				fmt.Sprintf("Step %d complete. Tokens: %d", stepCount, execCtx.tokensUsed.Load()),
 				map[string]any{"step": stepCount, "tokens_used": execCtx.tokensUsed.Load()}))
+		}
+		if usedInterventionThisRound {
+			pendingIntervention = ""
 		}
 	}
 
@@ -1096,6 +1196,26 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 
 	systemPrompt, _ := engine.InterpolatePrompt(agent.SystemPrompt, agent.Variables, p.exec.Inputs)
 	instructions, _ := engine.InterpolatePrompt(agent.Instructions, agent.Variables, p.exec.Inputs)
+
+	// ── Skills injection ─────────────────────────────────────────────────────
+	// Load skills assigned to this agent and build the ## Skills section.
+	// Skills are procedural knowledge blocks ("how to SEO-write", "pentest methodology")
+	// injected after the project brief, before the assigned subtask.
+	skillsCtx := ""
+	if agentSkills, err := o.store.GetAgentSkills(ctx, agentID); err == nil && len(agentSkills) > 0 {
+		var parts []string
+		total := 0
+		for _, sk := range agentSkills {
+			block := fmt.Sprintf("### %s %s\n%s", sk.Icon, sk.Name, sk.Content)
+			if total+len(block) > maxSkillsContextChars {
+				parts = append(parts, fmt.Sprintf("*[%d additional skill(s) omitted — context budget reached]*", len(agentSkills)-len(parts)))
+				break
+			}
+			parts = append(parts, block)
+			total += len(block)
+		}
+		skillsCtx = strings.Join(parts, "\n\n---\n\n")
+	}
 
 	// ── Per-agent episodic memory from Qdrant ──
 	// Retrieve what this specific agent has done in past executions (long-term memory)
@@ -1153,6 +1273,9 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	}
 	if projectFactsCtx != "" {
 		taskParts = append(taskParts, fmt.Sprintf("## Project Knowledge (relevant facts)\n%s", projectFactsCtx))
+	}
+	if skillsCtx != "" {
+		taskParts = append(taskParts, fmt.Sprintf("## Your Skills\n%s", skillsCtx))
 	}
 
 	taskParts = append(taskParts, fmt.Sprintf("## Your Assigned Subtask (step %d)\n%s", p.iteration, subtaskDesc))
@@ -1578,8 +1701,8 @@ func (o *Orchestrator) buildConversationContext(ctx context.Context, execID, wor
 		prefix := fmt.Sprintf("[%s/%s iter=%d]", m.AgentName, m.Role, m.Iteration)
 		// Truncate very long messages to avoid blowing up context
 		content := m.Content
-		if len(content) > 2000 {
-			content = content[:2000] + "... (truncated)"
+		if len(content) > maxConversationMessageChars {
+			content = truncateStr(content, maxConversationMessageChars) + "... (truncated)"
 		}
 		parts = append(parts, fmt.Sprintf("%s %s", prefix, content))
 	}
@@ -1729,6 +1852,69 @@ func extractCompletionSummary(content string) string {
 		return sig.Summary
 	}
 	return ""
+}
+
+// appendInterventionMessage preserves all operator interventions that arrive in
+// quick succession and injects them together in the next agent round.
+func appendInterventionMessage(existing, msg string) string {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return existing
+	}
+	existing = strings.TrimSpace(existing)
+	if existing == "" {
+		return keepLastRunes(msg, maxInterventionContextChars)
+	}
+	combined := existing + "\n\n[Additional operator instruction]\n" + msg
+	return keepLastRunes(combined, maxInterventionContextChars)
+}
+
+func keepLastRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 2 {
+		return string(r[len(r)-max:])
+	}
+	return "…\n" + string(r[len(r)-(max-2):])
+}
+
+func envInt(name string, fallback, minVal, maxVal int) int {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Printf("orchestrator: invalid %s=%q (using default %d)", name, v, fallback)
+		return fallback
+	}
+	if n < minVal || n > maxVal {
+		log.Printf("orchestrator: out-of-range %s=%d (allowed %d..%d, using default %d)", name, n, minVal, maxVal, fallback)
+		return fallback
+	}
+	return n
+}
+
+func envDuration(name string, fallback, minVal time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Printf("orchestrator: invalid %s=%q (using default %s)", name, v, fallback)
+		return fallback
+	}
+	if d < minVal {
+		log.Printf("orchestrator: too-small %s=%s (min %s, using default %s)", name, d, minVal, fallback)
+		return fallback
+	}
+	return d
 }
 
 // ResumeExecution resumes a halted execution from where it left off.
@@ -2463,6 +2649,20 @@ func hasNeedsHelp(plan []models.ExecutionSubtask) bool {
 		}
 	}
 	return false
+}
+
+// firstNeedsHelpReason returns the first non-empty reason among needs_help subtasks.
+func firstNeedsHelpReason(plan []models.ExecutionSubtask) string {
+	for _, st := range plan {
+		if st.Status != models.SubtaskNeedsHelp {
+			continue
+		}
+		reason := strings.TrimSpace(st.ErrorMsg)
+		if reason != "" {
+			return reason
+		}
+	}
+	return ""
 }
 
 // buildHandoffContext assembles the outputs of the completed upstream subtasks

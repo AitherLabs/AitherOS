@@ -59,8 +59,11 @@ func (h *CredentialHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refresh secrets file
-	go h.exportSecrets(wfID)
+	// Refresh secrets file synchronously so agents can use the new credential immediately.
+	if err := h.exportSecrets(wfID); err != nil {
+		writeError(w, http.StatusInternalServerError, "credential saved, but failed to refresh secrets: "+err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, cred)
 }
@@ -84,20 +87,26 @@ func (h *CredentialHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refresh secrets file
-	go h.exportSecrets(wfID)
+	// Refresh secrets file synchronously so removed credentials disappear immediately.
+	if err := h.exportSecrets(wfID); err != nil {
+		writeError(w, http.StatusInternalServerError, "credential deleted, but failed to refresh secrets: "+err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "credential deleted"})
 }
 
 // exportSecrets re-exports all credentials for a workforce to the secrets file.
-// Called asynchronously after any credential mutation.
-func (h *CredentialHandler) exportSecrets(workforceID uuid.UUID) {
+// Called synchronously after credential mutations so retries can immediately read updates.
+func (h *CredentialHandler) exportSecrets(workforceID uuid.UUID) error {
 	ctx := context.Background()
 	wf, err := h.store.GetWorkForce(ctx, workforceID)
 	if err != nil {
-		return
+		return err
 	}
 	root := workspace.WorkforceRoot(wf.Name)
-	h.store.ExportSecretsFile(ctx, workforceID, root)
+	if err := h.store.ExportSecretsFile(ctx, workforceID, root); err != nil {
+		return err
+	}
+	return nil
 }

@@ -82,6 +82,59 @@ const eventTypeConfig: Record<string, { dot: string; label: string }> = {
   execution_titled:     { dot: '#9A66FF', label: 'Named' },
 };
 
+type CredentialHint = { service: string; key: string };
+
+function inferServiceFromKey(key: string): string {
+  const clean = key.trim().toUpperCase();
+  if (!clean) return '';
+  const known: Record<string, string> = {
+    GITHUB: 'github',
+    OPENAI: 'openai',
+    ANTHROPIC: 'anthropic',
+    STRIPE: 'stripe',
+    AWS: 'aws',
+    DOCKER: 'docker'
+  };
+  const prefix = clean.split('_')[0];
+  return known[prefix] || prefix.toLowerCase();
+}
+
+function detectCredentialHint(text: string): CredentialHint | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const envMatch = trimmed.match(/\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*(?:TOKEN|API_KEY|ACCESS_TOKEN|SECRET_KEY|SECRET|PASSWORD|PAT|KEY))\b/);
+  if (envMatch) {
+    const key = envMatch[1];
+    return { service: inferServiceFromKey(key), key };
+  }
+
+  const pairMatch = trimmed.match(/service\s*[:=]\s*([a-z0-9._-]+)[\s,;]+key(?:_name)?\s*[:=]\s*([A-Za-z0-9_]+)/i);
+  if (pairMatch) {
+    return {
+      service: pairMatch[1].toLowerCase(),
+      key: pairMatch[2].toUpperCase()
+    };
+  }
+
+  const asksForCredential = /(token|api[\s_-]?key|credential|secret|access[\s_-]?key|pat|password|auth)/i.test(trimmed);
+  if (!asksForCredential) return null;
+
+  const providerFallbacks: Array<{ re: RegExp; service: string; key: string }> = [
+    { re: /\bgithub\b/i, service: 'github', key: 'GITHUB_TOKEN' },
+    { re: /\bopenai\b/i, service: 'openai', key: 'OPENAI_API_KEY' },
+    { re: /\banthropic\b/i, service: 'anthropic', key: 'ANTHROPIC_API_KEY' },
+    { re: /\bstripe\b/i, service: 'stripe', key: 'STRIPE_SECRET_KEY' },
+    { re: /\baws\b/i, service: 'aws', key: 'AWS_ACCESS_KEY_ID' },
+    { re: /\bdocker\b/i, service: 'docker', key: 'DOCKER_TOKEN' }
+  ];
+  for (const hint of providerFallbacks) {
+    if (hint.re.test(trimmed)) return { service: hint.service, key: hint.key };
+  }
+
+  return null;
+}
+
 function PipelinePlanPanel({ plan, agentsMap }: { plan: ExecutionSubtask[]; agentsMap: Record<string, Agent> }) {
   if (!plan || plan.length === 0) return null;
   return (
@@ -1369,28 +1422,53 @@ export default function ExecutionDetailPage() {
   const userScrolledUpRef = useRef(false);
   const agentThreadRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
+  const needsHelpReason = useMemo(() => {
+    const waiting = (execution?.plan || []).filter(s => s.status === 'needs_help');
+    for (let i = waiting.length - 1; i >= 0; i--) {
+      const reason = waiting[i].error_msg?.trim();
+      if (reason) return reason;
+    }
+
+    for (let i = liveEvents.length - 1; i >= 0; i--) {
+      const ev = liveEvents[i];
+      if (ev.type !== 'human_required') continue;
+      const reason = (typeof ev.data?.reason === 'string' && ev.data.reason.trim())
+        ? ev.data.reason.trim()
+        : ev.content.trim();
+      if (reason) return reason;
+    }
+    return '';
+  }, [execution?.plan, liveEvents]);
+
   // Scan recent messages to auto-detect what credential the blocked agent needs.
   // Must stay above early returns to satisfy Rules of Hooks.
   const detectedCred = useMemo(() => {
     const needsHelp = execution?.plan?.some(s => s.status === 'needs_help');
     if (!needsHelp) return null;
-    const recent = messages.slice(-12);
-    for (let i = recent.length - 1; i >= 0; i--) {
-      const content = recent[i].content;
-      const envMatch = content.match(/\b([A-Z][A-Z0-9]{1,}_(?:TOKEN|KEY|SECRET|API_KEY|ACCESS_TOKEN|PAT|PASSWORD))\b/);
-      if (envMatch) {
-        const key = envMatch[1];
-        return { service: key.toLowerCase().split('_')[0], key };
-      }
-      if (/github/i.test(content))    return { service: 'github',    key: 'GITHUB_TOKEN' };
-      if (/openai/i.test(content))    return { service: 'openai',    key: 'OPENAI_API_KEY' };
-      if (/anthropic/i.test(content)) return { service: 'anthropic', key: 'ANTHROPIC_API_KEY' };
-      if (/stripe/i.test(content))    return { service: 'stripe',    key: 'STRIPE_SECRET_KEY' };
-      if (/aws/i.test(content))       return { service: 'aws',       key: 'AWS_ACCESS_KEY_ID' };
-      if (/docker/i.test(content))    return { service: 'docker',    key: 'DOCKER_TOKEN' };
+
+    const sources: string[] = [];
+    if (needsHelpReason) sources.push(needsHelpReason);
+
+    const recentEvents = liveEvents.slice(-10);
+    for (let i = recentEvents.length - 1; i >= 0; i--) {
+      const ev = recentEvents[i];
+      if (ev.type !== 'human_required') continue;
+      if (typeof ev.data?.reason === 'string') sources.push(ev.data.reason);
+      if (ev.content) sources.push(ev.content);
     }
+
+    const recentMessages = messages.slice(-12);
+    for (let i = recentMessages.length - 1; i >= 0; i--) {
+      sources.push(recentMessages[i].content);
+    }
+
+    for (const src of sources) {
+      const hint = detectCredentialHint(src || '');
+      if (hint) return hint;
+    }
+
     return null;
-  }, [execution?.plan, messages]);
+  }, [execution?.plan, needsHelpReason, liveEvents, messages]);
 
   const loadData = useCallback(async () => {
     if (!session?.accessToken) return; // wait for NextAuth session to initialise
@@ -1769,15 +1847,16 @@ export default function ExecutionDetailPage() {
     setCredSaving(true);
     setInterveneStatus('idle');
     try {
-      if (workforce?.id && credService.trim()) {
+      const normalizedService = (credService.trim() || inferServiceFromKey(credKey.trim()) || 'custom').toLowerCase();
+      if (workforce?.id) {
         await api.upsertCredential(workforce.id, {
-          service: credService.trim().toLowerCase(),
+          service: normalizedService,
           key_name: credKey.trim(),
           value: credValue.trim()
         });
       }
       const msg = workforce?.id
-        ? `Credential stored: ${credKey.trim()} is now available via list_secrets (service: ${credService.trim() || credKey.trim()}). Please retry the blocked operation.`
+        ? `Credential stored: ${credKey.trim()} is now available via list_secrets (service: ${normalizedService}). Please retry the blocked operation.`
         : `Here is the credential you need — ${credKey.trim()}: ${credValue.trim()}. Please retry the blocked operation.`;
       await api.interveneExecution(execution.id, msg);
       setCredPanelOpen(false);
@@ -2513,7 +2592,11 @@ export default function ExecutionDetailPage() {
                 <div className='flex items-center gap-2'>
                   <span className='animate-pulse text-sm'>🙋</span>
                   <span className='text-xs text-[#FFBF47]'>
-                    {detectedCred ? `Agent needs ${detectedCred.key}` : 'Agent needs credentials to continue'}
+                    {detectedCred
+                      ? `Agent requested ${detectedCred.key}`
+                      : needsHelpReason
+                        ? 'Agent is waiting for a credential'
+                        : 'Agent needs credentials to continue'}
                   </span>
                 </div>
                 <span className='font-mono text-[9px] text-[#FFBF47]/70'>
@@ -2522,13 +2605,19 @@ export default function ExecutionDetailPage() {
               </button>
               {credPanelOpen && (
                 <div className='border-t border-[#FFBF47]/20 bg-[#FFBF47]/[0.03] px-4 py-3 space-y-2.5'>
+                  {needsHelpReason && (
+                    <div className='rounded-md border border-[#FFBF47]/25 bg-[#FFBF47]/5 px-2.5 py-2'>
+                      <p className='font-mono text-[9px] uppercase tracking-wider text-[#FFBF47]/70'>Agent request</p>
+                      <p className='mt-1 text-[11px] leading-relaxed text-[#EAEAEA]/80'>{needsHelpReason}</p>
+                    </div>
+                  )}
                   <div className='grid grid-cols-2 gap-2'>
                     <div className='space-y-1'>
                       <p className='font-mono text-[9px] uppercase tracking-wider text-muted-foreground/50'>Service</p>
                       <Input
                         value={credService}
                         onChange={(e) => setCredService(e.target.value)}
-                        placeholder='github'
+                        placeholder={detectedCred?.service || 'service-name'}
                         className='h-7 font-mono text-xs'
                       />
                     </div>
@@ -2537,7 +2626,7 @@ export default function ExecutionDetailPage() {
                       <Input
                         value={credKey}
                         onChange={(e) => setCredKey(e.target.value)}
-                        placeholder='GITHUB_TOKEN'
+                        placeholder={detectedCred?.key || 'API_KEY'}
                         className='h-7 font-mono text-xs uppercase'
                       />
                     </div>

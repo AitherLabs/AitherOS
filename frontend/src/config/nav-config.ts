@@ -70,6 +70,14 @@ export const navItems: NavItem[] = [
     items: []
   },
   {
+    title: 'Skills',
+    url: '/dashboard/skills',
+    icon: 'skills',
+    shortcut: ['s', 'k'],
+    isActive: false,
+    items: []
+  },
+  {
     title: 'Marketplace',
     url: '/dashboard/marketplace',
     icon: 'marketplace',
