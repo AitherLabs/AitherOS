@@ -98,7 +98,8 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
       throw new Error(`Knowledge search returned ${res.status}: ${body}`);
     }
 
-    const entries = await res.json() as Array<{ title: string; content: string; similarity?: number }>;
+    const raw = await res.json() as Array<{ title: string; content: string; similarity?: number }> | { data?: Array<{ title: string; content: string; similarity?: number }> };
+    const entries = Array.isArray(raw) ? raw : ((raw as any).data ?? []) as Array<{ title: string; content: string; similarity?: number }>;
     if (!entries || entries.length === 0) return 'No relevant knowledge entries found for that query.';
 
     return entries.map((e, i) => {

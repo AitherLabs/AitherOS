@@ -34,9 +34,18 @@ const ALLOWED_ROOTS = [WORKSPACE, NOTES_DIR, TOOLS_DIR];
 
 /** Resolve a user-supplied path and assert it stays within allowed roots. */
 export function safeResolve(inputPath: string, base: string = WORKSPACE): string {
-  const resolved = path.isAbsolute(inputPath)
-    ? path.normalize(inputPath)
-    : path.resolve(base, inputPath);
+  // /workspace and /notes are virtual aliases agents commonly use.
+  // Rewrite them to the real absolute paths before resolution.
+  let normalizedInput = inputPath;
+  if (normalizedInput === '/workspace' || normalizedInput.startsWith('/workspace/')) {
+    normalizedInput = WORKSPACE + normalizedInput.slice('/workspace'.length);
+  } else if (normalizedInput === '/notes' || normalizedInput.startsWith('/notes/')) {
+    normalizedInput = NOTES_DIR + normalizedInput.slice('/notes'.length);
+  }
+
+  const resolved = path.isAbsolute(normalizedInput)
+    ? path.normalize(normalizedInput)
+    : path.resolve(base, normalizedInput);
 
   const ok = ALLOWED_ROOTS.some(
     r => resolved === r || resolved.startsWith(r + path.sep)

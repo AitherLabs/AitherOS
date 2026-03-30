@@ -1978,6 +1978,16 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			})
 		}
 
+		// Detect tool-call loops and inject a corrective intervention before the next LLM call.
+		if loopMsg := detectToolLoop(allToolCalls); loopMsg != "" {
+			o.eventBus.PublishSystem(ctx, p.exec.ID,
+				fmt.Sprintf("%s: tool loop detected — injecting intervention", agent.Name))
+			history = append(history, engine.ChatMessage{
+				Role:    "user",
+				Content: loopMsg,
+			})
+		}
+
 		// Retry the tool-loop Submit up to 2 times on transient provider errors.
 		var toolLoopErr error
 		for attempt := 0; attempt <= 2; attempt++ {
@@ -3256,6 +3266,61 @@ func buildSanitizedToolCallSummary(events []*models.Event) string {
 // sanitizeCredentialsFromBody replaces values that look like credentials in an HTTP request
 // body string with safe placeholders. Handles both JSON string values and form-encoded
 // values for common credential field names (password, token, key, secret, api_key).
+// detectToolLoop inspects the recent tool call history and returns a corrective
+// intervention message if the agent is stuck in a repetitive loop.
+// Returns "" if no loop is detected. The returned message is injected into the
+// conversation history as a user message before the next LLM call.
+func detectToolLoop(calls []engine.ToolCallInfo) string {
+	const window = 10
+	if len(calls) < 4 {
+		return ""
+	}
+	recent := calls
+	if len(recent) > window {
+		recent = recent[len(recent)-window:]
+	}
+
+	// Pattern 1: write_file ↔ run_command alternation (script-writing loop).
+	// Triggers when the agent keeps writing scripts and running them iteratively.
+	writeRunPairs := 0
+	for i := 1; i < len(recent); i++ {
+		a, b := recent[i-1].Name, recent[i].Name
+		if (a == "write_file" && b == "run_command") ||
+			(a == "run_command" && b == "write_file") {
+			writeRunPairs++
+		}
+	}
+	if writeRunPairs >= 3 {
+		return "SYSTEM INTERVENTION: You are stuck in a script-writing loop — " +
+			"you have been alternating between write_file and run_command multiple times without completing the task. " +
+			"Stop writing scripts. If you need to call an HTTP API, use the http_request tool directly. " +
+			"If you need to authenticate with a service, use get_secret to retrieve credentials and then " +
+			"http_request to call the API endpoint. Do not write Python, shell, or any other scripts to accomplish API calls."
+	}
+
+	// Pattern 2: same tool called 4+ times in the recent window (discovery/exploration loop).
+	// Triggers when an agent keeps listing directories, searching, or fetching the same resources.
+	counts := map[string]int{}
+	for _, tc := range recent {
+		counts[tc.Name]++
+	}
+	skipTools := map[string]bool{"signal_complete": true, "signal_needs_help": true, "signal_blocked": true, "signal_ask_peer": true}
+	for tool, count := range counts {
+		if skipTools[tool] {
+			continue
+		}
+		if count >= 4 {
+			return fmt.Sprintf(
+				"SYSTEM INTERVENTION: You have called '%s' %d times in recent rounds. "+
+					"You appear stuck in a discovery loop. Stop repeating this tool. "+
+					"Proceed with the information you already have, try a different approach, "+
+					"or signal completion with what you've accomplished so far.", tool, count)
+		}
+	}
+
+	return ""
+}
+
 type secretRef struct{ service, key string }
 
 func sanitizeCredentialsFromBody(body string, refs []secretRef) string {
