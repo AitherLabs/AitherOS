@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Badge } from '@/components/ui/badge';
@@ -185,10 +187,39 @@ function extractWorkspaceRelPath(value: string, workspacePath: string): string |
   return rel;
 }
 
-const PREVIEWABLE_EXTS = new Set([
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp']);
+const TEXT_EXTS = new Set([
   'md', 'txt', 'json', 'yaml', 'yml', 'csv', 'log', 'sh', 'py', 'js', 'ts',
   'go', 'html', 'xml', 'toml', 'conf', 'cfg', 'ini', 'env', 'rs', 'rb', 'java',
 ]);
+
+const mdComponents: React.ComponentProps<typeof ReactMarkdown>['components'] = {
+  h1: ({ children }) => <h1 className='text-xl font-bold text-[#EAEAEA] mt-5 mb-3 pb-1 border-b border-border/30'>{children}</h1>,
+  h2: ({ children }) => <h2 className='text-lg font-semibold text-[#EAEAEA] mt-4 mb-2'>{children}</h2>,
+  h3: ({ children }) => <h3 className='text-base font-semibold text-[#EAEAEA]/90 mt-3 mb-1.5'>{children}</h3>,
+  h4: ({ children }) => <h4 className='text-sm font-semibold text-[#EAEAEA]/85 mt-3 mb-1'>{children}</h4>,
+  p: ({ children }) => <p className='text-sm text-[#EAEAEA]/80 leading-relaxed mb-3'>{children}</p>,
+  ul: ({ children }) => <ul className='list-disc pl-5 text-sm text-[#EAEAEA]/80 mb-3 space-y-1'>{children}</ul>,
+  ol: ({ children }) => <ol className='list-decimal pl-5 text-sm text-[#EAEAEA]/80 mb-3 space-y-1'>{children}</ol>,
+  li: ({ children }) => <li className='leading-relaxed'>{children}</li>,
+  blockquote: ({ children }) => <blockquote className='border-l-2 border-[#9A66FF]/50 pl-3 my-3 italic text-[#EAEAEA]/60'>{children}</blockquote>,
+  a: ({ href, children }) => <a href={href} className='text-[#9A66FF] hover:underline' target='_blank' rel='noreferrer'>{children}</a>,
+  strong: ({ children }) => <strong className='font-semibold text-[#EAEAEA]'>{children}</strong>,
+  em: ({ children }) => <em className='italic text-[#EAEAEA]/75'>{children}</em>,
+  hr: () => <hr className='border-border/30 my-4' />,
+  pre: ({ children }) => <pre className='mb-3 rounded-lg bg-black/30 border border-border/20 p-3 overflow-x-auto'>{children}</pre>,
+  code: ({ children, className }) => {
+    const isBlock = !!className?.startsWith('language-');
+    return isBlock
+      ? <code className='text-xs font-mono text-[#EAEAEA]/85 leading-relaxed'>{children}</code>
+      : <code className='bg-muted/40 rounded px-1.5 py-0.5 text-xs font-mono text-[#9A66FF]/85'>{children}</code>;
+  },
+  table: ({ children }) => <div className='overflow-x-auto mb-3'><table className='w-full text-xs border-collapse'>{children}</table></div>,
+  thead: ({ children }) => <thead className='bg-muted/20'>{children}</thead>,
+  th: ({ children }) => <th className='text-left p-2 border border-border/30 text-[#EAEAEA]/70 font-semibold'>{children}</th>,
+  td: ({ children }) => <td className='p-2 border border-border/30 text-[#EAEAEA]/75'>{children}</td>,
+  tr: ({ children }) => <tr className='even:bg-muted/10'>{children}</tr>,
+};
 
 function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforceId: string }) {
   const [open, setOpen] = useState(false);
@@ -196,16 +227,18 @@ function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforc
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const ext = relPath.split('.').pop()?.toLowerCase() || '';
-  const canPreview = PREVIEWABLE_EXTS.has(ext);
+  const isImage = IMAGE_EXTS.has(ext);
+  const canPreview = isImage || TEXT_EXTS.has(ext);
+  const fileUrl = `/api/workforces/${workforceId}/files?path=${encodeURIComponent(relPath)}`;
 
   function handleClick(e: React.MouseEvent) {
     e.stopPropagation();
     if (!canPreview) return;
     setOpen(true);
-    if (content === null && !loading) {
+    if (!isImage && content === null && !loading) {
       setLoading(true);
       setFetchError(null);
-      fetch(`/api/workforces/${workforceId}/files?path=${encodeURIComponent(relPath)}`)
+      fetch(fileUrl)
         .then(async (res) => {
           if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
           return res.text();
@@ -215,12 +248,40 @@ function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforc
     }
   }
 
+  function renderContent() {
+    if (isImage) {
+      return (
+        <div className='flex items-center justify-center p-4'>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={fileUrl} alt={relPath} className='max-w-full max-h-[60vh] object-contain rounded' />
+        </div>
+      );
+    }
+    if (loading) return <div className='p-4 text-xs text-muted-foreground/60'>Loading…</div>;
+    if (fetchError) return <div className='p-4 text-xs text-red-400/80'>{fetchError}</div>;
+    if (content === null) return null;
+
+    if (ext === 'md') {
+      return (
+        <div className='p-5'>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{content}</ReactMarkdown>
+        </div>
+      );
+    }
+    if (ext === 'json') {
+      let pretty = content;
+      try { pretty = JSON.stringify(JSON.parse(content), null, 2); } catch { /* use raw */ }
+      return <pre className='p-4 text-xs font-mono text-[#EAEAEA]/80 leading-relaxed whitespace-pre-wrap break-all'>{pretty}</pre>;
+    }
+    return <pre className='p-4 text-xs font-mono text-[#EAEAEA]/80 leading-relaxed whitespace-pre-wrap break-all'>{content}</pre>;
+  }
+
   return (
     <>
       <span
         className={`font-mono text-xs break-all ${canPreview ? 'text-[#9A66FF] cursor-pointer hover:underline decoration-[#9A66FF]/40' : 'text-[#EAEAEA]/80'}`}
         onClick={canPreview ? handleClick : undefined}
-        title={canPreview ? 'Click to preview file' : undefined}
+        title={canPreview ? 'Click to preview' : undefined}
       >
         /workspace/{relPath}
       </span>
@@ -230,15 +291,13 @@ function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforc
             <DialogHeader>
               <DialogTitle className='text-sm font-mono truncate text-[#9A66FF]/90'>/workspace/{relPath}</DialogTitle>
             </DialogHeader>
-            <ScrollArea className='h-[65vh] rounded border border-border/20'>
-              {loading && <div className='p-4 text-xs text-muted-foreground/60'>Loading…</div>}
-              {fetchError && <div className='p-4 text-xs text-red-400/80'>{fetchError}</div>}
-              {content !== null && !loading && (
-                <pre className={`whitespace-pre-wrap break-words p-4 text-xs leading-relaxed ${ext === 'md' ? 'font-sans text-[#EAEAEA]/85' : 'font-mono text-[#EAEAEA]/80'}`}>
-                  {content}
-                </pre>
-              )}
-            </ScrollArea>
+            {isImage ? (
+              renderContent()
+            ) : (
+              <ScrollArea className='h-[65vh] rounded border border-border/20'>
+                {renderContent()}
+              </ScrollArea>
+            )}
           </DialogContent>
         </Dialog>
       )}
