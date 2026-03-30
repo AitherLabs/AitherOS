@@ -934,9 +934,13 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 		return
 	}
 
-	if shouldAutoRunWithoutApproval(exec) {
+	if shouldAutoRunWithoutApproval(exec, wf) {
+		msg := "Single-agent mode selected. Skipping approval and starting execution."
+		if wf.AutonomousMode {
+			msg = "Autonomous mode enabled. Auto-approving strategy and starting execution."
+		}
 		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypePlanApproved,
-			"Single-agent mode selected. Skipping approval and starting execution.",
+			msg,
 			map[string]any{"mode": executionModeFromInputs(exec.Inputs)}))
 		go o.runExecutionLoop(exec, false)
 		return
@@ -2764,9 +2768,12 @@ func selectedExecutionAgentID(inputs map[string]string) (uuid.UUID, bool) {
 	return id, true
 }
 
-func shouldAutoRunWithoutApproval(exec *models.Execution) bool {
+func shouldAutoRunWithoutApproval(exec *models.Execution, wf *models.WorkForce) bool {
 	if exec == nil {
 		return false
+	}
+	if wf != nil && wf.AutonomousMode {
+		return true
 	}
 	return executionModeFromInputs(exec.Inputs) == models.ExecutionModeSingleAgent
 }
