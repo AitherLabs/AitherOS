@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { motion, useScroll, useTransform, AnimatePresence } from 'motion/react';
+import { useEffect, useRef, useState } from 'react';
+import { motion } from 'motion/react';
 import Link from 'next/link';
+import AitherHero from '@/components/ui/revolution-hero';
 
 /* ─── Brand palette ─── */
 const C = {
@@ -183,7 +184,21 @@ function FeatureCard({
           filter: 'blur(30px)',
         }}
       />
-      <div style={{ fontSize: 36, marginBottom: 16 }}>{icon}</div>
+      <div style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 40,
+        height: 40,
+        borderRadius: 10,
+        background: `${color}14`,
+        border: `1px solid ${color}33`,
+        marginBottom: 20,
+        fontSize: '0.7rem',
+        fontWeight: 800,
+        letterSpacing: '0.06em',
+        color,
+      }}>{icon}</div>
       <h3
         style={{
           color: C.text,
@@ -250,10 +265,13 @@ function AgentOrb({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: 22,
+          fontSize: 18,
+          fontWeight: 800,
+          color: '#fff',
+          letterSpacing: '-0.02em',
         }}
       >
-        🤖
+        {label.slice(0, 2).toUpperCase()}
       </motion.div>
       <span
         style={{
@@ -343,39 +361,6 @@ function StatCounter({ end, suffix, label }: { end: number; suffix: string; labe
 
 /* ─── Main page ─── */
 export default function LandingPage() {
-  const heroRef = useRef<HTMLDivElement>(null);
-  const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
-  const heroOpacity = useTransform(scrollYProgress, [0, 1], [1, 0]);
-  const heroY = useTransform(scrollYProgress, [0, 1], [0, 80]);
-
-  // Beta signup form state
-  const [betaName, setBetaName] = useState('');
-  const [betaEmail, setBetaEmail] = useState('');
-  const [betaCompany, setBetaCompany] = useState('');
-  const [betaSubmitting, setBetaSubmitting] = useState(false);
-  const [betaDone, setBetaDone] = useState(false);
-  const [betaError, setBetaError] = useState('');
-
-  const handleBetaSubmit = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!betaEmail.trim()) return;
-    setBetaSubmitting(true);
-    setBetaError('');
-    try {
-      const res = await fetch('/api/beta/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: betaEmail.trim(), name: betaName.trim(), company: betaCompany.trim() }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Something went wrong');
-      setBetaDone(true);
-    } catch (err: any) {
-      setBetaError(err.message || 'Something went wrong. Please try again.');
-    } finally {
-      setBetaSubmitting(false);
-    }
-  }, [betaEmail, betaName, betaCompany]);
 
   return (
     <div
@@ -457,461 +442,8 @@ export default function LandingPage() {
       </nav>
 
       {/* ── HERO ── */}
-      <section
-        ref={heroRef}
-        style={{
-          position: 'relative',
-          minHeight: '100vh',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          textAlign: 'center',
-          padding: '8rem 2rem 4rem',
-          overflow: 'hidden',
-        }}
-      >
-        {/* ambient gradient blobs */}
-        <div
-          style={{
-            position: 'absolute',
-            top: '10%',
-            left: '15%',
-            width: 600,
-            height: 600,
-            borderRadius: '50%',
-            background: `radial-gradient(circle, ${C.purple}18 0%, transparent 70%)`,
-            filter: 'blur(60px)',
-            animation: 'float 8s ease-in-out infinite',
-          }}
-        />
-        <div
-          style={{
-            position: 'absolute',
-            bottom: '10%',
-            right: '10%',
-            width: 400,
-            height: 400,
-            borderRadius: '50%',
-            background: `radial-gradient(circle, ${C.cyan}12 0%, transparent 70%)`,
-            filter: 'blur(50px)',
-            animation: 'float 10s ease-in-out infinite reverse',
-          }}
-        />
+      <AitherHero />
 
-        <GridMesh />
-
-        <motion.div style={{ opacity: heroOpacity, y: heroY, position: 'relative', zIndex: 1 }}>
-          {/* badge */}
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              background: `${C.purple}14`,
-              border: `1px solid ${C.purple}44`,
-              borderRadius: 100,
-              padding: '0.35rem 1rem',
-              marginBottom: '2rem',
-              fontSize: '0.82rem',
-              color: C.purple,
-              fontWeight: 600,
-            }}
-          >
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                background: C.green,
-                boxShadow: `0 0 8px ${C.green}`,
-                animation: 'pulse-ring 2s ease-out infinite',
-                display: 'inline-block',
-              }}
-            />
-            Now in private beta · Coming soon to everyone
-          </motion.div>
-
-          <motion.h1
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.1 }}
-            className="glow-text"
-            style={{
-              fontSize: 'clamp(2.8rem, 6vw, 5.5rem)',
-              fontWeight: 900,
-              lineHeight: 1.05,
-              letterSpacing: '-0.04em',
-              marginBottom: '1.25rem',
-              maxWidth: 900,
-            }}
-          >
-            The Operating System
-            <br />
-            for{' '}
-            <span
-              style={{
-                background: `linear-gradient(135deg, ${C.purple} 0%, ${C.cyan} 100%)`,
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-              }}
-            >
-              Autonomous AI Teams
-            </span>
-          </motion.h1>
-
-          <motion.div
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.2 }}
-            style={{
-              fontSize: 'clamp(1.2rem, 2.5vw, 1.6rem)',
-              fontWeight: 400,
-              color: C.muted,
-              marginBottom: '2.5rem',
-              minHeight: '2.4em',
-            }}
-          >
-            <Typewriter />
-          </motion.div>
-
-          <motion.p
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.3 }}
-            style={{
-              color: C.muted,
-              maxWidth: 640,
-              margin: '0 auto 3rem',
-              fontSize: '1.05rem',
-              lineHeight: 1.7,
-            }}
-          >
-            AitherOS orchestrates teams of specialized AI agents that plan, collaborate, debate, and
-            execute complex tasks — with full transparency, live streaming, and long-term memory.
-            Not a chatbot. An actual workforce.
-          </motion.p>
-
-          {/* ── Beta signup form ── */}
-          <motion.div
-            id="beta"
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.4 }}
-            style={{ width: '100%', maxWidth: 480, margin: '0 auto' }}
-          >
-            {betaDone ? (
-              <div style={{
-                background: `${C.green}12`,
-                border: `1px solid ${C.green}40`,
-                borderRadius: 14,
-                padding: '1.5rem 2rem',
-                textAlign: 'center',
-              }}>
-                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🎉</div>
-                <p style={{ color: C.green, fontWeight: 700, fontSize: '1.05rem', marginBottom: '0.4rem' }}>
-                  You&apos;re on the list!
-                </p>
-                <p style={{ color: C.muted, fontSize: '0.9rem', lineHeight: 1.6 }}>
-                  We&apos;ll reach out to {betaEmail} when your access is ready.
-                </p>
-              </div>
-            ) : (
-              <form onSubmit={handleBetaSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <input
-                    type="text"
-                    placeholder="Your name"
-                    value={betaName}
-                    onChange={e => setBetaName(e.target.value)}
-                    style={{
-                      flex: 1,
-                      background: 'rgba(255,255,255,0.05)',
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 10,
-                      padding: '0.75rem 1rem',
-                      color: C.text,
-                      fontSize: '0.95rem',
-                      outline: 'none',
-                    }}
-                  />
-                  <input
-                    type="text"
-                    placeholder="Company (optional)"
-                    value={betaCompany}
-                    onChange={e => setBetaCompany(e.target.value)}
-                    style={{
-                      flex: 1,
-                      background: 'rgba(255,255,255,0.05)',
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 10,
-                      padding: '0.75rem 1rem',
-                      color: C.text,
-                      fontSize: '0.95rem',
-                      outline: 'none',
-                    }}
-                  />
-                </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <input
-                    type="email"
-                    placeholder="your@email.com"
-                    required
-                    value={betaEmail}
-                    onChange={e => setBetaEmail(e.target.value)}
-                    style={{
-                      flex: 1,
-                      background: 'rgba(255,255,255,0.05)',
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 10,
-                      padding: '0.75rem 1rem',
-                      color: C.text,
-                      fontSize: '0.95rem',
-                      outline: 'none',
-                    }}
-                  />
-                  <button
-                    type="submit"
-                    disabled={betaSubmitting || !betaEmail.trim()}
-                    style={{
-                      background: betaSubmitting ? C.muted : `linear-gradient(135deg, ${C.purple}, #7B4FDF)`,
-                      color: '#fff',
-                      border: 'none',
-                      borderRadius: 10,
-                      padding: '0.75rem 1.5rem',
-                      fontSize: '0.95rem',
-                      fontWeight: 700,
-                      cursor: betaSubmitting ? 'not-allowed' : 'pointer',
-                      whiteSpace: 'nowrap',
-                      boxShadow: betaSubmitting ? 'none' : `0 4px 20px ${C.purple}55`,
-                      transition: 'opacity 0.2s',
-                    }}
-                  >
-                    {betaSubmitting ? 'Sending…' : 'Request Access →'}
-                  </button>
-                </div>
-                {betaError && (
-                  <p style={{ color: '#FF6B6B', fontSize: '0.85rem', margin: 0 }}>{betaError}</p>
-                )}
-                <p style={{ color: C.muted, fontSize: '0.78rem', margin: 0 }}>
-                  No spam, ever. We&apos;ll only email you when your access is ready.
-                </p>
-              </form>
-            )}
-          </motion.div>
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.6, delay: 0.6 }}
-            style={{ marginTop: '0.75rem' }}
-          >
-            <a href="#how-it-works" style={{ color: C.muted, fontSize: '0.88rem', textDecoration: 'none' }}>
-              See how it works ↓
-            </a>
-          </motion.div>
-
-          {/* floating image placeholder */}
-          <motion.div
-            initial={{ opacity: 0, y: 48 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.9, delay: 0.65, ease: 'easeOut' }}
-            style={{
-              marginTop: '4.5rem',
-              position: 'relative',
-              display: 'inline-block',
-            }}
-          >
-            {/* outer glow ring */}
-            <div
-              style={{
-                position: 'absolute',
-                inset: -2,
-                borderRadius: 20,
-                background: `linear-gradient(135deg, ${C.purple}88, ${C.cyan}44, transparent)`,
-                zIndex: -1,
-                filter: 'blur(1px)',
-              }}
-            />
-            <div
-              style={{
-                width: 'min(860px, 90vw)',
-                height: 'clamp(240px, 30vw, 420px)',
-                borderRadius: 18,
-                background: `linear-gradient(135deg, ${C.card} 0%, #13161C 100%)`,
-                border: `1px solid ${C.border}`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                overflow: 'hidden',
-                position: 'relative',
-              }}
-            >
-              <GridMesh />
-              {/* mock dashboard UI */}
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  padding: '1.5rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 12,
-                }}
-              >
-                {/* title bar */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#FF605C' }} />
-                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#FFBD44' }} />
-                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#00CA4E' }} />
-                  <div style={{ flex: 1, height: 14, background: 'rgba(255,255,255,0.05)', borderRadius: 4, marginLeft: 16 }} />
-                </div>
-                {/* mock content rows */}
-                <div style={{ display: 'flex', gap: 12, flex: 1 }}>
-                  {/* sidebar */}
-                  <div style={{ width: 140, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {['Overview', 'Workforces', 'Executions', 'Agents', 'Knowledge'].map((item, i) => (
-                      <motion.div
-                        key={item}
-                        initial={{ opacity: 0, x: -12 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: 0.8 + i * 0.08 }}
-                        style={{
-                          height: 28,
-                          borderRadius: 6,
-                          background: i === 1 ? `${C.purple}33` : 'rgba(255,255,255,0.04)',
-                          border: i === 1 ? `1px solid ${C.purple}44` : 'none',
-                          display: 'flex',
-                          alignItems: 'center',
-                          paddingLeft: 10,
-                          fontSize: '0.7rem',
-                          color: i === 1 ? C.purple : C.muted,
-                          fontWeight: i === 1 ? 600 : 400,
-                        }}
-                      >
-                        {item}
-                      </motion.div>
-                    ))}
-                  </div>
-                  {/* main area */}
-                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {[
-                        { label: 'Active Workforces', val: '3', color: C.purple },
-                        { label: 'Running Now', val: '2', color: C.green },
-                        { label: 'Tasks Done', val: '47', color: C.cyan },
-                        { label: 'Agents Online', val: '12', color: C.amber },
-                      ].map((s, i) => (
-                        <motion.div
-                          key={s.label}
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          transition={{ delay: 1.0 + i * 0.1 }}
-                          style={{
-                            flex: 1,
-                            background: 'rgba(255,255,255,0.04)',
-                            borderRadius: 8,
-                            padding: '8px 10px',
-                            border: `1px solid ${s.color}22`,
-                          }}
-                        >
-                          <div style={{ fontSize: '0.6rem', color: C.muted, marginBottom: 2 }}>{s.label}</div>
-                          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: s.color }}>{s.val}</div>
-                        </motion.div>
-                      ))}
-                    </div>
-                    {/* event feed */}
-                    <div style={{ flex: 1, background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: 10, overflow: 'hidden' }}>
-                      {[
-                        { agent: 'Daedalus', msg: 'Planning subtasks for sprint...', color: C.purple },
-                        { agent: 'Clio', msg: 'Researching competitor landscape', color: C.cyan },
-                        { agent: 'Atlas', msg: '✓ Generated technical spec (3 files)', color: C.green },
-                        { agent: 'Hermes', msg: 'Consulting Daedalus for context...', color: C.amber },
-                      ].map((e, i) => (
-                        <motion.div
-                          key={i}
-                          initial={{ opacity: 0, x: 12 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: 1.2 + i * 0.15 }}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 6,
-                            marginBottom: 6,
-                            fontSize: '0.65rem',
-                          }}
-                        >
-                          <div
-                            style={{
-                              width: 16,
-                              height: 16,
-                              borderRadius: '50%',
-                              background: `${e.color}33`,
-                              border: `1px solid ${e.color}66`,
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontSize: 9,
-                              flexShrink: 0,
-                            }}
-                          >
-                            🤖
-                          </div>
-                          <span style={{ color: e.color, fontWeight: 600 }}>{e.agent}</span>
-                          <span style={{ color: C.muted }}>{e.msg}</span>
-                        </motion.div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              {/* image placeholder overlay hint */}
-              <div
-                style={{
-                  position: 'absolute',
-                  bottom: 8,
-                  right: 12,
-                  fontSize: '0.65rem',
-                  color: `${C.muted}66`,
-                  fontStyle: 'italic',
-                }}
-              >
-                {/* screenshot placeholder */}
-              </div>
-            </div>
-          </motion.div>
-        </motion.div>
-
-        {/* scroll indicator */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 2 }}
-          style={{
-            position: 'absolute',
-            bottom: 32,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 6,
-            color: C.muted,
-            fontSize: '0.75rem',
-          }}
-        >
-          <span>scroll to explore</span>
-          <motion.div
-            animate={{ y: [0, 6, 0] }}
-            transition={{ duration: 1.5, repeat: Infinity }}
-            style={{ fontSize: 18 }}
-          >
-            ↓
-          </motion.div>
-        </motion.div>
-      </section>
 
       {/* ── STATS ── */}
       <section
@@ -996,63 +528,63 @@ export default function LandingPage() {
           }}
         >
           <FeatureCard
-            icon="🧠"
+            icon="01"
             title="Autonomous Planning"
             desc="A dedicated orchestrator decomposes your objective into subtasks, assigns the right agent for each, and coordinates dependencies — no manual prompting required."
             color={C.purple}
             delay={0}
           />
           <FeatureCard
-            icon="💬"
+            icon="02"
             title="Peer Consultation"
             desc="Agents can pause mid-execution to consult colleagues. Daedalus asks Clio for context; Hermes checks with Atlas before proceeding. Real collaboration, not parallel silos."
             color={C.cyan}
             delay={0.1}
           />
           <FeatureCard
-            icon="🔧"
+            icon="03"
             title="MCP Tool Integration"
             desc="Connect any MCP server — GitHub, Slack, Jira, databases, or custom tools. Agents pick up the right tools automatically via credential-aware discovery."
             color={C.green}
             delay={0.2}
           />
           <FeatureCard
-            icon="🧬"
+            icon="04"
             title="Long-Term Memory"
             desc="Every execution result is embedded and stored in a per-workforce vector knowledge base. Agents recall relevant past work across sessions — genuine institutional memory."
             color={C.amber}
             delay={0.3}
           />
           <FeatureCard
-            icon="📡"
+            icon="05"
             title="Live Streaming Events"
             desc="Watch every agent thought, tool call, and discussion in real time via WebSocket event streaming. Full observability into what's happening, why, and what's next."
             color={C.purple}
             delay={0.4}
           />
           <FeatureCard
-            icon="🛑"
+            icon="06"
             title="Human-in-the-Loop"
             desc="Blocked? Uncertain? Agents escalate to a human pause state with a clear explanation. You answer, they continue — no restarts, no lost context."
             color={C.cyan}
             delay={0.5}
           />
           <FeatureCard
-            icon="🔐"
+            icon="07"
             title="Secure Credential Vault"
             desc="API keys and tokens stored per-workforce, injected at runtime only when needed. Agents access secrets through a controlled get_secret() tool, never embedded in prompts."
             color={C.green}
             delay={0.6}
           />
           <FeatureCard
-            icon="🌐"
+            icon="08"
             title="Provider Agnostic"
             desc="OpenAI, Anthropic, Mistral, local Ollama — switch models per-agent per-workflow via LiteLLM proxy. No vendor lock-in at any layer."
             color={C.amber}
             delay={0.7}
           />
           <FeatureCard
-            icon="📚"
+            icon="09"
             title="Knowledge Base & RAG"
             desc="Manually curate workforce knowledge or let executions auto-populate it. Semantic search (cosine similarity, pgvector) surfaces relevant context for every new task."
             color={C.purple}
@@ -1114,35 +646,35 @@ export default function LandingPage() {
                 title: 'Define your workforce',
                 desc: 'Create a named team. Add specialized agents — each with a role, model, system prompt, and MCP tool access. Think of it as hiring: Daedalus plans, Clio researches, Atlas builds.',
                 color: C.purple,
-                icon: '👥',
+                icon: '01',
               },
               {
                 step: '02',
                 title: 'Submit an objective',
                 desc: 'Write a natural-language goal: "Audit our GitHub repo and generate a security report with remediation steps." Hit execute. No prompt engineering required.',
                 color: C.cyan,
-                icon: '🎯',
+                icon: '02',
               },
               {
                 step: '03',
                 title: 'Agents plan & consult',
                 desc: 'The orchestrator decomposes the objective into subtasks. Agents claim tasks, call tools, and consult peers mid-execution. Discussions are logged and visible.',
                 color: C.green,
-                icon: '🔄',
+                icon: '03',
               },
               {
                 step: '04',
                 title: 'Watch it happen live',
                 desc: 'Every agent action streams to your dashboard in real time. See tool calls, LLM responses, peer consultations, and memory retrievals as they happen.',
                 color: C.amber,
-                icon: '📊',
+                icon: '04',
               },
               {
                 step: '05',
                 title: 'Review & iterate',
                 desc: 'The final result is synthesized, stored in the knowledge base, and presented with a full audit trail. Run it again with more context next time — agents remember.',
                 color: C.purple,
-                icon: '✅',
+                icon: '05',
               },
             ].map((s, i) => (
               <motion.div
@@ -1160,33 +692,26 @@ export default function LandingPage() {
                   flexDirection: i % 2 === 0 ? 'row' : 'row-reverse',
                 }}
               >
-                <div style={{ flexShrink: 0, textAlign: 'center', width: 80 }}>
+                <div style={{ flexShrink: 0, textAlign: 'center', width: 72 }}>
                   <div
                     style={{
-                      width: 64,
-                      height: 64,
-                      borderRadius: 16,
-                      background: `${s.color}18`,
-                      border: `1px solid ${s.color}44`,
+                      width: 56,
+                      height: 56,
+                      borderRadius: 14,
+                      background: `${s.color}12`,
+                      border: `1px solid ${s.color}33`,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      fontSize: 28,
                       margin: '0 auto 8px',
+                      fontSize: '1.1rem',
+                      fontWeight: 900,
+                      letterSpacing: '-0.04em',
+                      color: s.color,
                     }}
                   >
                     {s.icon}
                   </div>
-                  <span
-                    style={{
-                      fontSize: '0.7rem',
-                      fontWeight: 700,
-                      color: s.color,
-                      letterSpacing: '0.08em',
-                    }}
-                  >
-                    STEP {s.step}
-                  </span>
                 </div>
                 <div style={{ flex: 1 }}>
                   <h3
@@ -1222,8 +747,8 @@ export default function LandingPage() {
                   }}
                   className="screenshot-placeholder"
                 >
-                  <span style={{ textAlign: 'center', padding: '0 20px' }}>
-                    📷<br />Screenshot placeholder
+                  <span style={{ textAlign: 'center', padding: '0 20px', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: '0.65rem' }}>
+                    Screenshot
                   </span>
                 </div>
               </motion.div>
@@ -1419,7 +944,7 @@ export default function LandingPage() {
                   'Dependency vulnerability scanning',
                 ],
                 color: C.purple,
-                icon: '⚙️',
+                icon: 'ENG',
               },
               {
                 title: 'Research & Analysis',
@@ -1430,7 +955,7 @@ export default function LandingPage() {
                   'Data pipeline analysis and anomaly detection',
                 ],
                 color: C.cyan,
-                icon: '🔬',
+                icon: 'RES',
               },
               {
                 title: 'Content & Marketing',
@@ -1441,7 +966,7 @@ export default function LandingPage() {
                   'Product launch documentation packages',
                 ],
                 color: C.green,
-                icon: '✍️',
+                icon: 'MKT',
               },
               {
                 title: 'Operations',
@@ -1452,7 +977,7 @@ export default function LandingPage() {
                   'Vendor evaluation and comparison matrices',
                 ],
                 color: C.amber,
-                icon: '📋',
+                icon: 'OPS',
               },
             ].map((uc, i) => (
               <motion.div
@@ -1480,7 +1005,20 @@ export default function LandingPage() {
                     background: `linear-gradient(90deg, ${uc.color}, transparent)`,
                   }}
                 />
-                <div style={{ fontSize: 32, marginBottom: 12 }}>{uc.icon}</div>
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginBottom: 16,
+                  padding: '0.3rem 0.7rem',
+                  borderRadius: 8,
+                  background: `${uc.color}12`,
+                  border: `1px solid ${uc.color}30`,
+                  fontSize: '0.68rem',
+                  fontWeight: 800,
+                  letterSpacing: '0.1em',
+                  color: uc.color,
+                }}>{uc.icon}</div>
                 <h3
                   style={{
                     fontSize: '1.15rem',
@@ -1588,7 +1126,7 @@ export default function LandingPage() {
               textTransform: 'uppercase',
             }}
           >
-            ⏳ &nbsp;Coming soon to the public
+            Coming soon to the public
           </div>
 
           <h2
@@ -1644,7 +1182,7 @@ export default function LandingPage() {
                 gap: 8,
               }}
             >
-              🚀 Open the App
+              Open the App →
             </Link>
           </div>
 

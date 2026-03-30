@@ -61,6 +61,7 @@
     "date-fns": "^4.1.0",
     "eslint": "8.48.0",
     "eslint-config-next": "^16.0.7",
+    "gsap": "^3.14.2",
     "input-otp": "^1.4.2",
     "kbar": "^0.1.0-beta.45",
     "lucide-react": "^0.476.0",
