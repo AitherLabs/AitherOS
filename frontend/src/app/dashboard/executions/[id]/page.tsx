@@ -226,11 +226,11 @@ function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforc
       </span>
       {canPreview && (
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogContent className='max-w-3xl max-h-[80vh] flex flex-col'>
+          <DialogContent className='max-w-3xl flex flex-col'>
             <DialogHeader>
               <DialogTitle className='text-sm font-mono truncate text-[#9A66FF]/90'>/workspace/{relPath}</DialogTitle>
             </DialogHeader>
-            <ScrollArea className='flex-1 min-h-0'>
+            <ScrollArea className='h-[65vh] rounded border border-border/20'>
               {loading && <div className='p-4 text-xs text-muted-foreground/60'>Loading…</div>}
               {fetchError && <div className='p-4 text-xs text-red-400/80'>{fetchError}</div>}
               {content !== null && !loading && (
