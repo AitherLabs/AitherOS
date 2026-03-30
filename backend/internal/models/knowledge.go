@@ -14,6 +14,7 @@ const (
 	KnowledgeSourceManual    KnowledgeSourceType = "manual"
 	KnowledgeSourceTool      KnowledgeSourceType = "tool_result"
 	KnowledgeSourceLesson    KnowledgeSourceType = "lesson"
+	KnowledgeSourceProcedure KnowledgeSourceType = "procedure"    // step-by-step how-to extracted from successful tool call sequences
 	KnowledgeSourceFact      KnowledgeSourceType = "project_fact" // concrete facts extracted post-execution, project-scoped
 )
 

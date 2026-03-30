@@ -3036,8 +3036,10 @@ func extractWorkspaceArtifacts(text string, maxCount int) []string {
 	return artifacts
 }
 
-// extractAndIngestLessons runs a lightweight LLM call to distill 3-5 reusable lessons
-// from a completed execution, then stores them as KnowledgeSourceLesson entries.
+// extractAndIngestLessons runs a lightweight LLM call to distill reusable lessons AND
+// step-by-step procedures from a completed execution. Procedures are synthesized from
+// the actual tool call sequence (API endpoints, credential key names, request format)
+// so agents never re-discover the same API flow from scratch.
 // Runs in a background goroutine — failures are logged but never surface to the user.
 func (o *Orchestrator) extractAndIngestLessons(ctx context.Context, wfID, execID uuid.UUID, objective, result string) {
 	if o.knowledgeManager == nil {
@@ -3068,27 +3070,46 @@ func (o *Orchestrator) extractAndIngestLessons(ctx context.Context, wfID, execID
 		return
 	}
 
+	// Build a sanitized summary of the tool call sequence from the events log.
+	// This is the key data the LLM needs to synthesize reusable procedures.
+	toolSummary := ""
+	if events, evErr := o.store.ListExecutionEvents(ctx, execID); evErr == nil {
+		toolSummary = buildSanitizedToolCallSummary(events)
+	}
+
 	truncResult := result
-	if len(truncResult) > 2000 {
-		truncResult = truncResult[:2000] + "\n…[truncated]"
+	if len(truncResult) > 1500 {
+		truncResult = truncResult[:1500] + "\n…[truncated]"
+	}
+
+	toolSection := ""
+	if toolSummary != "" {
+		toolSection = "\n\nTOOL CALL SEQUENCE (sanitized — credentials replaced with <secret:service/key>):\n" + toolSummary
 	}
 
 	prompt := fmt.Sprintf(
-		"You are extracting reusable lessons from a completed AI agent execution.\n\n"+
+		"You are extracting reusable knowledge from a completed AI agent execution.\n\n"+
 			"OBJECTIVE: %s\n\n"+
-			"RESULT:\n%s\n\n"+
-			"Extract 3-5 lessons that future agents should know when working on similar tasks.\n"+
-			"Focus on: concrete facts discovered, patterns that worked, pitfalls to avoid, tool quirks.\n"+
-			"Skip generic advice like 'plan carefully' or 'communicate clearly'.\n\n"+
+			"RESULT SUMMARY:\n%s%s\n\n"+
+			"Extract two types of knowledge:\n\n"+
+			"1. LESSONS (3-5): Concrete facts, patterns that worked, pitfalls to avoid. "+
+			"Skip generic advice. Focus on: what the agent discovered, what failed and why, tool-specific quirks.\n\n"+
+			"2. PROCEDURES (0-3): For any successful API call sequences, external service integrations, or "+
+			"repeatable tool patterns in the tool call sequence above — write a step-by-step procedure "+
+			"that another agent can follow exactly next time. Include: exact endpoints, which get_secret "+
+			"keys to use (e.g. get_secret('service','key')), request body structure with placeholder values, "+
+			"expected response fields to extract. Only write a procedure if the tool sequence shows a "+
+			"repeatable pattern (e.g. auth + post, search + fetch, build + deploy).\n\n"+
 			"Respond with ONLY this JSON (no markdown, no extra text):\n"+
-			`{"lessons":[{"title":"short title (max 80 chars)","content":"one or two concrete sentences"}]}`,
-		objective, truncResult,
+			`{"lessons":[{"title":"short title ≤80 chars","content":"one or two concrete sentences"}],`+
+			`"procedures":[{"title":"How to <verb> <service/thing>","content":"Step-by-step instructions"}]}`,
+		objective, truncResult, toolSection,
 	)
 
 	resp, err := eng.Submit(ctx, engine.TaskRequest{
 		AgentName:    "lesson-extractor",
 		Model:        modelName,
-		SystemPrompt: "You are a knowledge distillation assistant. Extract only concrete, actionable facts. Respond only with the requested JSON.",
+		SystemPrompt: "You are a knowledge distillation assistant. Extract only concrete, actionable facts. For procedures, be precise about API endpoints, credential key names, and request formats. Respond only with the requested JSON.",
 		Message:      prompt,
 	})
 	if err != nil {
@@ -3110,6 +3131,10 @@ func (o *Orchestrator) extractAndIngestLessons(ctx context.Context, wfID, execID
 			Title   string `json:"title"`
 			Content string `json:"content"`
 		} `json:"lessons"`
+		Procedures []struct {
+			Title   string `json:"title"`
+			Content string `json:"content"`
+		} `json:"procedures"`
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		log.Printf("knowledge: lesson extraction parse failed for exec %s: %v (raw: %s)", execID, err, truncateStr(raw, 200))
@@ -3122,12 +3147,139 @@ func (o *Orchestrator) extractAndIngestLessons(ctx context.Context, wfID, execID
 			lessons = append(lessons, knowledge.Lesson{Title: l.Title, Content: l.Content})
 		}
 	}
-	if len(lessons) == 0 {
-		return
+	procedures := make([]knowledge.Procedure, 0, len(parsed.Procedures))
+	for _, p := range parsed.Procedures {
+		if p.Title != "" && p.Content != "" {
+			procedures = append(procedures, knowledge.Procedure{Title: p.Title, Content: p.Content})
+		}
 	}
 
-	o.knowledgeManager.IngestLessons(ctx, wfID, execID, lessons)
-	log.Printf("knowledge: ingested %d lessons for execution %s", len(lessons), execID)
+	if len(lessons) > 0 {
+		o.knowledgeManager.IngestLessons(ctx, wfID, execID, lessons)
+		log.Printf("knowledge: ingested %d lessons for execution %s", len(lessons), execID)
+	}
+	if len(procedures) > 0 {
+		o.knowledgeManager.IngestProcedures(ctx, wfID, execID, procedures)
+		log.Printf("knowledge: ingested %d procedures for execution %s", len(procedures), execID)
+	}
+}
+
+// buildSanitizedToolCallSummary produces a human-readable summary of the tool call
+// sequence from an execution's events, suitable for the lesson extractor LLM.
+// It redacts actual secret values returned by get_secret, replacing them with
+// placeholder references so the procedure is safe to store.
+func buildSanitizedToolCallSummary(events []*models.Event) string {
+	// Track get_secret calls so we can annotate http_request bodies with credential references.
+	var secretRefs []secretRef
+
+	var lines []string
+	var lastAgent string
+
+	for _, ev := range events {
+		if ev.Type != "tool_call" || ev.Data == nil {
+			continue
+		}
+		tool, _ := ev.Data["tool"].(string)
+		if tool == "" {
+			continue
+		}
+		args, hasArgs := ev.Data["args"].(map[string]any)
+		_, hasResult := ev.Data["result_length"]
+		if hasResult {
+			// Result event — skip (we already captured the call event)
+			continue
+		}
+		if !hasArgs {
+			continue
+		}
+
+		if lastAgent != ev.AgentName {
+			lastAgent = ev.AgentName
+			lines = append(lines, fmt.Sprintf("\nAgent: %s", ev.AgentName))
+		}
+
+		switch tool {
+		case "get_secret":
+			svc, _ := args["service"].(string)
+			key, _ := args["key_name"].(string)
+			if svc == "" {
+				svc, _ = args["service_name"].(string)
+			}
+			secretRefs = append(secretRefs, secretRef{svc, key})
+			lines = append(lines, fmt.Sprintf("  get_secret(service=%q, key=%q) → <secret:%s/%s>", svc, key, svc, key))
+
+		case "http_request":
+			method, _ := args["method"].(string)
+			url, _ := args["url"].(string)
+			body, _ := args["body"].(string)
+			sanitized := sanitizeCredentialsFromBody(body, secretRefs)
+			if len(sanitized) > 400 {
+				sanitized = sanitized[:400] + "…"
+			}
+			lines = append(lines, fmt.Sprintf("  http_request(method=%s, url=%q, body=%s)", method, url, sanitized))
+
+		case "run_command":
+			cmd, _ := args["command"].(string)
+			if len(cmd) > 200 {
+				cmd = cmd[:200] + "…"
+			}
+			lines = append(lines, fmt.Sprintf("  run_command(%q)", cmd))
+
+		case "write_file":
+			path, _ := args["path"].(string)
+			lines = append(lines, fmt.Sprintf("  write_file(path=%q)", path))
+
+		case "list_secrets":
+			lines = append(lines, "  list_secrets()")
+
+		default:
+			// Include tool name + first string arg for context
+			for k, v := range args {
+				if s, ok := v.(string); ok && len(s) > 0 && len(s) < 200 {
+					lines = append(lines, fmt.Sprintf("  %s(%s=%q)", tool, k, s))
+					break
+				}
+			}
+			if len(lines) == 0 || lines[len(lines)-1] == fmt.Sprintf("\nAgent: %s", ev.AgentName) {
+				lines = append(lines, fmt.Sprintf("  %s()", tool))
+			}
+		}
+	}
+
+	summary := strings.Join(lines, "\n")
+	if len(summary) > 3000 {
+		summary = summary[:3000] + "\n…[truncated]"
+	}
+	return summary
+}
+
+// sanitizeCredentialsFromBody replaces values that look like credentials in an HTTP request
+// body string with safe placeholders. Handles both JSON string values and form-encoded
+// values for common credential field names (password, token, key, secret, api_key).
+type secretRef struct{ service, key string }
+
+func sanitizeCredentialsFromBody(body string, refs []secretRef) string {
+	if body == "" {
+		return body
+	}
+	// Replace values associated with credential field names in JSON bodies.
+	// Pattern: "fieldname": "value" → "fieldname": "<redacted>"
+	credFields := []string{"password", "passwd", "token", "api_key", "apikey", "secret", "access_token", "refresh_token", "private_key"}
+	result := body
+	for _, field := range credFields {
+		// Match JSON key-value: "field": "value" (handles spaces around colon)
+		pattern := `"` + field + `"\s*:\s*"[^"]{4,}"`
+		re := regexp.MustCompile(`(?i)` + pattern)
+		result = re.ReplaceAllStringFunc(result, func(match string) string {
+			// Keep the key, replace only the value
+			colonIdx := strings.Index(match, ":")
+			if colonIdx < 0 {
+				return `"` + field + `": "<redacted>"`
+			}
+			return match[:colonIdx+1] + ` "<redacted>"`
+		})
+	}
+	return result
 }
 
 // evaluateKanbanTaskCompletion runs a brief LLM review after an execution finishes

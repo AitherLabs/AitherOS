@@ -161,6 +161,48 @@ type Lesson struct {
 	Content string
 }
 
+// Procedure is a step-by-step how-to extracted from a successful tool call sequence.
+// Unlike a Lesson (factual), a Procedure is imperative: exact endpoints, credential key
+// names, request format, and order of operations — so agents don't re-discover API flows.
+type Procedure struct {
+	Title   string
+	Content string
+}
+
+// IngestProcedures embeds and stores step-by-step API/tool procedures. Procedures use a
+// lower retrieval threshold than lessons (surfaced more aggressively) and are formatted
+// with a [PROCEDURE] prefix in the agent context so they're unmistakably actionable.
+func (m *Manager) IngestProcedures(ctx context.Context, workforceID, executionID uuid.UUID, procedures []Procedure) {
+	if !m.embedder.Available() {
+		return
+	}
+	for _, p := range procedures {
+		if p.Title == "" || p.Content == "" {
+			continue
+		}
+		textToEmbed := "PROCEDURE: " + p.Title + "\n\n" + p.Content
+		embedding, err := m.embedder.Embed(ctx, textToEmbed)
+		if err != nil {
+			log.Printf("knowledge: embed procedure %q: %v", p.Title, err)
+			continue
+		}
+		entry := &models.KnowledgeEntry{
+			ID:          uuid.New(),
+			WorkforceID: workforceID,
+			ExecutionID: &executionID,
+			SourceType:  models.KnowledgeSourceProcedure,
+			Title:       truncate(p.Title, 120),
+			Content:     p.Content,
+			Embedding:   embedding,
+			Metadata:    map[string]any{"execution_id": executionID.String()},
+			CreatedAt:   time.Now(),
+		}
+		if err := m.store.CreateKnowledgeEntry(ctx, entry); err != nil {
+			log.Printf("knowledge: store procedure %q: %v", p.Title, err)
+		}
+	}
+}
+
 // IngestLessons embeds and stores structured lessons extracted from a completed execution.
 func (m *Manager) IngestLessons(ctx context.Context, workforceID, executionID uuid.UUID, lessons []Lesson) {
 	if !m.embedder.Available() {
@@ -220,12 +262,18 @@ func (m *Manager) RetrieveRelevantForAgent(ctx context.Context, agentID uuid.UUI
 		if len(content) > 1200 {
 			content = content[:1200] + "..."
 		}
-		if r.SourceType == models.KnowledgeSourceLesson {
+		switch r.SourceType {
+		case models.KnowledgeSourceProcedure:
+			if r.Similarity < 0.15 {
+				continue
+			}
+			lessons = append([]string{fmt.Sprintf("[PROCEDURE: %s]\n%s", r.Title, content)}, lessons...)
+		case models.KnowledgeSourceLesson:
 			if r.Similarity < 0.25 {
 				continue
 			}
 			lessons = append(lessons, fmt.Sprintf("[LESSON: %s] %s", r.Title, content))
-		} else {
+		default:
 			if r.Similarity < 0.5 {
 				continue
 			}
