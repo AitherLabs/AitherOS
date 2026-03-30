@@ -77,13 +77,14 @@ func (s *Store) CreateExecution(ctx context.Context, workforceID uuid.UUID, obje
 func (s *Store) GetExecution(ctx context.Context, id uuid.UUID) (*models.Execution, error) {
 	exec := &models.Execution{}
 	var inputsJSON, planJSON []byte
+	var deliveryJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, workforce_id, project_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, error_message, started_at, ended_at, created_at, updated_at
+		SELECT id, workforce_id, project_id, objective, strategy, plan, status, inputs, tokens_used, iterations, title, description, image_url, result, delivery_report, error_message, started_at, ended_at, created_at, updated_at
 		FROM executions WHERE id = $1`, id,
 	).Scan(
 		&exec.ID, &exec.WorkForceID, &exec.ProjectID, &exec.Objective, &exec.Strategy, &planJSON, &exec.Status,
 		&inputsJSON, &exec.TokensUsed, &exec.Iterations, &exec.Title, &exec.Description, &exec.ImageURL,
-		&exec.Result, &exec.ErrorMessage, &exec.StartedAt, &exec.EndedAt, &exec.CreatedAt, &exec.UpdatedAt,
+		&exec.Result, &deliveryJSON, &exec.ErrorMessage, &exec.StartedAt, &exec.EndedAt, &exec.CreatedAt, &exec.UpdatedAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -100,8 +101,28 @@ func (s *Store) GetExecution(ctx context.Context, id uuid.UUID) (*models.Executi
 	if exec.Plan == nil {
 		exec.Plan = []models.ExecutionSubtask{}
 	}
+	if len(deliveryJSON) > 0 {
+		var dr models.DeliveryReport
+		if err := json.Unmarshal(deliveryJSON, &dr); err != nil {
+			log.Printf("store: unmarshal delivery report for %s: %v", id, err)
+		} else {
+			exec.DeliveryReport = &dr
+		}
+	}
 	exec.ComputeElapsedS()
 	return exec, nil
+}
+
+func (s *Store) SaveDeliveryReport(ctx context.Context, execID uuid.UUID, report models.DeliveryReport) error {
+	data, err := json.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("marshal delivery report: %w", err)
+	}
+	_, err = s.pool.Exec(ctx,
+		`UPDATE executions SET delivery_report = $2, updated_at = $3 WHERE id = $1`,
+		execID, data, time.Now(),
+	)
+	return err
 }
 
 // GetLatestExecution returns the most recent execution for a workforce, or nil if none exist.

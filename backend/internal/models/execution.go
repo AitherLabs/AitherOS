@@ -63,27 +63,52 @@ type ExecutionSubtask struct {
 	ErrorMsg  string        `json:"error_msg,omitempty"` // set when status=blocked; reason for the failure
 }
 
+// DeliveryReport is synthesised at execution completion from tool call events.
+// It surfaces the concrete outputs — files written and external actions taken —
+// so users can see what was actually produced without reading the full event log.
+type DeliveryReport struct {
+	Files   []DeliveryFile   `json:"files"`
+	Actions []DeliveryAction `json:"actions"`
+}
+
+// DeliveryFile represents a file that was created or modified in the workspace.
+type DeliveryFile struct {
+	Path      string `json:"path"`       // workspace-relative path, e.g. "content/report.md"
+	SizeBytes int64  `json:"size_bytes"` // current size on disk (0 if file no longer exists)
+	Ext       string `json:"ext"`        // lowercase extension without dot
+}
+
+// DeliveryAction represents a meaningful external action taken during the execution
+// (an API write, a git push, a publish command, etc.).
+type DeliveryAction struct {
+	Service     string `json:"service"`               // "Bluesky", "GitHub", "Dev.to", …
+	Description string `json:"description"`           // human-readable action summary
+	Method      string `json:"method,omitempty"`      // HTTP method if applicable
+	URL         string `json:"url,omitempty"`         // target URL (sanitised — no tokens)
+}
+
 type Execution struct {
-	ID           uuid.UUID          `json:"id" db:"id"`
-	WorkForceID  uuid.UUID          `json:"workforce_id" db:"workforce_id"`
-	ProjectID    *uuid.UUID         `json:"project_id,omitempty" db:"project_id"`
-	Objective    string             `json:"objective" db:"objective"`
-	Strategy     string             `json:"strategy" db:"strategy"`
-	Plan         []ExecutionSubtask `json:"plan" db:"plan"`
-	Status       ExecutionStatus    `json:"status" db:"status"`
-	Inputs       map[string]string  `json:"inputs,omitempty" db:"inputs"`
-	TokensUsed   int64              `json:"tokens_used" db:"tokens_used"`
-	Iterations   int                `json:"iterations" db:"iterations"`
-	Title        string             `json:"title" db:"title"`
-	Description  string             `json:"description" db:"description"`
-	ImageURL     string             `json:"image_url" db:"image_url"`
-	Result       string             `json:"result" db:"result"`
-	ErrorMessage string             `json:"error_message,omitempty" db:"error_message"`
-	StartedAt    *time.Time         `json:"started_at,omitempty" db:"started_at"`
-	EndedAt      *time.Time         `json:"ended_at,omitempty" db:"ended_at"`
-	ElapsedS     int64              `json:"elapsed_s"`
-	CreatedAt    time.Time          `json:"created_at" db:"created_at"`
-	UpdatedAt    time.Time          `json:"updated_at" db:"updated_at"`
+	ID             uuid.UUID          `json:"id" db:"id"`
+	WorkForceID    uuid.UUID          `json:"workforce_id" db:"workforce_id"`
+	ProjectID      *uuid.UUID         `json:"project_id,omitempty" db:"project_id"`
+	Objective      string             `json:"objective" db:"objective"`
+	Strategy       string             `json:"strategy" db:"strategy"`
+	Plan           []ExecutionSubtask `json:"plan" db:"plan"`
+	Status         ExecutionStatus    `json:"status" db:"status"`
+	Inputs         map[string]string  `json:"inputs,omitempty" db:"inputs"`
+	TokensUsed     int64              `json:"tokens_used" db:"tokens_used"`
+	Iterations     int                `json:"iterations" db:"iterations"`
+	Title          string             `json:"title" db:"title"`
+	Description    string             `json:"description" db:"description"`
+	ImageURL       string             `json:"image_url" db:"image_url"`
+	Result         string             `json:"result" db:"result"`
+	DeliveryReport *DeliveryReport    `json:"delivery_report,omitempty" db:"delivery_report"`
+	ErrorMessage   string             `json:"error_message,omitempty" db:"error_message"`
+	StartedAt      *time.Time         `json:"started_at,omitempty" db:"started_at"`
+	EndedAt        *time.Time         `json:"ended_at,omitempty" db:"ended_at"`
+	ElapsedS       int64              `json:"elapsed_s"`
+	CreatedAt      time.Time          `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at" db:"updated_at"`
 	// PendingApproval is populated by the API handler when status == awaiting_approval.
 	// It is never stored in the DB.
 	PendingApproval *Approval `json:"pending_approval,omitempty" db:"-"`

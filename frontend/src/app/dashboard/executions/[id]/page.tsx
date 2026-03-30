@@ -31,6 +31,7 @@ import {
   IconTrash,
   IconSend,
   IconTool,
+  IconWorldUpload,
   IconX
 } from '@tabler/icons-react';
 import {
@@ -39,7 +40,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog';
-import api, { Agent, ChatReply, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce, WorkspaceFileEntry } from '@/lib/api';
+import api, { Agent, ChatReply, DeliveryAction, DeliveryFile, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce, WorkspaceFileEntry } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { Input } from '@/components/ui/input';
@@ -455,6 +456,124 @@ function PipelinePlanPanel({ plan, agentsMap }: { plan: ExecutionSubtask[]; agen
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── Service badge colour map ──────────────────────────────────────────────────
+const SERVICE_COLORS: Record<string, string> = {
+  'Bluesky':   '#0085FF',
+  'Dev.to':    '#3B49DF',
+  'GitHub':    '#6E40C9',
+  'YouTube':   '#FF0000',
+  'X/Twitter': '#000000',
+  'Facebook':  '#1877F2',
+  'Instagram': '#E1306C',
+  'LinkedIn':  '#0A66C2',
+  'Discord':   '#5865F2',
+  'Slack':     '#4A154B',
+  'Reddit':    '#FF4500',
+  'Medium':    '#000000',
+  'Hashnode':  '#2962FF',
+  'Substack':  '#FF6719',
+  'WordPress': '#21759B',
+  'SendGrid':  '#1A82E2',
+  'Resend':    '#000000',
+  'Mailgun':   '#F06B25',
+  'Git':       '#F05032',
+  'npm':       '#CB3837',
+  'Docker':    '#2496ED',
+  'Cargo':     '#DEA584',
+  'PyPI':      '#3775A9',
+};
+
+function DeliverablesSummary({ report, workforceId }: { report: { files: DeliveryFile[]; actions: DeliveryAction[] }; workforceId: string }) {
+  const extIconMap: Record<string, string> = {
+    md: '📄', txt: '📄', json: '📋', csv: '📊', html: '🌐', css: '🎨',
+    js: '⚙️', ts: '⚙️', py: '🐍', sh: '⚙️', yaml: '📋', yml: '📋',
+    png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', svg: '🖼️', webp: '🖼️',
+    mp4: '🎬', mov: '🎬', avi: '🎬', webm: '🎬',
+    mp3: '🎵', wav: '🎵', ogg: '🎵',
+    pdf: '📕', zip: '📦', tar: '📦', gz: '📦',
+  };
+
+  return (
+    <div className='rounded-xl border border-[#9A66FF]/30 bg-[#9A66FF]/5 p-4 space-y-4'>
+      <div className='flex items-center gap-2'>
+        <span className='text-base'>📦</span>
+        <span className='text-xs font-semibold uppercase tracking-wider text-[#9A66FF]'>Deliverables</span>
+        {report.files.length > 0 && (
+          <span className='ml-auto text-[10px] text-[#EAEAEA]/40'>{report.files.length} file{report.files.length !== 1 ? 's' : ''}</span>
+        )}
+      </div>
+
+      {/* External actions */}
+      {report.actions.length > 0 && (
+        <div className='space-y-1.5'>
+          <p className='text-[10px] font-semibold uppercase tracking-wider text-[#EAEAEA]/40'>External Actions</p>
+          <div className='flex flex-col gap-1.5'>
+            {report.actions.map((action, i) => {
+              const color = SERVICE_COLORS[action.service] ?? '#9A66FF';
+              return (
+                <div key={i} className='flex items-center gap-2.5 rounded-lg border border-white/5 bg-white/5 px-3 py-2'>
+                  <IconWorldUpload className='h-3.5 w-3.5 shrink-0' style={{ color }} />
+                  <div className='min-w-0 flex-1'>
+                    <span className='text-xs font-medium' style={{ color }}>{action.service}</span>
+                    <span className='mx-1.5 text-[#EAEAEA]/30'>·</span>
+                    <span className='text-xs text-[#EAEAEA]/70'>{action.description}</span>
+                  </div>
+                  {action.url && (
+                    <a
+                      href={action.url}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                      onClick={e => e.stopPropagation()}
+                      className='shrink-0 text-[#EAEAEA]/30 hover:text-[#EAEAEA]/70 transition-colors'
+                      title={action.url}
+                    >
+                      <IconExternalLink className='h-3 w-3' />
+                    </a>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Files */}
+      {report.files.length > 0 && (
+        <div className='space-y-1.5'>
+          {report.actions.length > 0 && (
+            <p className='text-[10px] font-semibold uppercase tracking-wider text-[#EAEAEA]/40'>Files</p>
+          )}
+          <div className='grid grid-cols-1 gap-1.5'>
+            {report.files.map((f, i) => {
+              const icon = extIconMap[f.ext] ?? '📄';
+              const sizeStr = f.size_bytes > 0
+                ? f.size_bytes < 1024 ? `${f.size_bytes} B`
+                  : f.size_bytes < 1024 * 1024 ? `${(f.size_bytes / 1024).toFixed(1)} KB`
+                  : `${(f.size_bytes / (1024 * 1024)).toFixed(1)} MB`
+                : '';
+              const fileName = f.path.split('/').pop() ?? f.path;
+              return (
+                <div key={i} className='flex items-center gap-2.5 rounded-lg border border-white/5 bg-white/5 px-3 py-2'>
+                  <span className='text-sm shrink-0'>{icon}</span>
+                  <div className='min-w-0 flex-1 flex items-center gap-2'>
+                    <WorkspaceFilePath relPath={f.path} workforceId={workforceId} displayText={fileName} />
+                    {f.path.includes('/') && (
+                      <span className='text-[10px] text-[#EAEAEA]/30 truncate'>{f.path.split('/').slice(0, -1).join('/')}/</span>
+                    )}
+                  </div>
+                  {sizeStr && (
+                    <span className='text-[10px] text-[#EAEAEA]/40 shrink-0 tabular-nums'>{sizeStr}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2926,6 +3045,14 @@ export default function ExecutionDetailPage() {
                 </div>
               );
             })()}
+
+            {/* Deliverables — files written + external actions */}
+            {execution.delivery_report && (execution.delivery_report.files.length > 0 || execution.delivery_report.actions.length > 0) && (
+              <DeliverablesSummary
+                report={execution.delivery_report}
+                workforceId={workforce?.id ?? ''}
+              />
+            )}
 
             {/* Error */}
             {execution.status === 'failed' && execution.error_message && (

@@ -747,6 +747,24 @@ export interface ExecutionSubtask {
 
 export type ExecutionMode = 'all_agents' | 'single_agent';
 
+export interface DeliveryFile {
+  path: string;       // workspace-relative, e.g. "content/report.md"
+  size_bytes: number;
+  ext: string;        // lowercase, no dot
+}
+
+export interface DeliveryAction {
+  service: string;      // "Bluesky", "GitHub", "Dev.to", …
+  description: string;  // human-readable summary
+  method?: string;      // HTTP method if applicable
+  url?: string;         // sanitised target URL
+}
+
+export interface DeliveryReport {
+  files: DeliveryFile[];
+  actions: DeliveryAction[];
+}
+
 export interface Execution {
   id: string;
   workforce_id: string;
@@ -761,6 +779,7 @@ export interface Execution {
   description: string;
   image_url: string;
   result: string;
+  delivery_report?: DeliveryReport;
   error_message?: string;
   elapsed_s: number;
   inputs?: Record<string, string>;

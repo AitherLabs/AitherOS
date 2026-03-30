@@ -9,9 +9,11 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2935,6 +2937,23 @@ func (o *Orchestrator) haltExecution(ctx context.Context, execID, wfID uuid.UUID
 func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.UUID, result string, tokensUsed int64, iterations int) {
 	o.store.UpdateExecutionResult(ctx, execID, result, tokensUsed, iterations)
 	o.store.UpdateExecutionStatus(ctx, execID, models.ExecutionStatusCompleted)
+
+	// Build and persist the delivery report from tool call events.
+	go func() {
+		bgCtx := context.Background()
+		if wf, err := o.store.GetWorkForce(bgCtx, wfID); err == nil {
+			events, err := o.store.ListExecutionEvents(bgCtx, execID)
+			if err == nil {
+				wsPath := workspace.WorkspacePath(wf.Name)
+				report := buildDeliveryReport(events, wsPath)
+				if len(report.Files) > 0 || len(report.Actions) > 0 {
+					if err := o.store.SaveDeliveryReport(bgCtx, execID, report); err != nil {
+						log.Printf("orchestrator: save delivery report for %s: %v", execID, err)
+					}
+				}
+			}
+		}
+	}()
 	o.store.UpdateWorkForceStatus(ctx, wfID, models.WorkForceStatusCompleted)
 
 	// Enrich activity metadata with human-readable names and title
@@ -4706,4 +4725,279 @@ func humanSize(b int64) string {
 	default:
 		return fmt.Sprintf("%.2f GB", float64(b)/(1024*1024*1024))
 	}
+}
+
+// ── Delivery report ───────────────────────────────────────────────────────────
+
+// buildDeliveryReport scans execution events and synthesises a structured
+// summary of files written and external actions performed.
+func buildDeliveryReport(events []*models.Event, workspacePath string) models.DeliveryReport {
+	filesSeen := map[string]*models.DeliveryFile{} // workspace-relative path → entry
+	actionsSeen := map[string]bool{}               // dedup key → seen
+	var actions []models.DeliveryAction
+
+	for _, ev := range events {
+		if ev.Type != models.EventTypeToolCall {
+			continue
+		}
+		// Only process events that carry tool args (the "calling tool" events).
+		rawArgs, ok := ev.Data["args"]
+		if !ok || rawArgs == nil {
+			continue
+		}
+		args, ok := rawArgs.(map[string]any)
+		if !ok {
+			continue
+		}
+		tool, _ := ev.Data["tool"].(string)
+
+		switch tool {
+		case "write_file", "append_to_file":
+			rawPath, _ := args["path"].(string)
+			if rawPath == "" {
+				continue
+			}
+			relPath := normalizeToWorkspaceRelative(rawPath, workspacePath)
+			if relPath == "" {
+				continue
+			}
+			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(relPath), "."))
+			filesSeen[relPath] = &models.DeliveryFile{Path: relPath, Ext: ext}
+
+		case "http_request":
+			rawURL, _ := args["url"].(string)
+			method, _ := args["method"].(string)
+			method = strings.ToUpper(strings.TrimSpace(method))
+			if rawURL == "" || method == "" || method == "GET" || method == "HEAD" || method == "OPTIONS" {
+				continue
+			}
+			service := detectExternalService(rawURL)
+			if service == "" {
+				continue
+			}
+			desc := describeHTTPAction(method, service, rawURL)
+			key := method + "\x00" + rawURL
+			if !actionsSeen[key] {
+				actionsSeen[key] = true
+				actions = append(actions, models.DeliveryAction{
+					Service:     service,
+					Description: desc,
+					Method:      method,
+					URL:         sanitizeURL(rawURL),
+				})
+			}
+
+		case "run_command":
+			cmd, _ := args["command"].(string)
+			desc, service := parseCommandAction(cmd)
+			if desc == "" {
+				continue
+			}
+			key := cmd
+			if !actionsSeen[key] {
+				actionsSeen[key] = true
+				actions = append(actions, models.DeliveryAction{
+					Service:     service,
+					Description: desc,
+				})
+			}
+		}
+	}
+
+	// Enrich file entries with current on-disk sizes.
+	var files []models.DeliveryFile
+	for relPath, f := range filesSeen {
+		absPath := filepath.Join(workspacePath, relPath)
+		if info, err := os.Stat(absPath); err == nil {
+			f.SizeBytes = info.Size()
+		}
+		files = append(files, *f)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+
+	return models.DeliveryReport{Files: files, Actions: actions}
+}
+
+// normalizeToWorkspaceRelative converts any form of workspace path to a
+// workspace-relative path suitable for frontend rendering via WorkspaceFilePath.
+func normalizeToWorkspaceRelative(rawPath, workspacePath string) string {
+	p := rawPath
+	// Virtual /workspace/ alias
+	if p == "/workspace" || p == "/workspace/" {
+		return ""
+	}
+	if strings.HasPrefix(p, "/workspace/") {
+		p = strings.TrimPrefix(p, "/workspace/")
+	} else if strings.HasPrefix(p, workspacePath+"/") {
+		p = strings.TrimPrefix(p, workspacePath+"/")
+	} else if filepath.IsAbs(p) {
+		// Absolute but outside workspace — skip
+		return ""
+	}
+	p = strings.TrimPrefix(p, "./")
+	return p
+}
+
+// detectExternalService returns a human-readable service name for a URL, or ""
+// if the URL doesn't match any known external service.
+func detectExternalService(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case strings.Contains(host, "bsky.") || strings.Contains(host, "bluesky."):
+		return "Bluesky"
+	case strings.Contains(host, "dev.to") || strings.Contains(host, "forem."):
+		return "Dev.to"
+	case strings.Contains(host, "github.com") || strings.Contains(host, "api.github."):
+		return "GitHub"
+	case strings.Contains(host, "youtube.") || strings.Contains(host, "youtu.be"):
+		return "YouTube"
+	case strings.Contains(host, "twitter.com") || strings.Contains(host, "api.twitter.") || host == "x.com" || strings.HasSuffix(host, ".x.com"):
+		return "X/Twitter"
+	case strings.Contains(host, "graph.facebook.") || strings.Contains(host, "facebook.com"):
+		return "Facebook"
+	case strings.Contains(host, "instagram."):
+		return "Instagram"
+	case strings.Contains(host, "linkedin."):
+		return "LinkedIn"
+	case strings.Contains(host, "discord."):
+		return "Discord"
+	case strings.Contains(host, "slack."):
+		return "Slack"
+	case strings.Contains(host, "notion."):
+		return "Notion"
+	case strings.Contains(host, "airtable."):
+		return "Airtable"
+	case strings.Contains(host, "stripe."):
+		return "Stripe"
+	case strings.Contains(host, "sendgrid."):
+		return "SendGrid"
+	case strings.Contains(host, "mailgun."):
+		return "Mailgun"
+	case strings.Contains(host, "twilio."):
+		return "Twilio"
+	case strings.Contains(host, "openai."):
+		return "OpenAI"
+	case strings.Contains(host, "anthropic."):
+		return "Anthropic"
+	case strings.Contains(host, "reddit."):
+		return "Reddit"
+	case strings.Contains(host, "medium."):
+		return "Medium"
+	case strings.Contains(host, "hashnode."):
+		return "Hashnode"
+	case strings.Contains(host, "substack."):
+		return "Substack"
+	case strings.Contains(host, "wordpress."):
+		return "WordPress"
+	case strings.Contains(host, "hubspot."):
+		return "HubSpot"
+	case strings.Contains(host, "telegram."):
+		return "Telegram"
+	case strings.Contains(host, "api.resend."):
+		return "Resend"
+	default:
+		return ""
+	}
+}
+
+// describeHTTPAction returns a human-readable description of an HTTP action.
+func describeHTTPAction(method, service, rawURL string) string {
+	u, _ := url.Parse(rawURL)
+	path := ""
+	if u != nil {
+		path = strings.ToLower(u.Path)
+	}
+	switch method {
+	case "POST":
+		switch service {
+		case "Bluesky":
+			return "Published post on Bluesky"
+		case "Dev.to":
+			return "Published article on Dev.to"
+		case "GitHub":
+			switch {
+			case strings.Contains(path, "/releases"):
+				return "Created GitHub release"
+			case strings.Contains(path, "/issues"):
+				return "Created GitHub issue"
+			case strings.Contains(path, "/pulls"):
+				return "Created GitHub pull request"
+			case strings.Contains(path, "/comments"):
+				return "Posted GitHub comment"
+			default:
+				return "GitHub API call"
+			}
+		case "Discord":
+			return "Sent message to Discord"
+		case "Slack":
+			return "Sent message to Slack"
+		case "Telegram":
+			return "Sent message to Telegram"
+		case "Reddit":
+			return "Submitted post to Reddit"
+		case "Medium":
+			return "Published post on Medium"
+		case "Hashnode":
+			return "Published post on Hashnode"
+		case "Substack":
+			return "Published post on Substack"
+		case "WordPress":
+			return "Published post on WordPress"
+		case "SendGrid", "Resend", "Mailgun":
+			return fmt.Sprintf("Sent email via %s", service)
+		default:
+			return fmt.Sprintf("POST to %s", service)
+		}
+	case "PUT", "PATCH":
+		return fmt.Sprintf("Updated content on %s", service)
+	case "DELETE":
+		return fmt.Sprintf("Deleted from %s", service)
+	default:
+		return fmt.Sprintf("%s %s", method, service)
+	}
+}
+
+// parseCommandAction returns a human-readable description and service name for
+// a shell command that represents a meaningful external action. Returns ("", "")
+// if the command is not a recognised action (reads/local-only operations are skipped).
+func parseCommandAction(cmd string) (description, service string) {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	switch {
+	case strings.Contains(lower, "git push"):
+		return "Pushed commits to repository", "Git"
+	case strings.Contains(lower, "git commit"):
+		return "Committed changes to Git", "Git"
+	case strings.Contains(lower, "npm publish"):
+		return "Published npm package", "npm"
+	case strings.Contains(lower, "cargo publish"):
+		return "Published Rust crate", "Cargo"
+	case strings.Contains(lower, "docker push"):
+		return "Pushed Docker image", "Docker"
+	case strings.Contains(lower, "twine upload") || strings.Contains(lower, "pip publish"):
+		return "Published Python package", "PyPI"
+	case strings.Contains(lower, "gh release create"):
+		return "Created GitHub release via CLI", "GitHub"
+	case strings.Contains(lower, "gh pr create"):
+		return "Created GitHub pull request via CLI", "GitHub"
+	case strings.Contains(lower, "gh issue create"):
+		return "Created GitHub issue via CLI", "GitHub"
+	default:
+		return "", ""
+	}
+}
+
+// sanitizeURL strips query parameters that may contain tokens/secrets.
+func sanitizeURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	// Strip any query params — they commonly carry API keys
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
