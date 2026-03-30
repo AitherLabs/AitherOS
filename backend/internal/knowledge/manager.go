@@ -250,6 +250,10 @@ func (m *Manager) IngestSingleMessage(ctx context.Context, workforceID, executio
 	_ = ctx
 	go func() {
 		bgCtx := context.Background()
+		var executionRef *uuid.UUID
+		if executionID != uuid.Nil {
+			executionRef = &executionID
+		}
 		var embedding []float32
 		if m.embedder.Available() {
 			textToEmbed := fmt.Sprintf("Agent: %s\n\n%s", agentName, content)
@@ -265,7 +269,7 @@ func (m *Manager) IngestSingleMessage(ctx context.Context, workforceID, executio
 		entry := &models.KnowledgeEntry{
 			ID:          uuid.New(),
 			WorkforceID: workforceID,
-			ExecutionID: &executionID,
+			ExecutionID: executionRef,
 			AgentID:     agentID,
 			SourceType:  models.KnowledgeSourceAgent,
 			Title:       extractContentTitle(agentName, content),

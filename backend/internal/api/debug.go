@@ -56,6 +56,56 @@ func sanitizeMediaFilename(name string) string {
 	return base
 }
 
+func normalizeMediaOutputPath(rawOutputPath, sanitizedFilename string) string {
+	outputPath := strings.TrimSpace(rawOutputPath)
+	if outputPath == "" {
+		if sanitizedFilename == "" {
+			return ""
+		}
+		return filepath.ToSlash(filepath.Join("generated", sanitizedFilename))
+	}
+
+	clean := filepath.ToSlash(filepath.Clean(strings.ReplaceAll(outputPath, "\\", "/")))
+	if clean == "." || clean == "" {
+		if sanitizedFilename != "" {
+			return filepath.ToSlash(filepath.Join("generated", sanitizedFilename))
+		}
+		return ""
+	}
+
+	if filepath.IsAbs(clean) {
+		lower := strings.ToLower(clean)
+		if generatedIdx := strings.LastIndex(lower, "/generated/"); generatedIdx >= 0 {
+			clean = strings.TrimPrefix(clean[generatedIdx+1:], "/")
+		} else {
+			base := sanitizeMediaFilename(filepath.Base(clean))
+			if base == "" {
+				base = fmt.Sprintf("image_%d.png", time.Now().UnixMilli())
+			}
+			clean = filepath.ToSlash(filepath.Join("generated", base))
+		}
+	} else {
+		clean = strings.TrimPrefix(clean, "/")
+	}
+
+	if clean == "." || clean == "" || strings.HasPrefix(clean, "..") {
+		if sanitizedFilename != "" {
+			clean = filepath.ToSlash(filepath.Join("generated", sanitizedFilename))
+		} else {
+			clean = filepath.ToSlash(filepath.Join("generated", fmt.Sprintf("image_%d.png", time.Now().UnixMilli())))
+		}
+	}
+
+	if filepath.Ext(clean) == "" {
+		clean += ".png"
+	}
+	if !strings.Contains(clean, "/") {
+		clean = filepath.ToSlash(filepath.Join("generated", clean))
+	}
+
+	return filepath.ToSlash(clean)
+}
+
 type DebugHandler struct {
 	store    *store.Store
 	registry *engine.ProviderRegistry
@@ -126,13 +176,55 @@ func (h *DebugHandler) connectAgentMCPSessions(ctx context.Context, agentID uuid
 	return sessions, validWfIDs, allCleanup
 }
 
+func debugToolNameCandidates(toolName string) []string {
+	base := strings.TrimSpace(toolName)
+	if base == "" {
+		return []string{toolName}
+	}
+
+	aliases := map[string]string{
+		"kanban_create_task": "kanban_create",
+		"kanban_update_task": "kanban_update",
+		"kanban_list_tasks":  "kanban_list",
+	}
+
+	if alias, ok := aliases[base]; ok && alias != "" && alias != base {
+		return []string{base, alias}
+	}
+	return []string{base}
+}
+
+func isToolNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not found in any connected mcp server") ||
+		strings.Contains(msg, "not available in any connected mcp server")
+}
+
 // executeToolCall tries to execute a tool call across all MCP sessions.
 func (h *DebugHandler) executeToolCall(ctx context.Context, sessions []*mcp.Session, wfIDs []uuid.UUID, toolName string, args map[string]any) (string, error) {
-	for i, sess := range sessions {
-		result, err := sess.ExecuteToolCall(ctx, wfIDs[i], toolName, args)
-		if err == nil {
-			return result, nil
+	var firstNonAvailabilityErr error
+	candidates := debugToolNameCandidates(toolName)
+	for _, candidate := range candidates {
+		for i, sess := range sessions {
+			result, err := sess.ExecuteToolCall(ctx, wfIDs[i], candidate, args)
+			if err == nil {
+				return result, nil
+			}
+			if !isToolNotFoundErr(err) && firstNonAvailabilityErr == nil {
+				firstNonAvailabilityErr = err
+			}
 		}
+	}
+
+	if firstNonAvailabilityErr != nil {
+		return "", firstNonAvailabilityErr
+	}
+
+	if len(candidates) > 1 {
+		return "", fmt.Errorf("tool %s not available in any connected MCP server (also tried alias %s)", toolName, candidates[1])
 	}
 	return "", fmt.Errorf("tool %s not available in any connected MCP server", toolName)
 }
@@ -232,6 +324,7 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 		Tools:        agent.Tools,
 		ToolDefs:     toolDefs,
 	}
+	isMediaConnector := engine.IsMediaConnector(conn)
 
 	if req.Inputs != nil {
 		if wfIDRaw := strings.TrimSpace(req.Inputs["workforce_id"]); wfIDRaw != "" {
@@ -244,7 +337,7 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 							break
 						}
 					}
-					if isMember {
+					if isMember || isMediaConnector {
 						taskReq.WorkspacePath = workspace.WorkspacePath(wf.Name)
 					}
 				}
@@ -252,25 +345,49 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if engine.IsMediaConnector(conn) {
+	if isMediaConnector {
+		var parsedSpec map[string]any
+		if raw := strings.TrimSpace(req.Message); strings.HasPrefix(raw, "{") && strings.HasSuffix(raw, "}") {
+			_ = json.Unmarshal([]byte(raw), &parsedSpec)
+		}
+
 		prompt := ""
 		filename := ""
+		outputPath := ""
 		aspectRatio := ""
 		if req.Inputs != nil {
 			prompt = strings.TrimSpace(req.Inputs["prompt"])
 			filename = sanitizeMediaFilename(req.Inputs["output_filename"])
+			outputPath = strings.TrimSpace(req.Inputs["output_path"])
 			aspectRatio = strings.TrimSpace(req.Inputs["aspect_ratio"])
+		}
+		if outputPath == "" {
+			if v, ok := parsedSpec["output_path"].(string); ok {
+				outputPath = strings.TrimSpace(v)
+			}
+		}
+		if prompt == "" {
+			if v, ok := parsedSpec["prompt"].(string); ok {
+				prompt = strings.TrimSpace(v)
+			}
 		}
 		if prompt == "" {
 			prompt = strings.TrimSpace(req.Message)
 		}
-		if filename == "" {
-			filename = fmt.Sprintf("image_%d.png", time.Now().UnixMilli())
+		if aspectRatio == "" {
+			if v, ok := parsedSpec["aspect_ratio"].(string); ok {
+				aspectRatio = strings.TrimSpace(v)
+			}
+		}
+
+		outputPath = normalizeMediaOutputPath(outputPath, filename)
+		if outputPath == "" {
+			outputPath = filepath.ToSlash(filepath.Join("generated", fmt.Sprintf("image_%d.png", time.Now().UnixMilli())))
 		}
 
 		spec := map[string]string{
 			"prompt":      prompt,
-			"output_path": filepath.ToSlash(filepath.Join("generated", filename)),
+			"output_path": outputPath,
 		}
 		if aspectRatio != "" {
 			spec["aspect_ratio"] = aspectRatio
@@ -284,6 +401,12 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 	if len(history) > 0 {
 		taskReq.History = history
 	}
+
+	requestMode := ""
+	if req.Inputs != nil {
+		requestMode = strings.ToLower(strings.TrimSpace(req.Inputs["request_mode"]))
+	}
+	isWorkforceChatRequest := requestMode == "workforce_chat"
 
 	// Streaming response via SSE (no tool call loop for streaming)
 	if req.Stream {
@@ -304,7 +427,13 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 		defer cleanup()
 
 		if len(sessions) > 0 {
-			const maxToolRounds = 5
+			maxToolRounds := 5
+			maxToolLoopDuration := time.Duration(0)
+			if isWorkforceChatRequest {
+				maxToolRounds = 2
+				maxToolLoopDuration = 45 * time.Second
+			}
+			loopStartedAt := time.Now()
 
 			// Build running history for tool loop
 			sysContent := systemPrompt
@@ -320,6 +449,11 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 			}
 
 			for toolRound := 0; toolRound < maxToolRounds && len(resp.ToolCalls) > 0; toolRound++ {
+				if maxToolLoopDuration > 0 && time.Since(loopStartedAt) >= maxToolLoopDuration {
+					log.Printf("debug: stopping tool loop early for workforce chat after %d rounds (%s limit)", toolRound, maxToolLoopDuration)
+					break
+				}
+
 				// Execute each tool call
 				for i, tc := range resp.ToolCalls {
 					result, toolErr := h.executeToolCall(r.Context(), sessions, wfIDs, tc.Name, tc.Args)
@@ -347,7 +481,20 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Re-submit with full history
-				resp, err = conn.Submit(r.Context(), engine.TaskRequest{
+				submitCtx := r.Context()
+				cancel := func() {}
+				if maxToolLoopDuration > 0 {
+					remaining := maxToolLoopDuration - time.Since(loopStartedAt)
+					if remaining <= 0 {
+						log.Printf("debug: stopping tool loop before re-submit (time budget exhausted)")
+						break
+					}
+					if remaining > 30*time.Second {
+						remaining = 30 * time.Second
+					}
+					submitCtx, cancel = context.WithTimeout(r.Context(), remaining)
+				}
+				resp, err = conn.Submit(submitCtx, engine.TaskRequest{
 					AgentID:   agent.ID,
 					AgentName: agent.Name,
 					Model:     modelName,
@@ -355,6 +502,7 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 					ToolDefs:  toolDefs,
 					History:   loopHistory,
 				})
+				cancel()
 				if err != nil {
 					log.Printf("debug: tool loop error (round %d): %v", toolRound+1, err)
 					break

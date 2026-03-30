@@ -138,10 +138,22 @@ func (c *imageConnector) Submit(ctx context.Context, req TaskRequest) (*TaskResp
 			relPath = rel
 		}
 	}
+	relPath = filepath.ToSlash(relPath)
+	if filepath.IsAbs(relPath) {
+		lower := strings.ToLower(relPath)
+		if generatedIdx := strings.LastIndex(lower, "/generated/"); generatedIdx >= 0 {
+			relPath = strings.TrimPrefix(relPath[generatedIdx+1:], "/")
+		} else {
+			relPath = filepath.ToSlash(filepath.Join("generated", filepath.Base(relPath)))
+		}
+	}
+	if relPath == "" || relPath == "." {
+		relPath = filepath.ToSlash(filepath.Join("generated", fmt.Sprintf("image_%d.png", time.Now().UnixMilli())))
+	}
 	kb := float64(len(imgBytes)) / 1024.0
 	content := fmt.Sprintf(
 		"Image generated successfully.\nPath: %s\nSize: %.1f KB\nModel: %s\nPrompt: %s",
-		relPath, kb, c.model, truncateStr(spec.Prompt, 120),
+		relPath, kb, c.model, truncateStr(spec.Prompt, 1200),
 	)
 
 	return &TaskResponse{

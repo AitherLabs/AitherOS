@@ -199,6 +199,15 @@ interface WorkforceChatGroup {
   messages: WorkforceChatMessage[];
 }
 
+type WorkforceChatActivityStatus = 'pending' | 'running' | 'done' | 'error';
+
+interface WorkforceChatActivityStep {
+  key: string;
+  label: string;
+  status: WorkforceChatActivityStatus;
+  detail?: string;
+}
+
 const WORKFORCE_CHAT_SCOPE_PREFIX = '[WFCHAT]';
 const CHAT_GROUP_WINDOW_MS = 5 * 60 * 1000;
 const CHAT_IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
@@ -206,6 +215,20 @@ const CHAT_IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
 function isMediaModelType(modelType?: string): boolean {
   const normalized = (modelType || '').trim().toLowerCase();
   return normalized === 'image' || normalized === 'video' || normalized === 'audio';
+}
+
+function sanitizeMediaFilenameInput(name: string): string {
+  const raw = (name || '').trim();
+  if (!raw) return '';
+
+  const base = raw.split(/[\\/]/).filter(Boolean).pop() || raw;
+  const safe = base
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9._-]/g, '')
+    .replace(/^[._-]+|[._-]+$/g, '');
+
+  if (!safe) return '';
+  return /\.[a-zA-Z0-9]+$/.test(safe) ? safe : `${safe}.png`;
 }
 
 function encodeWorkforceChatContent(content: string, meta: WorkforceChatMeta): string {
@@ -308,33 +331,209 @@ function mapAgentChatToWorkforceMessage(chat: AgentChat, workforceId: string): W
   };
 }
 
+function extractAgentChatListPayload(raw: unknown): AgentChat[] {
+  if (Array.isArray(raw)) return raw as AgentChat[];
+  if (raw && typeof raw === 'object' && Array.isArray((raw as any).data)) {
+    return (raw as any).data as AgentChat[];
+  }
+  return [];
+}
+
+function unwrapDebugPayload(raw: any): any {
+  if (raw && typeof raw === 'object' && raw.data && typeof raw.data === 'object') {
+    if ('content' in raw.data || 'tool_calls' in raw.data || 'tokens_used' in raw.data) {
+      return raw.data;
+    }
+  }
+  return raw;
+}
+
+function summarizeToolResult(result?: string): string {
+  const text = (result || '').trim();
+  if (!text) return 'No output.';
+  const compact = text.replace(/\s+/g, ' ');
+  return compact.length > 240 ? `${compact.slice(0, 240)}…` : compact;
+}
+
+function formatToolPayload(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function buildAssistantContent(payload: any, toolCalls: WorkforceChatToolCall[]): string {
+  const content = typeof payload?.content === 'string' ? payload.content.trim() : '';
+  if (content) return content;
+
+  if (toolCalls.length > 0) {
+    const lines = toolCalls.map((tc) => `- ${tc.name}: ${summarizeToolResult(tc.result)}`);
+    return ['I completed tool actions but the model returned no final text.', ...lines].join('\n');
+  }
+
+  if (typeof payload?.reasoning === 'string' && payload.reasoning.trim()) {
+    return payload.reasoning.trim();
+  }
+
+  return 'No textual answer was returned. Please retry with a more explicit question.';
+}
+
+function AuthenticatedImage({
+  src,
+  alt,
+  className,
+  accessToken
+}: {
+  src: string;
+  alt: string;
+  className?: string;
+  accessToken?: string;
+}) {
+  const [blobUrl, setBlobUrl] = useState('');
+
+  useEffect(() => {
+    const target = (src || '').trim();
+    if (!target || /^(data:|blob:)/i.test(target)) {
+      setBlobUrl(target);
+      return;
+    }
+
+    const controller = new AbortController();
+    let objectUrl = '';
+
+    fetch(target, {
+      method: 'GET',
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+      credentials: 'include',
+      signal: controller.signal
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.blob();
+      })
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        console.error('Load workforce media image failed:', err);
+        setBlobUrl('');
+      });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [src, accessToken]);
+
+  return <img src={blobUrl || src} alt={alt} className={className} loading='lazy' />;
+}
+
 function resolveWorkforceChatImageUrl(raw: string, workforceId?: string): string {
   const resolved = resolveChatMediaUrl(raw);
   if (!resolved) return '';
-  if (/^(data:|blob:|https?:\/\/)/i.test(resolved)) return resolved;
-
-  const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
-
-  if (/^\/uploads\//i.test(resolved) || /^\/api\//i.test(resolved)) {
-    return apiBase ? `${apiBase}${resolved}` : resolved;
-  }
+  if (/^(data:|blob:)/i.test(resolved)) return resolved;
 
   const wfID = (workforceId || '').trim();
   if (!wfID) return resolved;
 
-  let rel = resolved.replace(/^\/+/, '');
-  if (!rel) return resolved;
-  if (!rel.includes('/') && CHAT_IMAGE_EXT_RE.test(rel)) {
-    rel = `generated/${rel}`;
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
+  const fileEndpointBase = `/api/workforces/${wfID}/files?path=`;
+
+  const toProxy = (relativePath: string) => {
+    const clean = relativePath.replace(/^\/+/, '');
+    if (!clean) return resolved;
+    return `${fileEndpointBase}${encodeURIComponent(clean)}`;
+  };
+
+  const toProxyFromWorkforceFilesUrl = (value: string): string | null => {
+    try {
+      const parsed = new URL(value, 'http://localhost');
+      if (!/^\/api\/(?:v1\/)?workforces\/[^/]+\/files$/i.test(parsed.pathname)) {
+        return null;
+      }
+      const requestedPath = parsed.searchParams.get('path') || '';
+      const normalized = tryNormalizeToWorkspaceRelative(requestedPath);
+      return normalized ? toProxy(normalized) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const tryNormalizeToWorkspaceRelative = (pathLike: string): string | null => {
+    const clean = pathLike.replace(/^\/+/, '');
+    if (!clean) return null;
+
+    const lower = clean.toLowerCase();
+    const generatedIdx = lower.lastIndexOf('generated/');
+    if (generatedIdx >= 0) {
+      return clean.slice(generatedIdx);
+    }
+
+    if (clean.startsWith('uploads/') || clean.startsWith('api/')) {
+      return null;
+    }
+
+    if (clean.startsWith('generated/')) {
+      return clean;
+    }
+
+    if (!clean.includes('/') && CHAT_IMAGE_EXT_RE.test(clean)) {
+      return `generated/${clean}`;
+    }
+
+    if (CHAT_IMAGE_EXT_RE.test(clean)) {
+      const parts = clean.split('/').filter(Boolean);
+      const basename = parts[parts.length - 1];
+      if (basename) return `generated/${basename}`;
+    }
+
+    return clean;
+  };
+
+  if (/^https?:\/\//i.test(resolved)) {
+    const proxiedFromLegacy = toProxyFromWorkforceFilesUrl(resolved);
+    if (proxiedFromLegacy) return proxiedFromLegacy;
+
+    try {
+      const parsed = new URL(resolved);
+      const normalized = tryNormalizeToWorkspaceRelative(parsed.pathname);
+      if (normalized) return toProxy(normalized);
+    } catch {
+      return resolved;
+    }
+    return resolved;
   }
 
-  const filePath = `/api/v1/workforces/${wfID}/files?path=${encodeURIComponent(rel)}`;
-  return apiBase ? `${apiBase}${filePath}` : filePath;
+  if (/^\/api\//i.test(resolved)) {
+    const proxiedFromLegacy = toProxyFromWorkforceFilesUrl(resolved);
+    if (proxiedFromLegacy) return proxiedFromLegacy;
+    return apiBase ? `${apiBase}${resolved}` : resolved;
+  }
+
+  if (/^\/uploads\//i.test(resolved)) {
+    return apiBase ? `${apiBase}${resolved}` : resolved;
+  }
+
+  let rel = resolved.replace(/^\/+/, '');
+  if (!rel) return resolved;
+  rel = tryNormalizeToWorkspaceRelative(rel) || rel;
+  return toProxy(rel);
 }
 
 function resolveChatMediaUrl(raw: string): string {
-  const trimmed = raw.trim().replace(/[),.;]+$/, '');
+  let trimmed = raw.trim().replace(/[),.;]+$/, '');
   if (!trimmed) return '';
+
+  const wfRefMatch = trimmed.match(/^@\[(.+)]$/);
+  if (wfRefMatch?.[1]) {
+    trimmed = wfRefMatch[1].trim();
+  }
+
   if (/^(data:|blob:|https?:\/\/)/i.test(trimmed)) return trimmed;
   if (trimmed.startsWith('/')) {
     const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
@@ -360,6 +559,17 @@ function collectImageRefs(value: unknown): string[] {
     if (!text) return [];
 
     const refs: string[] = [];
+    const workforceRefRe = /@\[([^\]]+)]/g;
+    let workforceRefMatch: RegExpExecArray | null;
+    while ((workforceRefMatch = workforceRefRe.exec(text)) !== null) {
+      const candidate = workforceRefMatch[1]?.trim();
+      if (candidate) refs.push(candidate);
+    }
+
+    if (looksLikeImageRef(text)) {
+      refs.push(text);
+    }
+
     const markdownImageRe = /!\[[^\]]*\]\(([^)\s]+)\)/g;
     let markdownMatch: RegExpExecArray | null;
     while ((markdownMatch = markdownImageRe.exec(text)) !== null) {
@@ -571,6 +781,8 @@ export default function WorkforceDetailPage() {
   const [chatFilename, setChatFilename] = useState('');
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
   const [chatLoadedByAgent, setChatLoadedByAgent] = useState<Record<string, boolean>>({});
+  const [chatActivity, setChatActivity] = useState<WorkforceChatActivityStep[]>([]);
+  const [showAllMediaChatHistory, setShowAllMediaChatHistory] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatHistoryFetchingRef = useRef<Record<string, boolean>>({});
 
@@ -731,6 +943,8 @@ export default function WorkforceDetailPage() {
     setChatMediaPrompt('');
     setChatFilename('');
     setChatError('');
+    setChatActivity([]);
+    setShowAllMediaChatHistory(false);
   }, [chatAgentId]);
 
   useEffect(() => {
@@ -747,7 +961,7 @@ export default function WorkforceDetailPage() {
       .listAgentChats(chatAgentId)
       .then((res) => {
         if (cancelled) return;
-        const persisted = (res.data || [])
+        const persisted = extractAgentChatListPayload(res.data)
           .map((entry) => mapAgentChatToWorkforceMessage(entry, workforce.id))
           .filter((entry): entry is WorkforceChatMessage => Boolean(entry));
         setChatByAgent((prev) => ({ ...prev, [chatAgentId]: persisted }));
@@ -993,7 +1207,7 @@ export default function WorkforceDetailPage() {
 
     const mediaMode = isMediaModelType(selectedAgent.model_type);
     const mediaPrompt = chatMediaPrompt.trim();
-    const filename = chatFilename.trim();
+    const filename = sanitizeMediaFilenameInput(chatFilename);
     const plainMessage = chatInput.trim();
 
     if (mediaMode) {
@@ -1035,6 +1249,28 @@ export default function WorkforceDetailPage() {
       prompt: mediaPrompt || undefined
     };
 
+    const requestStartedAt = Date.now();
+    const upsertActivityStep = (
+      key: string,
+      label: string,
+      status: WorkforceChatActivityStatus,
+      detail?: string
+    ) => {
+      setChatActivity((prev) => {
+        const existingIdx = prev.findIndex((step) => step.key === key);
+        if (existingIdx < 0) return [...prev, { key, label, status, detail }];
+        const next = [...prev];
+        next[existingIdx] = { ...next[existingIdx], label, status, detail };
+        return next;
+      });
+    };
+
+    setChatActivity([
+      { key: 'persist_user', label: 'Saving your message', status: 'running' },
+      { key: 'agent_run', label: 'Running agent model/tools', status: 'pending' },
+      { key: 'persist_assistant', label: 'Saving assistant response', status: 'pending' }
+    ]);
+
     const contextLines = [
       `workforce=${workforce.name} (${workforce.id})`,
       selectedProject ? `project=${selectedProject.name}` : '',
@@ -1051,11 +1287,29 @@ export default function WorkforceDetailPage() {
           `- filename: ${filename}`,
           '- constraint: generate only one asset and return its output path'
         ].join('\n')
-      : `User request:\n${plainMessage}`;
+      : [
+          'User request:',
+          plainMessage,
+          '',
+          'Response style:',
+          '- return plain natural language',
+          '- do not return tool/debug JSON payloads'
+        ].join('\n');
 
     const contextualMessage = contextLines.length > 0
       ? `Context:\n- ${contextLines.join('\n- ')}\n\n${requestBlock}`
       : requestBlock;
+
+    const mediaRelativePath = mediaMode ? `generated/${filename}` : '';
+    const mediaOutputPath = mediaMode ? mediaRelativePath : '';
+
+    const debugMessage = mediaMode
+      ? JSON.stringify({
+          prompt: mediaPrompt,
+          output_path: mediaOutputPath,
+          aspect_ratio: '1:1'
+        })
+      : contextualMessage;
 
     const chatInputs: Record<string, string> = {
       workforce_id: workforce.id,
@@ -1081,6 +1335,7 @@ export default function WorkforceDetailPage() {
     if (mediaMode) {
       chatInputs.prompt = mediaPrompt;
       chatInputs.output_filename = filename;
+      chatInputs.output_path = mediaOutputPath;
       chatInputs.media_only = 'true';
     }
 
@@ -1111,22 +1366,31 @@ export default function WorkforceDetailPage() {
         role: 'user',
         content: encodeWorkforceChatContent(rawMessage, chatMeta)
       });
+      upsertActivityStep('persist_user', 'Saving your message', 'done');
     } catch (err) {
       console.error('Persist workforce user chat failed:', err);
+      upsertActivityStep('persist_user', 'Saving your message', 'error', 'Could not persist user message, continuing in-memory.');
     }
 
+    let hadChatError = false;
     try {
-      const res = await api.debugAgent(agentID, contextualMessage, chatInputs, history);
-      const data = res.data;
-      const content = data?.content || JSON.stringify(data, null, 2);
-      const toolCalls: WorkforceChatToolCall[] = Array.isArray(data?.tool_calls)
-        ? data.tool_calls.map((tc: any) => ({
+      upsertActivityStep('agent_run', 'Running agent model/tools', 'running');
+      const res = await api.debugAgent(agentID, debugMessage, chatInputs, history);
+      const payload = unwrapDebugPayload(res.data);
+      const toolCalls: WorkforceChatToolCall[] = Array.isArray(payload?.tool_calls)
+        ? payload.tool_calls.map((tc: any) => ({
             name: tc?.name || 'tool',
             args: (tc?.args || {}) as Record<string, unknown>,
             result: typeof tc?.result === 'string' ? tc.result : JSON.stringify(tc?.result || {})
           }))
         : [];
+      const content = buildAssistantContent(payload, toolCalls);
       const images = extractChatImages(content, toolCalls);
+      const elapsedSec = Math.max(1, Math.round((Date.now() - requestStartedAt) / 1000));
+      const toolInfo = toolCalls.length > 0
+        ? `${toolCalls.length} tool call${toolCalls.length > 1 ? 's' : ''} completed`
+        : 'Model answer ready';
+      upsertActivityStep('agent_run', 'Running agent model/tools', 'done', `${toolInfo} in ${elapsedSec}s`);
 
       const assistantMsg: WorkforceChatMessage = {
         id: `assistant-${Date.now()}`,
@@ -1144,6 +1408,7 @@ export default function WorkforceDetailPage() {
       }));
 
       try {
+        upsertActivityStep('persist_assistant', 'Saving assistant response', 'running');
         await api.createAgentChat(agentID, {
           role: 'assistant',
           content: encodeWorkforceChatContent(content, chatMeta),
@@ -1153,12 +1418,20 @@ export default function WorkforceDetailPage() {
             result: tc.result || ''
           }))
         });
+        upsertActivityStep('persist_assistant', 'Saving assistant response', 'done');
       } catch (err) {
         console.error('Persist workforce assistant chat failed:', err);
+        upsertActivityStep('persist_assistant', 'Saving assistant response', 'error', 'Assistant reply shown, but persistence failed.');
       }
     } catch (err: any) {
-      const message = err?.message || 'Failed to send message';
+      hadChatError = true;
+      const elapsedSec = Math.max(1, Math.round((Date.now() - requestStartedAt) / 1000));
+      const rawMessage = err?.message || 'Failed to send message';
+      const message = /failed to fetch/i.test(rawMessage) && elapsedSec >= 90
+        ? `Request timed out after ${elapsedSec}s while waiting for the agent response. Try a shorter request or retry.`
+        : rawMessage;
       setChatError(message);
+      upsertActivityStep('agent_run', 'Running agent model/tools', 'error', message);
       const errorMsg = `Error: ${message}`;
 
       setChatByAgent((prevState) => ({
@@ -1176,15 +1449,21 @@ export default function WorkforceDetailPage() {
       }));
 
       try {
+        upsertActivityStep('persist_assistant', 'Saving assistant response', 'running');
         await api.createAgentChat(agentID, {
           role: 'error',
           content: encodeWorkforceChatContent(errorMsg, chatMeta)
         });
+        upsertActivityStep('persist_assistant', 'Saving assistant response', 'done');
       } catch (persistErr) {
         console.error('Persist workforce error chat failed:', persistErr);
+        upsertActivityStep('persist_assistant', 'Saving assistant response', 'error', 'Could not persist error message.');
       }
     } finally {
       setChatLoading(false);
+      if (!hadChatError) {
+        window.setTimeout(() => setChatActivity([]), 6000);
+      }
     }
   }
 
@@ -1219,6 +1498,13 @@ export default function WorkforceDetailPage() {
   const chatAgentIsMedia = isMediaModelType(selectedChatAgent?.model_type);
   const activeChatMessages = chatAgentId ? (chatByAgent[chatAgentId] || []) : [];
   const groupedChatMessages = buildWorkforceChatGroups(activeChatMessages);
+  const shouldAutoCollapseMediaHistory = chatAgentIsMedia && groupedChatMessages.length > 1;
+  const visibleGroupedChatMessages = shouldAutoCollapseMediaHistory && !showAllMediaChatHistory
+    ? groupedChatMessages.slice(-1)
+    : groupedChatMessages;
+  const hiddenMediaGroupCount = shouldAutoCollapseMediaHistory
+    ? groupedChatMessages.length - visibleGroupedChatMessages.length
+    : 0;
   const selectedChatProject = projects.find((p) => p.id === chatProjectId) || null;
   const selectedChatTask = kanbanTasks.find((t) => t.id === chatTaskId) || null;
   const selectedChatKnowledge = knowledgeEntries.find((k) => k.id === chatKnowledgeId) || null;
@@ -1943,8 +2229,26 @@ export default function WorkforceDetailPage() {
                       </div>
                     )}
 
-                    {groupedChatMessages.map((group, groupIdx) => {
-                      const prevGroup = groupedChatMessages[groupIdx - 1];
+                    {shouldAutoCollapseMediaHistory && (
+                      <div className='flex items-center justify-between rounded-lg border border-border/30 bg-background/50 px-2.5 py-1.5'>
+                        <p className='text-[10px] text-muted-foreground/80'>
+                          Media chat keeps only the latest response expanded by default.
+                        </p>
+                        <Button
+                          variant='ghost'
+                          size='sm'
+                          className='h-7 px-2 text-[10px]'
+                          onClick={() => setShowAllMediaChatHistory((prev) => !prev)}
+                        >
+                          {showAllMediaChatHistory
+                            ? 'Collapse older messages'
+                            : `Show ${hiddenMediaGroupCount} older message${hiddenMediaGroupCount === 1 ? '' : 's'}`}
+                        </Button>
+                      </div>
+                    )}
+
+                    {visibleGroupedChatMessages.map((group, groupIdx) => {
+                      const prevGroup = visibleGroupedChatMessages[groupIdx - 1];
                       const showDateSeparator = !prevGroup || toChatDayKey(prevGroup.createdAt) !== toChatDayKey(group.createdAt);
                       const isUser = group.role === 'user';
                       const isError = group.role === 'error';
@@ -2016,16 +2320,50 @@ export default function WorkforceDetailPage() {
                                       )}
 
                                       {msg.toolCalls && msg.toolCalls.length > 0 && (
-                                        <div className='mb-1.5 flex flex-wrap gap-1'>
-                                          {msg.toolCalls.map((toolCall, toolIdx) => (
-                                            <Badge
-                                              key={`${msg.id}-tool-${toolIdx}`}
-                                              variant='outline'
-                                              className='border-[#14FFF7]/30 bg-[#14FFF7]/10 text-[9px] text-[#14FFF7]'
-                                            >
-                                              {toolCall.name}
-                                            </Badge>
-                                          ))}
+                                        <div className='mb-1.5 space-y-1'>
+                                          <div className='flex flex-wrap gap-1'>
+                                            {msg.toolCalls.map((toolCall, toolIdx) => (
+                                              <Badge
+                                                key={`${msg.id}-tool-${toolIdx}`}
+                                                variant='outline'
+                                                className='border-[#14FFF7]/30 bg-[#14FFF7]/10 text-[9px] text-[#14FFF7]'
+                                              >
+                                                {toolCall.name}
+                                              </Badge>
+                                            ))}
+                                          </div>
+                                          <div className='space-y-1'>
+                                            {msg.toolCalls.map((toolCall, toolIdx) => {
+                                              const argsText = formatToolPayload(toolCall.args || {});
+                                              const resultText = summarizeToolResult(toolCall.result || '');
+                                              return (
+                                                <details
+                                                  key={`${msg.id}-tool-detail-${toolIdx}`}
+                                                  className='rounded-md border border-border/40 bg-background/50 px-2 py-1 text-[10px]'
+                                                >
+                                                  <summary className='cursor-pointer list-none text-[10px] text-muted-foreground/90'>
+                                                    {toolCall.name} details
+                                                  </summary>
+                                                  <div className='mt-1 space-y-1 text-[10px]'>
+                                                    {argsText && argsText !== '{}' && (
+                                                      <div>
+                                                        <p className='mb-0.5 text-[9px] uppercase tracking-wide text-muted-foreground/70'>Args</p>
+                                                        <pre className='max-h-24 overflow-auto whitespace-pre-wrap rounded border border-border/30 bg-background/80 p-1 font-mono text-[9px]'>
+                                                          {argsText}
+                                                        </pre>
+                                                      </div>
+                                                    )}
+                                                    {resultText && (
+                                                      <div>
+                                                        <p className='mb-0.5 text-[9px] uppercase tracking-wide text-muted-foreground/70'>Result</p>
+                                                        <p className='whitespace-pre-wrap break-words'>{resultText}</p>
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                </details>
+                                              );
+                                            })}
+                                          </div>
                                         </div>
                                       )}
 
@@ -2046,11 +2384,11 @@ export default function WorkforceDetailPage() {
                                               rel='noreferrer'
                                               className='group overflow-hidden rounded-lg border border-border/40 bg-[#0A0D11]/60'
                                             >
-                                              <img
+                                              <AuthenticatedImage
                                                 src={resolvedImageUrl}
                                                 alt='Generated media output'
                                                 className='h-56 w-full object-cover transition-transform duration-200 group-hover:scale-[1.02] lg:h-64'
-                                                loading='lazy'
+                                                accessToken={session?.accessToken as string | undefined}
                                               />
                                             </a>
                                             );
@@ -2071,11 +2409,40 @@ export default function WorkforceDetailPage() {
                       );
                     })}
 
-                    {chatLoading && (
+                    {(chatLoading || chatActivity.length > 0) && (
                       <div className='flex justify-start'>
-                        <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-xs text-muted-foreground'>
-                          <IconLoader2 className='h-3.5 w-3.5 animate-spin' />
-                          Thinking…
+                        <div className='w-full max-w-[92%] rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-xs'>
+                          <div className='mb-1 flex items-center gap-2 text-[10px] text-muted-foreground/80'>
+                            <IconBrain className='h-3.5 w-3.5 text-[#9A66FF]' />
+                            Agent activity
+                          </div>
+                          <div className='space-y-1'>
+                            {chatActivity.map((step) => (
+                              <div key={step.key} className='flex items-start gap-2 text-[10px] text-muted-foreground/90'>
+                                {step.status === 'running' ? (
+                                  <IconLoader2 className='mt-0.5 h-3 w-3 animate-spin text-[#9A66FF]' />
+                                ) : step.status === 'done' ? (
+                                  <IconCheck className='mt-0.5 h-3 w-3 text-[#56D090]' />
+                                ) : step.status === 'error' ? (
+                                  <IconX className='mt-0.5 h-3 w-3 text-red-400' />
+                                ) : (
+                                  <IconClock className='mt-0.5 h-3 w-3 text-muted-foreground/70' />
+                                )}
+                                <div className='min-w-0'>
+                                  <p>{step.label}</p>
+                                  {step.detail && (
+                                    <p className='text-[9px] text-muted-foreground/70'>{step.detail}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                            {chatLoading && chatActivity.length === 0 && (
+                              <div className='flex items-center gap-2 text-muted-foreground'>
+                                <IconLoader2 className='h-3.5 w-3.5 animate-spin' />
+                                Thinking…
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}

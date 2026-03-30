@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/url"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -168,6 +169,11 @@ func (h *WorkForceHandler) File(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "path is required")
 		return
 	}
+	if strings.Contains(rel, "%2f") || strings.Contains(rel, "%2F") {
+		if decodedRel, decodeErr := url.QueryUnescape(rel); decodeErr == nil && strings.TrimSpace(decodedRel) != "" {
+			rel = strings.TrimSpace(decodedRel)
+		}
+	}
 
 	// Normalize and prevent traversal outside workspace root.
 	cleanRel := filepath.Clean(strings.TrimPrefix(rel, "/"))
@@ -191,6 +197,62 @@ func (h *WorkForceHandler) File(w http.ResponseWriter, r *http.Request) {
 	}
 
 	info, err := os.Stat(abs)
+	if err != nil {
+		lowerClean := strings.ToLower(filepath.ToSlash(cleanRel))
+		if strings.HasPrefix(lowerClean, "generated/") || strings.Contains(lowerClean, "/generated/") {
+			base := filepath.Base(cleanRel)
+			if base != "" && base != "." && base != ".." {
+				legacyRoots := []string{workspaceRoot}
+				if wd, wdErr := os.Getwd(); wdErr == nil && wd != "" {
+					legacyRoots = append(legacyRoots, wd)
+				}
+				if installRoot := filepath.Dir(workspace.WorkforcesRoot); installRoot != "" {
+					alreadyAdded := false
+					for _, root := range legacyRoots {
+						if root == installRoot {
+							alreadyAdded = true
+							break
+						}
+					}
+					if !alreadyAdded {
+						legacyRoots = append(legacyRoots, installRoot)
+					}
+				}
+
+				for _, root := range legacyRoots {
+					candidates := []string{
+						filepath.Join(root, cleanRel),
+						filepath.Join(root, "generated", base),
+					}
+					for _, candidate := range candidates {
+						if legacyInfo, legacyErr := os.Stat(candidate); legacyErr == nil {
+							abs = candidate
+							info = legacyInfo
+							err = nil
+							break
+						}
+					}
+					if err == nil {
+						break
+					}
+				}
+
+				if err != nil {
+					pattern := filepath.Join(workspace.WorkforcesRoot, "*", "workspace", "generated", base)
+					if matches, globErr := filepath.Glob(pattern); globErr == nil {
+						for _, match := range matches {
+							if legacyInfo, legacyErr := os.Stat(match); legacyErr == nil {
+								abs = match
+								info = legacyInfo
+								err = nil
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
