@@ -221,7 +221,7 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>['components'] = {
   tr: ({ children }) => <tr className='even:bg-muted/10'>{children}</tr>,
 };
 
-function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforceId: string }) {
+function WorkspaceFilePath({ relPath, workforceId, displayText }: { relPath: string; workforceId: string; displayText?: string }) {
   const [open, setOpen] = useState(false);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -283,7 +283,7 @@ function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforc
         onClick={canPreview ? handleClick : undefined}
         title={canPreview ? 'Click to preview' : undefined}
       >
-        /workspace/{relPath}
+        {displayText ?? `/workspace/${relPath}`}
       </span>
       {canPreview && (
         <Dialog open={open} onOpenChange={setOpen}>
@@ -302,6 +302,43 @@ function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforc
         </Dialog>
       )}
     </>
+  );
+}
+
+// Matches relative file paths that appear inline in prose (e.g. "content/report.md").
+// Requires a known extension; tolerates hyphens, dots, underscores and slashes.
+const INLINE_FILE_REGEX = /(?:[\w.\-]+\/)*[\w.\-]+\.(?:md|txt|json|yaml|yml|png|jpg|jpeg|gif|webp|svg|bmp|py|ts|js|go|sh|csv|html|xml|toml|log|rs|rb|java|env|conf|cfg|ini)/g;
+
+function TextWithFilePaths({
+  text,
+  workforceId,
+  className,
+}: {
+  text: string;
+  workforceId?: string;
+  className?: string;
+}) {
+  if (!workforceId || !text) return <span className={className}>{text}</span>;
+
+  const parts: Array<{ kind: 'text' | 'file'; value: string }> = [];
+  let lastIndex = 0;
+  INLINE_FILE_REGEX.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = INLINE_FILE_REGEX.exec(text)) !== null) {
+    if (match.index > lastIndex) parts.push({ kind: 'text', value: text.slice(lastIndex, match.index) });
+    parts.push({ kind: 'file', value: match[0] });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) parts.push({ kind: 'text', value: text.slice(lastIndex) });
+
+  return (
+    <span className={className}>
+      {parts.map((p, i) =>
+        p.kind === 'file'
+          ? <WorkspaceFilePath key={i} relPath={p.value} workforceId={workforceId} displayText={p.value} />
+          : <React.Fragment key={i}>{p.value}</React.Fragment>
+      )}
+    </span>
   );
 }
 
@@ -539,7 +576,7 @@ function DiscussionPanel({ agents, discussionMessages, isPlanning, leaderAgentId
   );
 }
 
-function ReviewPanel({ agents, messages, leaderAgentId }: { agents: Agent[]; messages: Message[]; leaderAgentId?: string }) {
+function ReviewPanel({ agents, messages, leaderAgentId, workforceId }: { agents: Agent[]; messages: Message[]; leaderAgentId?: string; workforceId?: string }) {
   const [expanded, setExpanded] = useState(false);
   const reviewMsgs = messages.filter(m => m.phase === 'review');
   const leaderResponse = reviewMsgs.find(m => m.role === 'assistant');
@@ -591,14 +628,17 @@ function ReviewPanel({ agents, messages, leaderAgentId }: { agents: Agent[]; mes
       {expanded && (
         <div className='p-4 space-y-3'>
           {summary && (
-            <p className='text-[12px] leading-relaxed text-[#EAEAEA]/80'>{summary}</p>
+            <p className='text-[12px] leading-relaxed text-[#EAEAEA]/80'>
+              <TextWithFilePaths text={summary} workforceId={workforceId} />
+            </p>
           )}
           {highlights.length > 0 && (
             <div className='space-y-1'>
               <p className='text-[10px] font-semibold text-[#56D090]/70 uppercase tracking-wider'>Strengths</p>
               {highlights.map((h, i) => (
                 <div key={i} className='flex items-start gap-2 text-[11px] text-[#EAEAEA]/65'>
-                  <span className='mt-0.5 text-[#56D090]'>+</span>{h}
+                  <span className='mt-0.5 text-[#56D090]'>+</span>
+                  <TextWithFilePaths text={h} workforceId={workforceId} />
                 </div>
               ))}
             </div>
@@ -608,13 +648,16 @@ function ReviewPanel({ agents, messages, leaderAgentId }: { agents: Agent[]; mes
               <p className='text-[10px] font-semibold text-[#FFBF47]/70 uppercase tracking-wider'>Issues</p>
               {issues.map((issue, i) => (
                 <div key={i} className='flex items-start gap-2 text-[11px] text-[#EAEAEA]/65'>
-                  <span className='mt-0.5 text-[#FFBF47]'>!</span>{issue}
+                  <span className='mt-0.5 text-[#FFBF47]'>!</span>
+                  <TextWithFilePaths text={issue} workforceId={workforceId} />
                 </div>
               ))}
             </div>
           )}
           {!summary && !highlights.length && !issues.length && (
-            <p className='text-[11px] text-muted-foreground/50 whitespace-pre-wrap'>{leaderResponse.content}</p>
+            <p className='text-[11px] text-muted-foreground/50 whitespace-pre-wrap'>
+              <TextWithFilePaths text={leaderResponse.content} workforceId={workforceId} />
+            </p>
           )}
           <p className='text-[10px] text-muted-foreground/30'>{new Date(leaderResponse.created_at).toLocaleString()}</p>
         </div>
@@ -2842,21 +2885,27 @@ export default function ExecutionDetailPage() {
                   </div>
                   {summary ? (
                     <>
-                      <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/90'>{summary}</p>
+                      <p className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/90'>
+                        <TextWithFilePaths text={summary} workforceId={workforce?.id} />
+                      </p>
                       {/* Show other fields from completion signal beyond status/summary */}
                       {isCompletionSignal && Object.entries(parsed!).filter(([k]) => k !== 'status' && k !== 'summary').length > 0 && (
                         <div className='space-y-1.5 border-t border-[#56D090]/20 pt-3'>
                           {Object.entries(parsed!).filter(([k]) => k !== 'status' && k !== 'summary').map(([k, v]) => (
                             <div key={k}>
                               <span className='text-[10px] font-semibold uppercase text-[#56D090]/60'>{k}</span>
-                              <p className='text-xs text-[#EAEAEA]/70 whitespace-pre-wrap'>{typeof v === 'string' ? v : JSON.stringify(v, null, 2)}</p>
+                              <p className='text-xs text-[#EAEAEA]/70 whitespace-pre-wrap'>
+                                <TextWithFilePaths text={typeof v === 'string' ? v : JSON.stringify(v, null, 2)} workforceId={workforce?.id} />
+                              </p>
                             </div>
                           ))}
                         </div>
                       )}
                     </>
                   ) : (
-                    <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/90'>{execution.result}</div>
+                    <div className='whitespace-pre-wrap break-words text-sm leading-relaxed text-[#EAEAEA]/90'>
+                      <TextWithFilePaths text={execution.result} workforceId={workforce?.id} />
+                    </div>
                   )}
                 </div>
               );
@@ -2987,6 +3036,7 @@ export default function ExecutionDetailPage() {
                 agents={orderedAgents}
                 messages={reviewMessages}
                 leaderAgentId={workforce?.leader_agent_id}
+                workforceId={workforce?.id}
               />
             )}
 
