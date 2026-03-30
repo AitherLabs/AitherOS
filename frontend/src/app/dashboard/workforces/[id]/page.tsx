@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Badge } from '@/components/ui/badge';
@@ -63,7 +63,7 @@ const BRIEF_INTERVAL_OPTIONS = [
   { value: 480,  label: 'Every 8 hours' },
   { value: 1440, label: 'Every 24 hours' },
 ];
-import api, { ActivityEvent, Agent, Approval, Credential, Execution, KanbanTask, KanbanStatus, KnowledgeEntry, MCPServer, MCPToolDefinition, Project, Workforce } from '@/lib/api';
+import api, { Agent, AgentChat, Approval, Credential, Execution, ExecutionMode, KanbanTask, KnowledgeEntry, MCPServer, MCPToolDefinition, Project, Workforce } from '@/lib/api';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { KanbanBoard } from '@/components/kanban-board';
@@ -155,6 +155,269 @@ function timeAgo(date: string): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+type WorkforceChatRole = 'user' | 'assistant' | 'error';
+
+type WorkforceChatInputMode = 'text' | 'media';
+
+interface WorkforceChatToolCall {
+  name: string;
+  args?: Record<string, unknown>;
+  result?: string;
+}
+
+interface WorkforceChatMeta {
+  workforceId: string;
+  inputMode?: WorkforceChatInputMode;
+  projectId?: string;
+  projectName?: string;
+  taskId?: string;
+  taskTitle?: string;
+  knowledgeId?: string;
+  knowledgeTitle?: string;
+  executionId?: string;
+  executionTitle?: string;
+  filename?: string;
+  prompt?: string;
+}
+
+interface WorkforceChatMessage {
+  id: string;
+  role: WorkforceChatRole;
+  content: string;
+  createdAt: string;
+  toolCalls?: WorkforceChatToolCall[];
+  images?: string[];
+  meta?: WorkforceChatMeta;
+}
+
+interface WorkforceChatGroup {
+  id: string;
+  role: WorkforceChatRole;
+  createdAt: string;
+  messages: WorkforceChatMessage[];
+}
+
+const WORKFORCE_CHAT_SCOPE_PREFIX = '[WFCHAT]';
+const CHAT_GROUP_WINDOW_MS = 5 * 60 * 1000;
+const CHAT_IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
+
+function isMediaModelType(modelType?: string): boolean {
+  const normalized = (modelType || '').trim().toLowerCase();
+  return normalized === 'image' || normalized === 'video' || normalized === 'audio';
+}
+
+function encodeWorkforceChatContent(content: string, meta: WorkforceChatMeta): string {
+  return `${WORKFORCE_CHAT_SCOPE_PREFIX}${JSON.stringify(meta)}\n${content}`;
+}
+
+function decodeWorkforceChatContent(raw: string): { content: string; meta?: WorkforceChatMeta } {
+  if (!raw.startsWith(WORKFORCE_CHAT_SCOPE_PREFIX)) {
+    return { content: raw };
+  }
+
+  const payload = raw.slice(WORKFORCE_CHAT_SCOPE_PREFIX.length);
+  const newlineIdx = payload.indexOf('\n');
+  if (newlineIdx < 0) {
+    return { content: payload };
+  }
+
+  const header = payload.slice(0, newlineIdx);
+  const body = payload.slice(newlineIdx + 1);
+  try {
+    const parsed = JSON.parse(header) as WorkforceChatMeta;
+    return { content: body, meta: parsed };
+  } catch {
+    return { content: body || raw };
+  }
+}
+
+function toChatDayKey(date: string): string {
+  const dt = new Date(date);
+  return `${dt.getFullYear()}-${dt.getMonth()}-${dt.getDate()}`;
+}
+
+function formatChatDayLabel(date: string): string {
+  const target = new Date(date);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+
+  if (sameDay(target, today)) return 'Today';
+  if (sameDay(target, yesterday)) return 'Yesterday';
+  return target.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function buildWorkforceChatGroups(messages: WorkforceChatMessage[]): WorkforceChatGroup[] {
+  const groups: WorkforceChatGroup[] = [];
+
+  for (const message of messages) {
+    const lastGroup = groups[groups.length - 1];
+    if (!lastGroup) {
+      groups.push({ id: message.id, role: message.role, createdAt: message.createdAt, messages: [message] });
+      continue;
+    }
+
+    const sameRole = lastGroup.role === message.role;
+    const sameDay = toChatDayKey(lastGroup.createdAt) === toChatDayKey(message.createdAt);
+    const closeInTime = Math.abs(new Date(message.createdAt).getTime() - new Date(lastGroup.createdAt).getTime()) <= CHAT_GROUP_WINDOW_MS;
+    const canMerge = sameRole && sameDay && closeInTime && message.role !== 'error';
+
+    if (!canMerge) {
+      groups.push({ id: message.id, role: message.role, createdAt: message.createdAt, messages: [message] });
+      continue;
+    }
+
+    lastGroup.messages.push(message);
+    lastGroup.createdAt = message.createdAt;
+  }
+
+  return groups;
+}
+
+function mapAgentChatToWorkforceMessage(chat: AgentChat, workforceId: string): WorkforceChatMessage | null {
+  const parsed = decodeWorkforceChatContent(chat.content || '');
+  if (!parsed.meta || parsed.meta.workforceId !== workforceId) {
+    return null;
+  }
+
+  const toolCalls: WorkforceChatToolCall[] = Array.isArray(chat.tool_calls)
+    ? chat.tool_calls.map((tc) => ({
+        name: tc?.name || 'tool',
+        args: (tc?.args || {}) as Record<string, unknown>,
+        result: typeof tc?.result === 'string' ? tc.result : JSON.stringify(tc?.result || {})
+      }))
+    : [];
+
+  const content = parsed.content || '';
+  const role: WorkforceChatRole = chat.role === 'assistant' || chat.role === 'error' ? chat.role : 'user';
+  const images = extractChatImages(content, toolCalls);
+
+  return {
+    id: chat.id,
+    role,
+    content,
+    createdAt: chat.created_at,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    images: images.length > 0 ? images : undefined,
+    meta: parsed.meta
+  };
+}
+
+function resolveWorkforceChatImageUrl(raw: string, workforceId?: string): string {
+  const resolved = resolveChatMediaUrl(raw);
+  if (!resolved) return '';
+  if (/^(data:|blob:|https?:\/\/)/i.test(resolved)) return resolved;
+
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
+
+  if (/^\/uploads\//i.test(resolved) || /^\/api\//i.test(resolved)) {
+    return apiBase ? `${apiBase}${resolved}` : resolved;
+  }
+
+  const wfID = (workforceId || '').trim();
+  if (!wfID) return resolved;
+
+  let rel = resolved.replace(/^\/+/, '');
+  if (!rel) return resolved;
+  if (!rel.includes('/') && CHAT_IMAGE_EXT_RE.test(rel)) {
+    rel = `generated/${rel}`;
+  }
+
+  const filePath = `/api/v1/workforces/${wfID}/files?path=${encodeURIComponent(rel)}`;
+  return apiBase ? `${apiBase}${filePath}` : filePath;
+}
+
+function resolveChatMediaUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/[),.;]+$/, '');
+  if (!trimmed) return '';
+  if (/^(data:|blob:|https?:\/\/)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('/')) {
+    const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
+    return apiBase ? `${apiBase}${trimmed}` : trimmed;
+  }
+  return trimmed;
+}
+
+function looksLikeImageRef(candidate: string): boolean {
+  return (
+    /^data:image\//i.test(candidate) ||
+    CHAT_IMAGE_EXT_RE.test(candidate) ||
+    /\/api\/v1\/(media|files)\//i.test(candidate) ||
+    /\/uploads\//i.test(candidate)
+  );
+}
+
+function collectImageRefs(value: unknown): string[] {
+  if (value == null) return [];
+
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return [];
+
+    const refs: string[] = [];
+    const markdownImageRe = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+    let markdownMatch: RegExpExecArray | null;
+    while ((markdownMatch = markdownImageRe.exec(text)) !== null) {
+      refs.push(markdownMatch[1]);
+    }
+
+    const urlRe = /(https?:\/\/[^\s"'`<>]+|\/[^\s"'`<>]+)/g;
+    let urlMatch: RegExpExecArray | null;
+    while ((urlMatch = urlRe.exec(text)) !== null) {
+      const candidate = urlMatch[1];
+      if (looksLikeImageRef(candidate)) refs.push(candidate);
+    }
+
+    if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+      try {
+        refs.push(...collectImageRefs(JSON.parse(text)));
+      } catch {
+        // Ignore non-JSON text payloads.
+      }
+    }
+
+    return refs;
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectImageRefs(entry));
+  }
+
+  if (typeof value === 'object') {
+    const refs: string[] = [];
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof nested === 'string' && /(image|thumbnail|preview|url|uri|path|file)/i.test(key)) {
+        refs.push(nested);
+      }
+      refs.push(...collectImageRefs(nested));
+    }
+    return refs;
+  }
+
+  return [];
+}
+
+function extractChatImages(content: string, toolCalls: WorkforceChatToolCall[] = []): string[] {
+  const raw = [
+    ...collectImageRefs(content),
+    ...toolCalls.flatMap((tc) => collectImageRefs(tc.result || '')),
+    ...toolCalls.flatMap((tc) => collectImageRefs(tc.args || {}))
+  ];
+
+  const seen = new Set<string>();
+  const images: string[] = [];
+  for (const ref of raw) {
+    const resolved = resolveChatMediaUrl(ref);
+    if (!resolved || !looksLikeImageRef(resolved) || seen.has(resolved)) continue;
+    seen.add(resolved);
+    images.push(resolved);
+  }
+  return images;
 }
 
 const KB_SOURCE_STYLE: Record<string, { color: string; bg: string; border: string; label: string }> = {
@@ -249,6 +512,8 @@ export default function WorkforceDetailPage() {
   const [execOpen, setExecOpen] = useState(false);
   const [execObjective, setExecObjective] = useState('');
   const [execRunning, setExecRunning] = useState(false);
+  const [execMode, setExecMode] = useState<ExecutionMode>('all_agents');
+  const [execSingleAgentId, setExecSingleAgentId] = useState('');
   const [preflight, setPreflight] = useState<{ ok: boolean; checks: { name: string; ok: boolean; detail: string }[] } | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -289,8 +554,25 @@ export default function WorkforceDetailPage() {
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [approvalsLoading, setApprovalsLoading] = useState(false);
 
-  // Activity state
-  const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([]);
+  // Tasks (for quick workforce chat context)
+  const [kanbanTasks, setKanbanTasks] = useState<KanbanTask[]>([]);
+
+  // Workforce quick chat state
+  const [chatAgentId, setChatAgentId] = useState('');
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const [chatByAgent, setChatByAgent] = useState<Record<string, WorkforceChatMessage[]>>({});
+  const [chatProjectId, setChatProjectId] = useState('');
+  const [chatTaskId, setChatTaskId] = useState('');
+  const [chatKnowledgeId, setChatKnowledgeId] = useState('');
+  const [chatExecutionId, setChatExecutionId] = useState('');
+  const [chatMediaPrompt, setChatMediaPrompt] = useState('');
+  const [chatFilename, setChatFilename] = useState('');
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
+  const [chatLoadedByAgent, setChatLoadedByAgent] = useState<Record<string, boolean>>({});
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatHistoryFetchingRef = useRef<Record<string, boolean>>({});
 
   // Workspace provisioning
   const [provisioning, setProvisioning] = useState(false);
@@ -395,14 +677,6 @@ export default function WorkforceDetailPage() {
         setPendingApprovalCount(0);
       }
 
-      // Load activity events
-      try {
-        const actRes = await api.listActivity(wfId, 30);
-        setActivityEvents(actRes.data || []);
-      } catch {
-        setActivityEvents([]);
-      }
-
       // Load credentials
       try {
         const credsRes = await api.listCredentials(wfId);
@@ -418,6 +692,14 @@ export default function WorkforceDetailPage() {
       } catch {
         setProjects([]);
       }
+
+      // Load kanban tasks (quick chat contextual selector)
+      try {
+        const taskRes = await api.listKanbanTasks(wfId);
+        setKanbanTasks(taskRes.data || []);
+      } catch {
+        setKanbanTasks([]);
+      }
     } catch (err) {
       console.error('Failed to load workforce:', err);
     } finally {
@@ -429,6 +711,65 @@ export default function WorkforceDetailPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    if (agents.length === 0) {
+      setChatAgentId('');
+      return;
+    }
+    setChatAgentId((prev) => (prev && agents.some((a) => a.id === prev) ? prev : agents[0].id));
+  }, [agents]);
+
+  useEffect(() => {
+    if (!chatTaskId) return;
+    const taskStillVisible = kanbanTasks.some((task) => task.id === chatTaskId && (!chatProjectId || task.project_id === chatProjectId));
+    if (!taskStillVisible) setChatTaskId('');
+  }, [chatTaskId, chatProjectId, kanbanTasks]);
+
+  useEffect(() => {
+    setChatInput('');
+    setChatMediaPrompt('');
+    setChatFilename('');
+    setChatError('');
+  }, [chatAgentId]);
+
+  useEffect(() => {
+    if (!chatAgentId || !workforce?.id || !session?.accessToken) return;
+    if (chatLoadedByAgent[chatAgentId]) return;
+    if (chatHistoryFetchingRef.current[chatAgentId]) return;
+
+    let cancelled = false;
+    chatHistoryFetchingRef.current[chatAgentId] = true;
+    setChatHistoryLoading(true);
+
+    api.setToken(session.accessToken);
+    api
+      .listAgentChats(chatAgentId)
+      .then((res) => {
+        if (cancelled) return;
+        const persisted = (res.data || [])
+          .map((entry) => mapAgentChatToWorkforceMessage(entry, workforce.id))
+          .filter((entry): entry is WorkforceChatMessage => Boolean(entry));
+        setChatByAgent((prev) => ({ ...prev, [chatAgentId]: persisted }));
+        setChatLoadedByAgent((prev) => ({ ...prev, [chatAgentId]: true }));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('Load workforce chat history failed:', err);
+      })
+      .finally(() => {
+        chatHistoryFetchingRef.current[chatAgentId] = false;
+        if (!cancelled) setChatHistoryLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chatAgentId, session?.accessToken, workforce?.id]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatByAgent, chatAgentId]);
 
   function openEdit() {
     if (!workforce) return;
@@ -506,11 +847,21 @@ export default function WorkforceDetailPage() {
 
   async function handleStartExec() {
     if (!execObjective.trim()) return;
+    if (execMode === 'single_agent' && !execSingleAgentId) return;
     setExecRunning(true);
     try {
-      const res = await api.startExecution(wfId, execObjective);
+      const res = await api.startExecution(
+        wfId,
+        execObjective,
+        undefined,
+        undefined,
+        execMode,
+        execMode === 'single_agent' ? execSingleAgentId : undefined
+      );
       setExecOpen(false);
       setExecObjective('');
+      setExecMode('all_agents');
+      setExecSingleAgentId('');
       setPreflight(null);
       if (res.data?.id) {
         router.push(`/dashboard/executions/${res.data.id}`);
@@ -634,6 +985,216 @@ export default function WorkforceDetailPage() {
     }
   }
 
+  async function handleSendWorkforceChat() {
+    if (!workforce || !chatAgentId || chatLoading) return;
+
+    const selectedAgent = agents.find((a) => a.id === chatAgentId);
+    if (!selectedAgent) return;
+
+    const mediaMode = isMediaModelType(selectedAgent.model_type);
+    const mediaPrompt = chatMediaPrompt.trim();
+    const filename = chatFilename.trim();
+    const plainMessage = chatInput.trim();
+
+    if (mediaMode) {
+      if (!mediaPrompt || !filename) {
+        setChatError('Prompt and filename are required for media generator models.');
+        return;
+      }
+    } else if (!plainMessage) {
+      return;
+    }
+
+    const selectedProject = projects.find((p) => p.id === chatProjectId);
+    const selectedTask = kanbanTasks.find((t) => t.id === chatTaskId);
+    const selectedKnowledge = knowledgeEntries.find((k) => k.id === chatKnowledgeId);
+    const selectedExecution = executions.find((e) => e.id === chatExecutionId);
+
+    const rawMessage = mediaMode
+      ? `Prompt: ${mediaPrompt}\nFilename: ${filename}`
+      : plainMessage;
+
+    const agentID = chatAgentId;
+    const previous = chatByAgent[agentID] || [];
+    const history = previous
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    const chatMeta: WorkforceChatMeta = {
+      workforceId: workforce.id,
+      inputMode: mediaMode ? 'media' : 'text',
+      projectId: selectedProject?.id,
+      projectName: selectedProject?.name,
+      taskId: selectedTask?.id,
+      taskTitle: selectedTask?.title,
+      knowledgeId: selectedKnowledge?.id,
+      knowledgeTitle: selectedKnowledge?.title || selectedKnowledge?.id,
+      executionId: selectedExecution?.id,
+      executionTitle: selectedExecution?.title || selectedExecution?.objective,
+      filename: filename || undefined,
+      prompt: mediaPrompt || undefined
+    };
+
+    const contextLines = [
+      `workforce=${workforce.name} (${workforce.id})`,
+      selectedProject ? `project=${selectedProject.name}` : '',
+      selectedTask ? `task=${selectedTask.title}` : '',
+      selectedKnowledge ? `knowledge=${selectedKnowledge.title || selectedKnowledge.id}` : '',
+      selectedExecution ? `past_execution=${selectedExecution.title || selectedExecution.objective}` : '',
+      mediaMode && filename ? `preferred_filename=${filename}` : ''
+    ].filter(Boolean);
+
+    const requestBlock = mediaMode
+      ? [
+          'Media request:',
+          `- prompt: ${mediaPrompt}`,
+          `- filename: ${filename}`,
+          '- constraint: generate only one asset and return its output path'
+        ].join('\n')
+      : `User request:\n${plainMessage}`;
+
+    const contextualMessage = contextLines.length > 0
+      ? `Context:\n- ${contextLines.join('\n- ')}\n\n${requestBlock}`
+      : requestBlock;
+
+    const chatInputs: Record<string, string> = {
+      workforce_id: workforce.id,
+      workforce_name: workforce.name,
+      request_mode: mediaMode ? 'media_asset_generation' : 'workforce_chat'
+    };
+    if (selectedProject) {
+      chatInputs.project = selectedProject.name;
+      chatInputs.project_id = selectedProject.id;
+    }
+    if (selectedTask) {
+      chatInputs.task = selectedTask.title;
+      chatInputs.task_id = selectedTask.id;
+    }
+    if (selectedKnowledge) {
+      chatInputs.knowledge = (selectedKnowledge.content || '').slice(0, 1200);
+      chatInputs.knowledge_id = selectedKnowledge.id;
+    }
+    if (selectedExecution) {
+      chatInputs.past_execution = selectedExecution.title || selectedExecution.objective || '';
+      chatInputs.past_execution_id = selectedExecution.id;
+    }
+    if (mediaMode) {
+      chatInputs.prompt = mediaPrompt;
+      chatInputs.output_filename = filename;
+      chatInputs.media_only = 'true';
+    }
+
+    const userMsg: WorkforceChatMessage = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      content: rawMessage,
+      createdAt: new Date().toISOString(),
+      meta: chatMeta
+    };
+
+    if (mediaMode) {
+      setChatMediaPrompt('');
+      setChatFilename('');
+    } else {
+      setChatInput('');
+    }
+    setChatError('');
+    setChatLoading(true);
+    setChatLoadedByAgent((prev) => ({ ...prev, [agentID]: true }));
+    setChatByAgent((prevState) => ({
+      ...prevState,
+      [agentID]: [...(prevState[agentID] || []), userMsg]
+    }));
+
+    try {
+      await api.createAgentChat(agentID, {
+        role: 'user',
+        content: encodeWorkforceChatContent(rawMessage, chatMeta)
+      });
+    } catch (err) {
+      console.error('Persist workforce user chat failed:', err);
+    }
+
+    try {
+      const res = await api.debugAgent(agentID, contextualMessage, chatInputs, history);
+      const data = res.data;
+      const content = data?.content || JSON.stringify(data, null, 2);
+      const toolCalls: WorkforceChatToolCall[] = Array.isArray(data?.tool_calls)
+        ? data.tool_calls.map((tc: any) => ({
+            name: tc?.name || 'tool',
+            args: (tc?.args || {}) as Record<string, unknown>,
+            result: typeof tc?.result === 'string' ? tc.result : JSON.stringify(tc?.result || {})
+          }))
+        : [];
+      const images = extractChatImages(content, toolCalls);
+
+      const assistantMsg: WorkforceChatMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content,
+        createdAt: new Date().toISOString(),
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        images: images.length > 0 ? images : undefined,
+        meta: chatMeta
+      };
+
+      setChatByAgent((prevState) => ({
+        ...prevState,
+        [agentID]: [...(prevState[agentID] || []), assistantMsg]
+      }));
+
+      try {
+        await api.createAgentChat(agentID, {
+          role: 'assistant',
+          content: encodeWorkforceChatContent(content, chatMeta),
+          tool_calls: toolCalls.map((tc) => ({
+            name: tc.name,
+            args: (tc.args || {}) as Record<string, any>,
+            result: tc.result || ''
+          }))
+        });
+      } catch (err) {
+        console.error('Persist workforce assistant chat failed:', err);
+      }
+    } catch (err: any) {
+      const message = err?.message || 'Failed to send message';
+      setChatError(message);
+      const errorMsg = `Error: ${message}`;
+
+      setChatByAgent((prevState) => ({
+        ...prevState,
+        [agentID]: [
+          ...(prevState[agentID] || []),
+          {
+            id: `error-${Date.now()}`,
+            role: 'error',
+            content: errorMsg,
+            createdAt: new Date().toISOString(),
+            meta: chatMeta
+          }
+        ]
+      }));
+
+      try {
+        await api.createAgentChat(agentID, {
+          role: 'error',
+          content: encodeWorkforceChatContent(errorMsg, chatMeta)
+        });
+      } catch (persistErr) {
+        console.error('Persist workforce error chat failed:', persistErr);
+      }
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
+  function handleWorkforceChatKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendWorkforceChat();
+    }
+  }
+
   if (loading) {
     return (
       <div className='flex h-[80vh] items-center justify-center'>
@@ -654,6 +1215,33 @@ export default function WorkforceDetailPage() {
   }
 
   const sc = statusColors[workforce.status] || statusColors.draft;
+  const selectedChatAgent = agents.find((a) => a.id === chatAgentId) || null;
+  const chatAgentIsMedia = isMediaModelType(selectedChatAgent?.model_type);
+  const activeChatMessages = chatAgentId ? (chatByAgent[chatAgentId] || []) : [];
+  const groupedChatMessages = buildWorkforceChatGroups(activeChatMessages);
+  const selectedChatProject = projects.find((p) => p.id === chatProjectId) || null;
+  const selectedChatTask = kanbanTasks.find((t) => t.id === chatTaskId) || null;
+  const selectedChatKnowledge = knowledgeEntries.find((k) => k.id === chatKnowledgeId) || null;
+  const selectedChatExecution = executions.find((e) => e.id === chatExecutionId) || null;
+  const chatComposerAttachments = [
+    selectedChatProject ? `Project: ${selectedChatProject.name}` : '',
+    selectedChatTask ? `Task: ${selectedChatTask.title}` : '',
+    selectedChatKnowledge ? `Knowledge: ${selectedChatKnowledge.title || selectedChatKnowledge.id.slice(0, 8)}` : '',
+    selectedChatExecution ? `Past execution: ${selectedChatExecution.title || selectedChatExecution.objective}` : ''
+  ].filter(Boolean);
+  const canSendChatMessage = chatAgentIsMedia
+    ? !!chatMediaPrompt.trim() && !!chatFilename.trim() && !chatLoading
+    : !!chatInput.trim() && !chatLoading;
+  const visibleChatTasks = chatProjectId
+    ? kanbanTasks.filter((task) => task.project_id === chatProjectId)
+    : kanbanTasks;
+  const unifiedFeed: Array<
+    | { kind: 'approval'; createdAt: string; approval: Approval }
+    | { kind: 'execution'; createdAt: string; execution: Execution }
+  > = [
+    ...approvals.map((approval) => ({ kind: 'approval' as const, createdAt: approval.created_at, approval })),
+    ...executions.map((execution) => ({ kind: 'execution' as const, createdAt: execution.created_at, execution }))
+  ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   return (
     <div className='flex h-[calc(100vh-64px)] flex-col'>
@@ -1195,6 +1783,377 @@ export default function WorkforceDetailPage() {
                   </Card>
                 );
               })}
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Workforce Quick Chat */}
+          <div>
+            <div className='mb-4 flex items-center justify-between gap-3'>
+              <h3 className='text-sm font-semibold uppercase tracking-wider text-muted-foreground'>
+                <IconRobot className='mr-1 inline h-4 w-4' />
+                Workforce Chat
+              </h3>
+              <span className='text-[10px] text-muted-foreground/70'>Quick tasks without planning/execution pipeline</span>
+            </div>
+
+            <div className='grid gap-4 lg:grid-cols-[230px_minmax(0,1fr)]'>
+              <div className='rounded-xl border border-border/40 bg-[#0A0D11]/35 p-2'>
+                <p className='mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Agents</p>
+                {agents.length === 0 ? (
+                  <p className='px-2 py-3 text-xs text-muted-foreground/60'>Add agents to this workforce to start chatting.</p>
+                ) : (
+                  <div className='space-y-1'>
+                    {agents.map((agent) => {
+                      const active = agent.id === chatAgentId;
+                      return (
+                        <button
+                          key={agent.id}
+                          type='button'
+                          onClick={() => {
+                            setChatAgentId(agent.id);
+                            setChatError('');
+                          }}
+                          className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                            active
+                              ? 'border-[#9A66FF]/50 bg-[#9A66FF]/12'
+                              : 'border-border/30 bg-background/50 hover:bg-muted/25'
+                          }`}
+                        >
+                          <div className='flex items-center gap-2'>
+                            <EntityAvatar
+                              icon={agent.icon}
+                              color={agent.color}
+                              avatarUrl={agent.avatar_url}
+                              name={agent.name}
+                              size='xs'
+                            />
+                            <div className='min-w-0'>
+                              <p className='truncate text-xs font-medium' style={{ color: active ? agent.color : undefined }}>
+                                {agent.name}
+                              </p>
+                              <p className='truncate text-[10px] text-muted-foreground/70'>{agent.model}</p>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className='flex min-h-[720px] flex-col overflow-hidden rounded-xl border border-border/40 bg-background/40 lg:min-h-[780px]'>
+                <div className='space-y-2 border-b border-border/35 bg-[#0A0D11]/25 p-3'>
+                  <div className='grid gap-2 md:grid-cols-2 xl:grid-cols-4'>
+                    <div>
+                      <Label className='text-[10px] text-muted-foreground/80'>Project</Label>
+                      <select
+                        value={chatProjectId}
+                        onChange={(e) => setChatProjectId(e.target.value)}
+                        className='mt-1 w-full rounded-md border border-border/40 bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                      >
+                        <option value=''>None</option>
+                        {projects.map((project) => (
+                          <option key={project.id} value={project.id}>{project.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <Label className='text-[10px] text-muted-foreground/80'>Task</Label>
+                      <select
+                        value={chatTaskId}
+                        onChange={(e) => setChatTaskId(e.target.value)}
+                        className='mt-1 w-full rounded-md border border-border/40 bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                      >
+                        <option value=''>None</option>
+                        {visibleChatTasks.map((task) => (
+                          <option key={task.id} value={task.id}>{task.title}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <Label className='text-[10px] text-muted-foreground/80'>Knowledge</Label>
+                      <select
+                        value={chatKnowledgeId}
+                        onChange={(e) => setChatKnowledgeId(e.target.value)}
+                        className='mt-1 w-full rounded-md border border-border/40 bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                      >
+                        <option value=''>None</option>
+                        {knowledgeEntries.slice(0, 50).map((entry) => (
+                          <option key={entry.id} value={entry.id}>{entry.title || entry.id.slice(0, 8)}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <Label className='text-[10px] text-muted-foreground/80'>Past execution</Label>
+                      <select
+                        value={chatExecutionId}
+                        onChange={(e) => setChatExecutionId(e.target.value)}
+                        className='mt-1 w-full rounded-md border border-border/40 bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                      >
+                        <option value=''>None</option>
+                        {executions.slice(0, 50).map((exec) => (
+                          <option key={exec.id} value={exec.id}>{exec.title || exec.objective}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className='rounded-lg border border-border/30 bg-background/40 px-2.5 py-2'>
+                    <p className='mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Context attachments</p>
+                    {chatComposerAttachments.length > 0 ? (
+                      <div className='flex flex-wrap gap-1.5'>
+                        {chatComposerAttachments.map((label) => (
+                          <span
+                            key={label}
+                            className='rounded-md border border-[#14FFF7]/25 bg-[#14FFF7]/10 px-2 py-0.5 text-[10px] text-[#14FFF7]'
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className='text-[10px] text-muted-foreground/60'>No context selected. Add project/task/knowledge/execution if needed.</p>
+                    )}
+                  </div>
+                </div>
+
+                <ScrollArea className='flex-1 p-3'>
+                  <div className='space-y-3'>
+                    {chatHistoryLoading && activeChatMessages.length === 0 && (
+                      <div className='flex justify-center'>
+                        <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/70 px-3 py-2 text-xs text-muted-foreground'>
+                          <IconLoader2 className='h-3.5 w-3.5 animate-spin' />
+                          Loading conversation history…
+                        </div>
+                      </div>
+                    )}
+
+                    {activeChatMessages.length === 0 && !chatHistoryLoading && (
+                      <div className='flex min-h-44 flex-col items-center justify-center gap-2 text-center'>
+                        <div className='rounded-lg border border-border/40 bg-background/50 px-3 py-1 text-[10px] text-muted-foreground/70'>
+                          {selectedChatAgent
+                            ? `Chatting as ${selectedChatAgent.name} in ${workforce.name}`
+                            : 'Select an agent to start'}
+                        </div>
+                        <p className='text-xs text-muted-foreground/60'>
+                          Great for quick tests, direct asks, or media prompts without planning.
+                        </p>
+                      </div>
+                    )}
+
+                    {groupedChatMessages.map((group, groupIdx) => {
+                      const prevGroup = groupedChatMessages[groupIdx - 1];
+                      const showDateSeparator = !prevGroup || toChatDayKey(prevGroup.createdAt) !== toChatDayKey(group.createdAt);
+                      const isUser = group.role === 'user';
+                      const isError = group.role === 'error';
+
+                      return (
+                        <div key={group.id} className='space-y-2'>
+                          {showDateSeparator && (
+                            <div className='flex items-center gap-2 py-1'>
+                              <div className='h-px flex-1 bg-border/40' />
+                              <span className='rounded-full border border-border/40 bg-background/60 px-2 py-0.5 text-[10px] text-muted-foreground/70'>
+                                {formatChatDayLabel(group.createdAt)}
+                              </span>
+                              <div className='h-px flex-1 bg-border/40' />
+                            </div>
+                          )}
+
+                          <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`max-w-[92%] rounded-2xl px-3 py-2 text-xs ${
+                              isUser
+                                ? 'rounded-tr-sm border border-[#9A66FF]/30 bg-[#9A66FF]/18'
+                                : isError
+                                  ? 'border border-red-500/30 bg-red-500/10 text-red-300'
+                                  : 'rounded-tl-sm border border-border/40 bg-background/70'
+                            }`}>
+                              {!isUser && !isError && selectedChatAgent && (
+                                <div className='mb-1.5 flex items-center justify-between gap-2'>
+                                  <div className='flex items-center gap-1.5'>
+                                    <EntityAvatar
+                                      icon={selectedChatAgent.icon}
+                                      color={selectedChatAgent.color}
+                                      avatarUrl={selectedChatAgent.avatar_url}
+                                      name={selectedChatAgent.name}
+                                      size='xs'
+                                    />
+                                    <span className='text-[10px] font-semibold' style={{ color: selectedChatAgent.color }}>
+                                      {selectedChatAgent.name}
+                                    </span>
+                                  </div>
+                                  <span className='text-[9px] text-muted-foreground/60'>
+                                    {new Date(group.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                </div>
+                              )}
+
+                              <div className='space-y-2'>
+                                {group.messages.map((msg, idx) => {
+                                  const metaTags = [
+                                    msg.meta?.projectName ? `Project · ${msg.meta.projectName}` : '',
+                                    msg.meta?.taskTitle ? `Task · ${msg.meta.taskTitle}` : '',
+                                    msg.meta?.knowledgeTitle ? `Knowledge · ${msg.meta.knowledgeTitle}` : '',
+                                    msg.meta?.executionTitle ? `Past execution · ${msg.meta.executionTitle}` : '',
+                                    msg.meta?.inputMode === 'media' ? 'Media request' : '',
+                                    msg.meta?.filename ? `Filename · ${msg.meta.filename}` : ''
+                                  ].filter(Boolean);
+
+                                  return (
+                                    <div key={msg.id} className={idx > 0 ? 'border-t border-border/20 pt-2' : ''}>
+                                      {metaTags.length > 0 && (
+                                        <div className='mb-1.5 flex flex-wrap gap-1'>
+                                          {metaTags.map((tag) => (
+                                            <span
+                                              key={`${msg.id}-${tag}`}
+                                              className='rounded-md border border-border/40 bg-background/50 px-1.5 py-0.5 text-[9px] text-muted-foreground/85'
+                                            >
+                                              {tag}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      {msg.toolCalls && msg.toolCalls.length > 0 && (
+                                        <div className='mb-1.5 flex flex-wrap gap-1'>
+                                          {msg.toolCalls.map((toolCall, toolIdx) => (
+                                            <Badge
+                                              key={`${msg.id}-tool-${toolIdx}`}
+                                              variant='outline'
+                                              className='border-[#14FFF7]/30 bg-[#14FFF7]/10 text-[9px] text-[#14FFF7]'
+                                            >
+                                              {toolCall.name}
+                                            </Badge>
+                                          ))}
+                                        </div>
+                                      )}
+
+                                      <p className='whitespace-pre-wrap break-words leading-relaxed'>{msg.content}</p>
+
+                                      {msg.images && msg.images.length > 0 && (
+                                        <div className='mt-2 grid gap-2 sm:grid-cols-2'>
+                                          {msg.images.map((imgUrl, imageIdx) => {
+                                            const resolvedImageUrl = resolveWorkforceChatImageUrl(
+                                              imgUrl,
+                                              msg.meta?.workforceId || workforce.id
+                                            );
+                                            return (
+                                            <a
+                                              key={`${msg.id}-img-${imageIdx}`}
+                                              href={resolvedImageUrl}
+                                              target='_blank'
+                                              rel='noreferrer'
+                                              className='group overflow-hidden rounded-lg border border-border/40 bg-[#0A0D11]/60'
+                                            >
+                                              <img
+                                                src={resolvedImageUrl}
+                                                alt='Generated media output'
+                                                className='h-56 w-full object-cover transition-transform duration-200 group-hover:scale-[1.02] lg:h-64'
+                                                loading='lazy'
+                                              />
+                                            </a>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+
+                                      <p className='mt-1 text-right text-[9px] text-muted-foreground/50'>
+                                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                      </p>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {chatLoading && (
+                      <div className='flex justify-start'>
+                        <div className='flex items-center gap-2 rounded-lg border border-border/40 bg-background/60 px-3 py-2 text-xs text-muted-foreground'>
+                          <IconLoader2 className='h-3.5 w-3.5 animate-spin' />
+                          Thinking…
+                        </div>
+                      </div>
+                    )}
+
+                    <div ref={chatEndRef} />
+                  </div>
+                </ScrollArea>
+
+                <div className='border-t border-border/35 p-3'>
+                  {chatError && (
+                    <p className='mb-2 text-xs text-red-400'>{chatError}</p>
+                  )}
+                  <div className='mb-2 flex flex-wrap gap-1.5'>
+                    {chatComposerAttachments.map((label) => (
+                      <span
+                        key={`composer-${label}`}
+                        className='rounded-md border border-border/40 bg-background/50 px-2 py-0.5 text-[10px] text-muted-foreground/90'
+                      >
+                        {label}
+                      </span>
+                    ))}
+                    {chatAgentIsMedia && (
+                      <span className='rounded-md border border-[#56D090]/30 bg-[#56D090]/12 px-2 py-0.5 text-[10px] text-[#56D090]'>
+                        Media mode · prompt + filename required
+                      </span>
+                    )}
+                    {chatComposerAttachments.length === 0 && !chatAgentIsMedia && (
+                      <span className='text-[10px] text-muted-foreground/60'>No context attached</span>
+                    )}
+                  </div>
+
+                  <div className='flex flex-col gap-2'>
+                    {chatAgentIsMedia ? (
+                      <>
+                        <Textarea
+                          value={chatMediaPrompt}
+                          onChange={(e) => setChatMediaPrompt(e.target.value)}
+                          placeholder='Prompt: describe the image to generate'
+                          rows={3}
+                          className='min-h-[80px] resize-none text-xs'
+                        />
+                        <Input
+                          value={chatFilename}
+                          onChange={(e) => setChatFilename(e.target.value)}
+                          placeholder='Filename: output-image.png'
+                          className='h-9 text-xs'
+                        />
+                      </>
+                    ) : (
+                      <Textarea
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={handleWorkforceChatKeyDown}
+                        placeholder='Message selected agent in this workforce context...'
+                        rows={3}
+                        className='min-h-[70px] resize-none text-xs'
+                      />
+                    )}
+
+                    <div className='flex items-center justify-between gap-2'>
+                      <p className='text-[10px] text-muted-foreground/60'>
+                        {chatAgentIsMedia
+                          ? 'Only prompt + filename are accepted for media generators.'
+                          : 'Press Enter to send. Shift+Enter for a new line.'}
+                      </p>
+                      <Button
+                        size='sm'
+                        className='h-9 shrink-0 bg-[#56D090] px-3 text-[#0A0D11] hover:bg-[#56D090]/90'
+                        disabled={!chatAgentId || !canSendChatMessage}
+                        onClick={handleSendWorkforceChat}
+                      >
+                        {chatLoading ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : <IconArrowRight className='mr-1 h-4 w-4' />}
+                        Send
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1811,200 +2770,16 @@ export default function WorkforceDetailPage() {
 
           <Separator />
 
-          {/* Approvals */}
+          {/* Execution Feed (Approvals + Executions) */}
           <div>
             <div className='mb-4 flex items-center justify-between'>
               <h3 className='text-sm font-semibold uppercase tracking-wider text-muted-foreground'>
-                Approvals
+                Execution Feed
                 {pendingApprovalCount > 0 && (
                   <Badge className='ml-2 text-[9px]' style={{ backgroundColor: '#FFBF47', color: '#0A0D11' }}>
-                    {pendingApprovalCount} pending
+                    {pendingApprovalCount} pending approvals
                   </Badge>
                 )}
-              </h3>
-            </div>
-
-            {approvals.length === 0 ? (
-              <div className='flex h-20 items-center justify-center rounded-lg border border-dashed border-border/50'>
-                <p className='text-xs text-muted-foreground'>
-                  No approvals yet. They are created automatically when executions need review.
-                </p>
-              </div>
-            ) : (
-              <div className='space-y-2'>
-                {approvals.slice(0, 10).map((approval) => {
-                  const isPending = approval.status === 'pending';
-                  const isApproved = approval.status === 'approved';
-                  const statusColor = isPending ? '#FFBF47' : isApproved ? '#56D090' : '#EF4444';
-                  const statusLabel = isPending ? 'Pending' : isApproved ? 'Approved' : approval.status === 'rejected' ? 'Rejected' : approval.status;
-                  return (
-                    <div
-                      key={approval.id}
-                      className='rounded-lg border border-border/40 bg-background/50 p-3'
-                      style={isPending ? { borderColor: '#FFBF4740' } : undefined}
-                    >
-                      <div className='flex items-start justify-between gap-2'>
-                        <div className='min-w-0 flex-1'>
-                          <div className='flex items-center gap-2'>
-                            <p className='text-xs font-medium'>{approval.title || 'Untitled'}</p>
-                            <Badge variant='outline' className='text-[9px]' style={{
-                              backgroundColor: statusColor + '15',
-                              borderColor: statusColor + '30',
-                              color: statusColor
-                            }}>
-                              {statusLabel}
-                            </Badge>
-                            <Badge variant='outline' className='text-[9px]' style={{
-                              backgroundColor: '#9A66FF15',
-                              borderColor: '#9A66FF30',
-                              color: '#9A66FF'
-                            }}>
-                              {(approval.action_type || '').replace('_', ' ')}
-                            </Badge>
-                          </div>
-                          {approval.description && (
-                            <p className='mt-1 text-[10px] text-muted-foreground line-clamp-2'>
-                              {approval.description}
-                            </p>
-                          )}
-                          <div className='mt-1 flex items-center gap-3 text-[9px] text-muted-foreground/60'>
-                            <span>by {approval.requested_by}</span>
-                            {approval.confidence > 0 && (
-                              <span>confidence: {Math.round(approval.confidence * 100)}%</span>
-                            )}
-                            {Object.keys(approval.rubric_scores || {}).length > 0 && (
-                              <span>
-                                rubric: {Object.entries(approval.rubric_scores).map(([k, v]) => `${k}=${v}`).join(', ')}
-                              </span>
-                            )}
-                            <span>{timeAgo(approval.created_at)}</span>
-                            {approval.resolved_at && (
-                              <span>resolved {timeAgo(approval.resolved_at)} by {approval.resolved_by}</span>
-                            )}
-                          </div>
-                          {approval.reviewer_notes && (
-                            <p className='mt-1 text-[10px] italic text-muted-foreground'>
-                              &quot;{approval.reviewer_notes}&quot;
-                            </p>
-                          )}
-                        </div>
-                        {isPending && (
-                          <div className='flex shrink-0 gap-1'>
-                            <Button
-                              size='sm'
-                              variant='outline'
-                              className='h-7 px-2 text-[10px] text-[#56D090] hover:bg-[#56D090]/10 hover:text-[#56D090]'
-                              disabled={approvalsLoading}
-                              onClick={() => handleResolveApproval(approval.id, true)}
-                            >
-                              Approve
-                            </Button>
-                            <Button
-                              size='sm'
-                              variant='outline'
-                              className='h-7 px-2 text-[10px] text-[#EF4444] hover:bg-[#EF4444]/10 hover:text-[#EF4444]'
-                              disabled={approvalsLoading}
-                              onClick={() => handleResolveApproval(approval.id, false)}
-                            >
-                              Reject
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-                {approvals.length > 10 && (
-                  <p className='text-center text-[10px] text-muted-foreground'>
-                    Showing 10 of {approvals.length} approvals
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-
-          <Separator />
-
-          {/* Activity Timeline */}
-          <div>
-            <div className='mb-4 flex items-center justify-between'>
-              <h3 className='text-sm font-semibold uppercase tracking-wider text-muted-foreground'>
-                Activity Timeline
-              </h3>
-              <span className='text-[10px] text-muted-foreground'>{activityEvents.length} events</span>
-            </div>
-
-            {activityEvents.length === 0 ? (
-              <div className='flex h-20 items-center justify-center rounded-lg border border-dashed border-border/50'>
-                <p className='text-xs text-muted-foreground'>
-                  No activity recorded yet.
-                </p>
-              </div>
-            ) : (
-              <div className='relative ml-3 border-l border-border/40 pl-4'>
-                {activityEvents.slice(0, 20).map((evt) => {
-                  const actionColor =
-                    (evt.action || '').includes('completed') ? '#56D090' :
-                    (evt.action || '').includes('failed') ? '#EF4444' :
-                    (evt.action || '').includes('approved') ? '#56D090' :
-                    (evt.action || '').includes('rejected') ? '#EF4444' :
-                    (evt.action || '').includes('started') ? '#9A66FF' :
-                    (evt.action || '').includes('halted') ? '#FFBF47' :
-                    (evt.action || '').includes('created') ? '#14FFF7' :
-                    '#888';
-                  const actorIcon =
-                    evt.actor_type === 'user' ? '👤' :
-                    evt.actor_type === 'agent' ? '🤖' : '⚙️';
-                  return (
-                    <div key={evt.id} className='relative mb-3 pb-3 last:mb-0 last:pb-0'>
-                      <div
-                        className='absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full border-2 border-background'
-                        style={{ backgroundColor: actionColor }}
-                      />
-                      <div className='flex items-start justify-between gap-2'>
-                        <div className='min-w-0 flex-1'>
-                          <div className='flex items-center gap-1.5'>
-                            <span className='text-[10px]'>{actorIcon}</span>
-                            <Badge variant='outline' className='text-[8px] px-1 py-0' style={{
-                              backgroundColor: actionColor + '15',
-                              borderColor: actionColor + '30',
-                              color: actionColor
-                            }}>
-                              {(evt.action || '').replace(/\./g, ' ')}
-                            </Badge>
-                            {evt.actor_name && (
-                              <span className='text-[9px] text-muted-foreground'>
-                                by {evt.actor_name}
-                              </span>
-                            )}
-                          </div>
-                          <p className='mt-0.5 text-[10px] text-muted-foreground/80'>
-                            {evt.summary || (evt.action || '')}
-                          </p>
-                        </div>
-                        <span className='shrink-0 text-[9px] text-muted-foreground/50'>
-                          {timeAgo(evt.created_at)}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-                {activityEvents.length > 20 && (
-                  <p className='mt-2 text-center text-[10px] text-muted-foreground'>
-                    Showing 20 of {activityEvents.length} events
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-
-          <Separator />
-
-          {/* Execution History */}
-          <div>
-            <div className='mb-4 flex items-center justify-between'>
-              <h3 className='text-sm font-semibold uppercase tracking-wider text-muted-foreground'>
-                Execution History
               </h3>
               <Button
                 size='sm'
@@ -2019,27 +2794,120 @@ export default function WorkforceDetailPage() {
               </Button>
             </div>
 
-            {executions.length === 0 ? (
+            {unifiedFeed.length === 0 ? (
               <div className='flex h-24 items-center justify-center rounded-lg border border-dashed border-border/50'>
                 <p className='text-xs text-muted-foreground'>
-                  No executions yet. Launch one to get started.
+                  No approvals or executions yet. Launch one to get started.
                 </p>
               </div>
             ) : (
               <div className='space-y-2'>
-                {executions.map((exec) => {
+                {unifiedFeed.slice(0, 30).map((entry) => {
+                  if (entry.kind === 'approval') {
+                    const approval = entry.approval;
+                    const isPending = approval.status === 'pending';
+                    const isApproved = approval.status === 'approved';
+                    const statusColor = isPending ? '#FFBF47' : isApproved ? '#56D090' : '#EF4444';
+                    const statusLabel = isPending ? 'Pending' : isApproved ? 'Approved' : approval.status === 'rejected' ? 'Rejected' : approval.status;
+
+                    return (
+                      <div
+                        key={`approval-${approval.id}`}
+                        className='rounded-lg border border-border/40 bg-background/50 p-3'
+                        style={isPending ? { borderColor: '#FFBF4740' } : undefined}
+                      >
+                        <div className='flex items-start justify-between gap-2'>
+                          <div className='min-w-0 flex-1'>
+                            <div className='flex items-center gap-2'>
+                              <Badge variant='outline' className='text-[9px]' style={{
+                                backgroundColor: '#9A66FF15',
+                                borderColor: '#9A66FF30',
+                                color: '#9A66FF'
+                              }}>
+                                Approval
+                              </Badge>
+                              <p className='text-xs font-medium'>{approval.title || 'Untitled'}</p>
+                              <Badge variant='outline' className='text-[9px]' style={{
+                                backgroundColor: statusColor + '15',
+                                borderColor: statusColor + '30',
+                                color: statusColor
+                              }}>
+                                {statusLabel}
+                              </Badge>
+                            </div>
+                            {approval.description && (
+                              <p className='mt-1 text-[10px] text-muted-foreground line-clamp-2'>
+                                {approval.description}
+                              </p>
+                            )}
+                            <div className='mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] text-muted-foreground/60'>
+                              <span>by {approval.requested_by}</span>
+                              <span>{timeAgo(approval.created_at)}</span>
+                              <span>action: {(approval.action_type || '').replace('_', ' ')}</span>
+                              {approval.execution_id && (
+                                <button
+                                  className='text-[#9A66FF] hover:text-[#9A66FF]/80'
+                                  onClick={() => router.push(`/dashboard/executions/${approval.execution_id}`)}
+                                >
+                                  view execution
+                                </button>
+                              )}
+                            </div>
+                            {approval.reviewer_notes && (
+                              <p className='mt-1 text-[10px] italic text-muted-foreground'>
+                                &quot;{approval.reviewer_notes}&quot;
+                              </p>
+                            )}
+                          </div>
+                          {isPending && (
+                            <div className='flex shrink-0 gap-1'>
+                              <Button
+                                size='sm'
+                                variant='outline'
+                                className='h-7 px-2 text-[10px] text-[#56D090] hover:bg-[#56D090]/10 hover:text-[#56D090]'
+                                disabled={approvalsLoading}
+                                onClick={() => handleResolveApproval(approval.id, true)}
+                              >
+                                Approve
+                              </Button>
+                              <Button
+                                size='sm'
+                                variant='outline'
+                                className='h-7 px-2 text-[10px] text-[#EF4444] hover:bg-[#EF4444]/10 hover:text-[#EF4444]'
+                                disabled={approvalsLoading}
+                                onClick={() => handleResolveApproval(approval.id, false)}
+                              >
+                                Reject
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  const exec = entry.execution;
                   const es = execStatusColors[exec.status] || { color: '#888', label: exec.status };
                   return (
                     <div
-                      key={exec.id}
+                      key={`execution-${exec.id}`}
                       className='flex cursor-pointer items-center gap-4 rounded-lg border border-border/40 bg-background/50 px-4 py-3 transition-colors hover:border-[#9A66FF]/40'
                       onClick={() => router.push(`/dashboard/executions/${exec.id}`)}
                     >
                       <div className='flex h-9 w-9 items-center justify-center rounded-lg' style={{ backgroundColor: es.color + '15' }}>
                         <IconBolt className='h-4 w-4' style={{ color: es.color }} />
                       </div>
-                      <div className='flex-1 min-w-0'>
-                        <p className='text-sm line-clamp-1'>{exec.title || exec.objective}</p>
+                      <div className='min-w-0 flex-1'>
+                        <div className='mb-0.5 flex items-center gap-2'>
+                          <Badge variant='outline' className='text-[9px]' style={{
+                            backgroundColor: '#14FFF715',
+                            borderColor: '#14FFF730',
+                            color: '#14FFF7'
+                          }}>
+                            Execution
+                          </Badge>
+                          <p className='text-sm line-clamp-1'>{exec.title || exec.objective}</p>
+                        </div>
                         <div className='mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground'>
                           <span>{formatTokens(exec.tokens_used)} tokens</span>
                           <span className='text-border'>·</span>
@@ -2062,6 +2930,11 @@ export default function WorkforceDetailPage() {
                     </div>
                   );
                 })}
+                {unifiedFeed.length > 30 && (
+                  <p className='text-center text-[10px] text-muted-foreground'>
+                    Showing 30 of {unifiedFeed.length} items
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -2070,7 +2943,19 @@ export default function WorkforceDetailPage() {
       </ScrollArea>
 
       {/* Start Execution Dialog */}
-      <Dialog open={execOpen} onOpenChange={(v) => { setExecOpen(v); if (v) runPreflight(); else setPreflight(null); }}>
+      <Dialog open={execOpen} onOpenChange={(v) => {
+        setExecOpen(v);
+        if (v) {
+          runPreflight();
+          if (!execSingleAgentId && agents.length > 0) {
+            setExecSingleAgentId(agents[0].id);
+          }
+        } else {
+          setPreflight(null);
+          setExecMode('all_agents');
+          setExecSingleAgentId('');
+        }
+      }}>
         <DialogContent className='max-w-lg max-h-[90vh] flex flex-col'>
           <DialogHeader className='shrink-0'>
             <DialogTitle className='flex items-center gap-2'>
@@ -2091,6 +2976,53 @@ export default function WorkforceDetailPage() {
                 rows={4}
               />
               <p className='text-xs text-muted-foreground'>Team: {agents.map((a) => `${a.icon} ${a.name}`).join(', ')}</p>
+            </div>
+
+            <div className='space-y-2'>
+              <Label>Execution mode</Label>
+              <div className='grid grid-cols-2 gap-2'>
+                <button
+                  type='button'
+                  className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
+                    execMode === 'all_agents'
+                      ? 'border-[#9A66FF]/50 bg-[#9A66FF]/10 text-[#9A66FF]'
+                      : 'border-border/40 bg-background/40 text-muted-foreground hover:bg-muted/20'
+                  }`}
+                  onClick={() => setExecMode('all_agents')}
+                >
+                  <p className='font-semibold'>All agents</p>
+                  <p className='mt-0.5 text-[10px] opacity-80'>Collaborative planning + approval</p>
+                </button>
+                <button
+                  type='button'
+                  className={`rounded-md border px-3 py-2 text-left text-xs transition-colors ${
+                    execMode === 'single_agent'
+                      ? 'border-[#56D090]/50 bg-[#56D090]/10 text-[#56D090]'
+                      : 'border-border/40 bg-background/40 text-muted-foreground hover:bg-muted/20'
+                  }`}
+                  onClick={() => {
+                    setExecMode('single_agent');
+                    if (!execSingleAgentId && agents.length > 0) setExecSingleAgentId(agents[0].id);
+                  }}
+                >
+                  <p className='font-semibold'>Single agent (simple)</p>
+                  <p className='mt-0.5 text-[10px] opacity-80'>No approval gate, direct execution</p>
+                </button>
+              </div>
+              {execMode === 'single_agent' && (
+                <div className='space-y-1.5 rounded-md border border-[#56D090]/20 bg-[#56D090]/5 p-2.5'>
+                  <Label className='text-[11px] text-[#56D090]'>Agent</Label>
+                  <select
+                    value={execSingleAgentId}
+                    onChange={(e) => setExecSingleAgentId(e.target.value)}
+                    className='w-full rounded border border-border/50 bg-background px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#56D090]'
+                  >
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>{a.icon} {a.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             {/* Pre-flight checks */}
@@ -2270,7 +3202,7 @@ export default function WorkforceDetailPage() {
             <Button variant='outline' onClick={() => setExecOpen(false)}>Cancel</Button>
             <Button
               onClick={handleStartExec}
-              disabled={execRunning || !execObjective.trim()}
+              disabled={execRunning || !execObjective.trim() || (execMode === 'single_agent' && !execSingleAgentId)}
               className='bg-[#56D090] text-[#0A0D11] hover:bg-[#56D090]/90'
             >
               {execRunning ? <IconLoader2 className='mr-1 h-4 w-4 animate-spin' /> : <IconPlayerPlay className='mr-1 h-4 w-4' />}

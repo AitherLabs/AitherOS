@@ -39,15 +39,24 @@ export function EntityAvatar({
 }: EntityAvatarProps) {
   const s = sizeMap[size];
   const resolved = resolveAvatarUrl(avatarUrl);
+  const iconAsImage = /^(https?:\/\/|\/)/i.test(icon || '') ? resolveAvatarUrl(icon) : '';
+  const imageSrc = resolved || iconAsImage;
+  const initials = (name || '')
+    .trim()
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
 
-  if (resolved) {
+  if (imageSrc) {
     return (
       <div
         className={cn('shrink-0 select-none overflow-hidden', s.box, onClick && 'cursor-pointer', className)}
         title={name}
         onClick={onClick}
       >
-        <img src={resolved} alt={name || ''} className='h-full w-full object-cover' loading='lazy' decoding='async' />
+        <img src={imageSrc} alt={name || ''} className='h-full w-full object-cover' loading='lazy' decoding='async' />
       </div>
     );
   }
@@ -65,7 +74,7 @@ export function EntityAvatar({
       title={name}
       onClick={onClick}
     >
-      {icon || '🤖'}
+      {initials || '?'}
     </div>
   );
 }

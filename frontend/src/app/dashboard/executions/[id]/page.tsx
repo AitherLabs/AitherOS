@@ -752,6 +752,9 @@ function PlanningRoomPanel({ agents, messages, isPlanning }: { agents: Agent[]; 
         ) : (
           planMsgs.map((msg) => {
             const agent = agents.find(a => a.id === msg.agent_id);
+            const displayContent = isPlanning
+              ? msg.content
+              : summarizeStrategyForDisplay(msg.content, msg.agent_name || agent?.name || 'Agent');
             return (
               <div key={msg.id} className='flex items-start gap-3 px-4 py-3.5'>
                 <div className='shrink-0 mt-0.5'>
@@ -769,7 +772,7 @@ function PlanningRoomPanel({ agents, messages, isPlanning }: { agents: Agent[]; 
                   </div>
                   <div className='rounded-lg bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-[#EAEAEA]/80 whitespace-pre-wrap border-l-2'
                     style={{ borderLeftColor: (agent?.color || '#9A66FF') + '60' }}>
-                    {msg.content}
+                    {displayContent}
                   </div>
                 </div>
               </div>
@@ -785,6 +788,217 @@ function PlanningRoomPanel({ agents, messages, isPlanning }: { agents: Agent[]; 
       </div>
     </div>
   );
+}
+
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function toSingleSentence(text: string, maxLen = 180): string {
+  const cleaned = normalizeWhitespace(text);
+  if (!cleaned) return '';
+
+  const sentenceBoundary = cleaned.search(/[.!?](\s|$)/);
+  let sentence = sentenceBoundary >= 0 ? cleaned.slice(0, sentenceBoundary + 1) : cleaned;
+
+  if (sentence.length > maxLen) {
+    sentence = `${sentence.slice(0, maxLen).trimEnd()}…`;
+  }
+  return sentence;
+}
+
+function extractStrategyPayload(raw: string): { speakerHint?: string; payload: string } {
+  const trimmed = raw.trim();
+  const prefixed = trimmed.match(/^\[([^\]]+)\]\s*:\s*([\s\S]*)$/);
+  if (!prefixed) return { payload: trimmed };
+
+  return {
+    speakerHint: prefixed[1].replace(/\(.*?\)/g, '').trim(),
+    payload: prefixed[2].trim()
+  };
+}
+
+function parseJsonCandidate(candidate: string): unknown | null {
+  const trimmed = candidate.trim();
+  if (!trimmed) return null;
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const maybeJson = fenced ? fenced[1].trim() : trimmed;
+  if (!(maybeJson.startsWith('{') || maybeJson.startsWith('['))) return null;
+
+  try {
+    return JSON.parse(maybeJson);
+  } catch {
+    return null;
+  }
+}
+
+function parsePlanStepsFromStrategy(strategy: string): Array<Record<string, unknown>> | null {
+  const { payload } = extractStrategyPayload(strategy);
+  const parsed = parseJsonCandidate(payload) ?? parseJsonCandidate(strategy);
+  if (!parsed) return null;
+
+  if (Array.isArray(parsed)) {
+    return parsed.filter(
+      (item): item is Record<string, unknown> => typeof item === 'object' && item !== null
+    );
+  }
+
+  if (typeof parsed === 'object' && parsed !== null && Array.isArray((parsed as { plan?: unknown }).plan)) {
+    return ((parsed as { plan: unknown[] }).plan).filter(
+      (item): item is Record<string, unknown> => typeof item === 'object' && item !== null
+    );
+  }
+
+  return null;
+}
+
+function formatDecisionSentence(agentName: string, detail: string): string {
+  const subject = normalizeWhitespace(agentName) || 'Agent';
+  const short = toSingleSentence(detail, 170).replace(/[.!?…]+$/, '');
+  if (!short) return `${subject} decided on the next step.`;
+
+  const lowerSubject = subject.toLowerCase();
+  if (short.toLowerCase().startsWith(lowerSubject)) {
+    return /[.!?]$/.test(short) ? short : `${short}.`;
+  }
+
+  if (/^decided\b/i.test(short)) {
+    return `${subject} ${short}${/[.!?]$/.test(short) ? '' : '.'}`;
+  }
+
+  if (/^(to|that)\b/i.test(short)) {
+    return `${subject} decided ${short}${/[.!?]$/.test(short) ? '' : '.'}`;
+  }
+
+  return `${subject} decided to ${short.charAt(0).toLowerCase()}${short.slice(1)}.`;
+}
+
+function summarizeStrategyForDisplay(raw: string, preferredSpeaker: string): string {
+  const extracted = extractStrategyPayload(raw);
+  const speaker = normalizeWhitespace(preferredSpeaker) || extracted.speakerHint || 'Agent';
+  const steps = parsePlanStepsFromStrategy(raw);
+
+  if (steps && steps.length > 0) {
+    const speakerLower = speaker.toLowerCase();
+    const matchingStep =
+      steps.find((step) => {
+        const stepAgent = typeof step.agent_name === 'string' ? step.agent_name.toLowerCase() : '';
+        return stepAgent && (speakerLower.includes(stepAgent) || stepAgent.includes(speakerLower));
+      }) || steps[0];
+
+    const stepSummaryCandidates = [
+      matchingStep.subtask,
+      matchingStep.task,
+      matchingStep.summary,
+      matchingStep.objective
+    ];
+
+    for (const candidate of stepSummaryCandidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return formatDecisionSentence(speaker, candidate);
+      }
+    }
+  }
+
+  const parsed = parseJsonCandidate(extracted.payload) ?? parseJsonCandidate(raw);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    const textCandidates = [obj.summary, obj.decision, obj.strategy, obj.content];
+    for (const candidate of textCandidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return formatDecisionSentence(speaker, candidate);
+      }
+    }
+  }
+
+  return formatDecisionSentence(speaker, extracted.payload || raw);
+}
+
+type CompletionSignal = {
+  status?: string;
+  summary?: string;
+  details: Record<string, unknown>;
+};
+
+function parseCompletionSignalFromContent(content: string): CompletionSignal | null {
+  const fromStructured = parseJsonCandidate(content);
+
+  let parsed: unknown = fromStructured;
+  if (!parsed) {
+    const start = content.indexOf('{');
+    const end = content.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        parsed = JSON.parse(content.slice(start, end + 1));
+      } catch {
+        parsed = null;
+      }
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  if (!('status' in obj) && !('summary' in obj)) return null;
+
+  return {
+    status: typeof obj.status === 'string' ? obj.status : undefined,
+    summary: typeof obj.summary === 'string' ? obj.summary : undefined,
+    details: obj
+  };
+}
+
+function humanizeCompletionStatus(status?: string): string {
+  const normalized = (status || '').toLowerCase();
+  if (!normalized) return 'Task update received.';
+  if (normalized === 'complete' || normalized === 'completed' || normalized === 'done') {
+    return 'Task completed successfully.';
+  }
+  if (normalized === 'needs_help' || normalized === 'blocked') {
+    return 'Task is blocked and needs your input.';
+  }
+  if (normalized === 'running' || normalized === 'in_progress') {
+    return 'Task is in progress.';
+  }
+  if (normalized === 'failed' || normalized === 'error') {
+    return 'Task failed and needs attention.';
+  }
+  return `Task status: ${normalized.replace(/_/g, ' ')}.`;
+}
+
+function describeToolActivity(toolName: string): string {
+  const tool = toolName.toLowerCase();
+  if (/(search_web|read_url_content|browser|crawl|scrape|serp)/.test(tool)) return 'is searching the web';
+  if (/(write_to_file|apply_patch|write_file|edit_notebook)/.test(tool)) return 'is writing files';
+  if (/(run_command|shell|bash|execute)/.test(tool)) return 'is executing commands';
+  if (/(read_file|list_dir|find_by_name|grep_search|code_search)/.test(tool)) return 'is inspecting project files';
+  if (/(list_secrets|get_secret)/.test(tool)) return 'is checking credentials';
+  return `is using ${toolName.replace(/_/g, ' ')}`;
+}
+
+function summarizeAgentActivityFromEvent(ev: LiveEvent, agentName: string): string | null {
+  if (ev.type === 'tool_call') {
+    const tool = typeof ev.data?.tool === 'string' ? ev.data.tool : '';
+    if (!tool) return `${agentName} is using a tool.`;
+    return `${agentName} ${describeToolActivity(tool)}.`;
+  }
+
+  if (ev.type === 'subtask_started') {
+    const subtask = typeof ev.data?.subtask === 'string' ? ev.data.subtask : '';
+    if (!subtask) return `${agentName} is working on the current subtask.`;
+    const oneLiner = toSingleSentence(subtask, 110).replace(/[.!?…]+$/, '');
+    return `${agentName} is working on ${oneLiner.charAt(0).toLowerCase()}${oneLiner.slice(1)}.`;
+  }
+
+  if (ev.type === 'human_required') {
+    return `${agentName} is waiting for your input.`;
+  }
+
+  if (ev.type === 'subtask_done') {
+    return `${agentName} completed a subtask.`;
+  }
+
+  return null;
 }
 
 function parseStrategy(strategy: string): { name: string; content: string }[] {
@@ -1213,6 +1427,7 @@ interface AgentThreadProps {
   messages: Message[];
   isExpanded: boolean;
   isActive: boolean;
+  activityHint?: string;
   subtask?: ExecutionSubtask;
   onToggle: () => void;
 }
@@ -1221,16 +1436,30 @@ interface AgentThreadProps {
 // Detects JSON plan blobs and renders them as a readable plan list instead of
 // dumping raw JSON at the user.
 function MessageContent({ content, dim = false }: { content: string; dim?: boolean }) {
+  const completion = useMemo(() => parseCompletionSignalFromContent(content), [content]);
+
   const planSteps = useMemo(() => {
-    const start = content.indexOf('{');
-    const end = content.lastIndexOf('}');
-    if (start < 0 || end <= start) return null;
-    try {
-      const parsed = JSON.parse(content.slice(start, end + 1));
-      if (Array.isArray(parsed?.plan) && parsed.plan.length > 0) return parsed.plan as any[];
-    } catch { /* not valid JSON */ }
-    return null;
+    return parsePlanStepsFromStrategy(content);
   }, [content]);
+
+  if (completion && !planSteps) {
+    const statusText = completion.status ? completion.status.replace(/_/g, ' ') : 'update';
+    const summary = completion.summary || humanizeCompletionStatus(completion.status);
+
+    return (
+      <div className='rounded-lg border border-[#56D090]/35 bg-[#56D090]/8 p-3'>
+        <div className='mb-1 flex items-center gap-2'>
+          <span className='text-xs'>✅</span>
+          <span className='text-[10px] font-semibold uppercase tracking-wider text-[#56D090]'>
+            {statusText}
+          </span>
+        </div>
+        <p className={`text-sm leading-relaxed ${dim ? 'text-[#EAEAEA]/60' : 'text-[#EAEAEA]/88'}`}>
+          {summary}
+        </p>
+      </div>
+    );
+  }
 
   if (planSteps) {
     const prefix = content.slice(0, content.indexOf('{')).trim();
@@ -1272,7 +1501,7 @@ function MessageContent({ content, dim = false }: { content: string; dim?: boole
 }
 
 const AgentThread = React.forwardRef<HTMLDivElement, AgentThreadProps>(
-function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle }, ref) {
+function AgentThread({ agent, messages, isExpanded, isActive, activityHint, subtask, onToggle }, ref) {
   const [showOlderMsgs, setShowOlderMsgs] = useState(false);
   useEffect(() => { if (!isExpanded) setShowOlderMsgs(false); }, [isExpanded]);
 
@@ -1301,9 +1530,19 @@ function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle 
                 {subtask.status}
               </span>
             )}
-            {isActive && <span className='flex items-center gap-1 text-[10px] text-[#9A66FF]'><span className='h-1.5 w-1.5 animate-pulse rounded-full bg-[#9A66FF]' />working</span>}
+            {isActive && (
+              <span className='flex items-center gap-1 text-[10px] text-[#9A66FF]'>
+                <span className='h-1.5 w-1.5 animate-pulse rounded-full bg-[#9A66FF]' />
+                {activityHint ? activityHint.replace(new RegExp(`^${agent.name}\\s+`, 'i'), '') : 'working'}
+              </span>
+            )}
           </div>
-          {lastMsg && !isExpanded && (
+          {!isExpanded && isActive && activityHint && (
+            <p className='mt-0.5 text-[11px] text-[#9A66FF]/80 truncate'>
+              {activityHint}
+            </p>
+          )}
+          {lastMsg && !isExpanded && !(isActive && activityHint) && (
             <p className='mt-0.5 text-[11px] text-muted-foreground/65 truncate'>
               {lastMsg.content.replace(/\n+/g, ' ').slice(0, 100)}{lastMsg.content.length > 100 ? '…' : ''}
             </p>
@@ -1329,7 +1568,7 @@ function AgentThread({ agent, messages, isExpanded, isActive, subtask, onToggle 
         <div className='border-t border-border/30'>
           {agentMsgs.length === 0 ? (
             <div className='px-4 py-6 text-center text-xs text-muted-foreground/40'>
-              {isActive ? 'Generating response…' : 'No messages yet.'}
+              {isActive ? activityHint || 'Generating response…' : 'No messages yet.'}
             </div>
           ) : (
             <div className='divide-y divide-border/20'>
@@ -1654,9 +1893,30 @@ export default function ExecutionDetailPage() {
         setLiveEvents(historical);
       }
 
-      if (agResult.status === 'fulfilled') {
+      {
         const map: Record<string, Agent> = {};
-        for (const a of agResult.value.data || []) map[a.id] = a;
+
+        if (wfResult.status === 'fulfilled' && wfResult.value?.data?.agents) {
+          for (const a of wfResult.value.data.agents) {
+            map[a.id] = a;
+          }
+        }
+
+        if (agResult.status === 'fulfilled') {
+          for (const a of agResult.value.data || []) {
+            const existing = map[a.id];
+            map[a.id] = existing
+              ? {
+                  ...a,
+                  avatar_url: existing.avatar_url || a.avatar_url,
+                  color: existing.color || a.color,
+                  icon: existing.icon || a.icon,
+                  name: existing.name || a.name
+                }
+              : a;
+          }
+        }
+
         setAgentsMap(map);
       }
     } catch (err) {
@@ -1776,6 +2036,35 @@ export default function ExecutionDetailPage() {
     return map;
   }, [messages]);
 
+  const agentActivityById = useMemo(() => {
+    const byAgentName: Record<string, string> = {};
+    for (const agent of orderedAgents) {
+      byAgentName[normalizeWhitespace(agent.name).toLowerCase()] = agent.id;
+    }
+
+    const activity: Record<string, string> = {};
+    for (let i = liveEvents.length - 1; i >= 0; i--) {
+      const ev = liveEvents[i];
+      const nameKey = normalizeWhitespace(ev.agent_name || '').toLowerCase();
+      const agentId = byAgentName[nameKey];
+      if (!agentId || activity[agentId]) continue;
+      const agentName = orderedAgents.find((a) => a.id === agentId)?.name || ev.agent_name || 'Agent';
+      const sentence = summarizeAgentActivityFromEvent(ev, agentName);
+      if (sentence) activity[agentId] = sentence;
+    }
+    return activity;
+  }, [liveEvents, orderedAgents]);
+
+  const runningActivityText = useMemo(() => {
+    if (!execution) return '';
+    const running = (execution.plan || []).find((s) => s.status === 'running');
+    if (!running) return '';
+    const hint = agentActivityById[running.agent_id];
+    if (hint) return hint;
+    const agentName = running.agent_name || agentsMap[running.agent_id]?.name || 'An agent';
+    return `${agentName} is working on the current subtask.`;
+  }, [execution, agentActivityById, agentsMap]);
+
   // Smart auto-scroll: only follow bottom when user hasn't manually scrolled up
   useEffect(() => {
     if (!userScrolledUpRef.current) {
@@ -1886,6 +2175,9 @@ export default function ExecutionDetailPage() {
       await api.interveneExecution(execution.id, feedback.trim());
       setFeedback('');
       setInterveneStatus('ok');
+      setTimeout(() => {
+        loadData();
+      }, 250);
     } catch (err: any) {
       const msg = err?.message || 'Intervention failed — execution may no longer be active';
       setInterveneStatus('err');
@@ -1988,6 +2280,9 @@ export default function ExecutionDetailPage() {
       setCredPanelOpen(false);
       setCredValue('');
       setInterveneStatus('ok');
+      setTimeout(() => {
+        loadData();
+      }, 250);
     } catch (err: any) {
       setInterveneStatus('err');
       setInterveneErrMsg(err?.message || 'Failed to store credential');
@@ -2386,15 +2681,17 @@ export default function ExecutionDetailPage() {
 
             {/* Final result */}
             {execution.status === 'completed' && execution.result && (() => {
-              let parsed: { status?: string; summary?: string; [k: string]: any } | null = null;
-              try { parsed = JSON.parse(execution.result); } catch {}
-              const summary = parsed?.summary ?? null;
-              const isCompletionSignal = parsed && typeof parsed === 'object' && ('status' in parsed || 'summary' in parsed);
+              const completion = parseCompletionSignalFromContent(execution.result);
+              const parsed = completion?.details || null;
+              const summary = completion?.summary || (completion ? humanizeCompletionStatus(completion.status) : null);
+              const isCompletionSignal = !!completion;
               return (
                 <div className='rounded-xl border border-[#56D090]/30 bg-[#56D090]/5 p-4 space-y-3'>
                   <div className='flex items-center gap-2'>
                     <span className='text-base'>✅</span>
-                    <span className='text-xs font-semibold uppercase tracking-wider text-[#56D090]'>Final Result</span>
+                    <span className='text-xs font-semibold uppercase tracking-wider text-[#56D090]'>
+                      Final Result{completion?.status ? ` · ${completion.status.replace(/_/g, ' ')}` : ''}
+                    </span>
                   </div>
                   {summary ? (
                     <>
@@ -2453,57 +2750,61 @@ export default function ExecutionDetailPage() {
             {/* Peer Exchanges (P2) — shown when agents have consulted each other */}
             <PeerExchangesPanel agents={orderedAgents} messages={messages} />
 
-            {/* Interleaved: operator messages + per-agent threads, sorted by time */}
+            {/* Operator interventions */}
             {(() => {
-              const operatorMsgs = messages.filter(m => m.role === 'user' && !m.agent_id && m.iteration > 0);
-              type Item = { type: 'op'; msg: typeof operatorMsgs[0] } | { type: 'thread'; agentId: string };
-              const items: Item[] = [];
-              orderedAgents.forEach(a => items.push({ type: 'thread', agentId: a.id }));
-              operatorMsgs.forEach(m => items.push({ type: 'op', msg: m }));
-              items.sort((a, b) => {
-                const ta = a.type === 'op' ? new Date(a.msg.created_at).getTime() : 0;
-                const tb = b.type === 'op' ? new Date(b.msg.created_at).getTime() : 0;
-                if (a.type === 'thread' && b.type === 'thread') return 0;
-                if (a.type === 'thread') return -1;
-                if (b.type === 'thread') return 1;
-                return ta - tb;
-              });
-              return items.map((item, i) => {
-                if (item.type === 'op') {
-                  return (
-                    <div key={item.msg.id} className='flex items-start gap-3 justify-end'>
-                      <div className='max-w-[85%]'>
-                        <div className='mb-1 flex items-center justify-end gap-1.5'>
-                          <span className='text-[10px] text-muted-foreground/50'>{timeAgo(item.msg.created_at)}</span>
-                          <span className='text-[11px] font-semibold text-[#FFBF47]'>You</span>
+              const operatorMsgs = messages
+                .filter((m) => m.role === 'user' && !m.agent_id && m.iteration > 0)
+                .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+              if (operatorMsgs.length === 0) return null;
+
+              return (
+                <div className='rounded-xl border border-[#FFBF47]/30 bg-[#FFBF47]/6 p-3'>
+                  <div className='mb-2.5 flex items-center gap-2'>
+                    <span className='text-sm'>🧭</span>
+                    <span className='text-[10px] font-semibold uppercase tracking-wider text-[#FFBF47]'>
+                      Operator Interventions
+                    </span>
+                    <span className='ml-auto text-[10px] text-muted-foreground/55'>
+                      {operatorMsgs.length} message{operatorMsgs.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <div className='space-y-2'>
+                    {operatorMsgs.map((msg) => (
+                      <div key={msg.id} className='rounded-lg border border-[#FFBF47]/20 bg-[#FFBF47]/8 px-3 py-2'>
+                        <div className='mb-1 flex items-center justify-between text-[10px]'>
+                          <span className='font-semibold text-[#FFBF47]'>You</span>
+                          <span className='text-muted-foreground/50'>{timeAgo(msg.created_at)}</span>
                         </div>
-                        <div className='rounded-xl rounded-tr-sm border border-[#FFBF47]/30 bg-[#FFBF47]/10 px-4 py-2.5'>
-                          <p className='whitespace-pre-wrap text-sm leading-relaxed text-[#FFBF47]/90'>{item.msg.content}</p>
-                        </div>
+                        <p className='whitespace-pre-wrap text-sm leading-relaxed text-[#FFBF47]/90'>{msg.content}</p>
                       </div>
-                      <div className='mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#FFBF47]/20 text-sm'>
-                        👤
-                      </div>
-                    </div>
-                  );
-                }
-                const agent = orderedAgents.find(a => a.id === item.agentId)!;
-                const subtask = (execution.plan || []).find(s => s.agent_id === agent.id);
-                const isActiveAgent = isRunning && subtask?.status === 'running';
-                return (
-                  <AgentThread
-                    key={agent.id}
-                    ref={(el) => { if (el) agentThreadRefs.current.set(agent.id, el); else agentThreadRefs.current.delete(agent.id); }}
-                    agent={agent}
-                    messages={messages}
-                    isExpanded={expandedAgents.has(agent.id)}
-                    isActive={isActiveAgent}
-                    subtask={subtask}
-                    onToggle={() => toggleAgent(agent.id)}
-                  />
-                );
-              });
+                    ))}
+                  </div>
+                </div>
+              );
             })()}
+
+            {/* Agent threads */}
+            {orderedAgents.map((agent) => {
+              const subtask = (execution.plan || []).find((s) => s.agent_id === agent.id);
+              const isActiveAgent = isRunning && subtask?.status === 'running';
+              return (
+                <AgentThread
+                  key={agent.id}
+                  ref={(el) => {
+                    if (el) agentThreadRefs.current.set(agent.id, el);
+                    else agentThreadRefs.current.delete(agent.id);
+                  }}
+                  agent={agent}
+                  messages={messages}
+                  isExpanded={expandedAgents.has(agent.id)}
+                  isActive={isActiveAgent}
+                  activityHint={agentActivityById[agent.id]}
+                  subtask={subtask}
+                  onToggle={() => toggleAgent(agent.id)}
+                />
+              );
+            })}
 
             {/* Empty state */}
             {messages.length === 0 && (
@@ -2528,7 +2829,7 @@ export default function ExecutionDetailPage() {
             {isRunning && messages.length > 0 && (
               <div className='flex items-center justify-center gap-2 py-2 text-[11px] text-[#9A66FF]/70'>
                 <IconLoader2 className='h-3 w-3 animate-spin' />
-                Agents are working…
+                {runningActivityText || 'Agents are working…'}
                 <ThinkingDots color='#9A66FF' />
               </div>
             )}
@@ -2935,37 +3236,53 @@ export default function ExecutionDetailPage() {
         </DialogHeader>
         <div className='overflow-y-auto flex-1 min-h-0 space-y-4 pr-1'>
           {execution?.strategy && (() => {
-            try {
-              const parsed = JSON.parse(execution.strategy);
-              if (Array.isArray(parsed?.plan)) {
-                return (
-                  <div className='space-y-3'>
-                    {parsed.plan.map((step: any, i: number) => (
-                      <div key={step.id ?? i} className='flex gap-3 rounded-lg border border-border/40 bg-muted/10 p-3'>
+            const planSteps = parsePlanStepsFromStrategy(execution.strategy);
+            if (planSteps && planSteps.length > 0) {
+              return (
+                <div className='space-y-3'>
+                  {planSteps.map((step, i) => {
+                    const stepId = step.id ?? i + 1;
+                    const agentName = typeof step.agent_name === 'string' ? step.agent_name : 'Agent';
+                    const dependsOn = Array.isArray(step.depends_on)
+                      ? step.depends_on.map((dep) => String(dep))
+                      : [];
+                    const subtask =
+                      typeof step.subtask === 'string'
+                        ? step.subtask
+                        : typeof step.task === 'string'
+                          ? step.task
+                          : 'No subtask details provided.';
+
+                    return (
+                      <div key={String(stepId)} className='flex gap-3 rounded-lg border border-border/40 bg-muted/10 p-3'>
                         <span className='mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#9A66FF]/20 font-mono text-[10px] font-bold text-[#9A66FF]'>
-                          {step.id ?? i + 1}
+                          {String(stepId)}
                         </span>
                         <div className='min-w-0 flex-1 space-y-1'>
                           <div className='flex flex-wrap items-center gap-2'>
-                            <span className='font-mono text-xs font-semibold text-[#14FFF7]'>{step.agent_name}</span>
-                            {Array.isArray(step.depends_on) && step.depends_on.length > 0 && (
+                            <span className='font-mono text-xs font-semibold text-[#14FFF7]'>{agentName}</span>
+                            {dependsOn.length > 0 && (
                               <span className='rounded-full border border-border/40 bg-muted/30 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground/60'>
-                                after {step.depends_on.join(', ')}
+                                after {dependsOn.join(', ')}
                               </span>
                             )}
                           </div>
-                          <p className='text-sm leading-relaxed text-[#EAEAEA]/80'>{step.subtask}</p>
+                          <p className='text-sm leading-relaxed text-[#EAEAEA]/80'>{subtask}</p>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                );
-              }
-            } catch { /* fall through */ }
+                    );
+                  })}
+                </div>
+              );
+            }
+
+            const leaderName = orderedAgents.find((a) => a.id === workforce?.leader_agent_id)?.name || 'Team lead';
+            const oneLineSummary = summarizeStrategyForDisplay(execution.strategy, leaderName);
             return (
-              <pre className='whitespace-pre-wrap break-words rounded-lg border border-border/40 bg-muted/10 p-4 font-mono text-xs text-[#EAEAEA]/75'>
-                {execution.strategy}
-              </pre>
+              <div className='rounded-lg border border-border/40 bg-muted/10 p-4'>
+                <p className='mb-2 font-mono text-[9px] font-bold uppercase tracking-wider text-muted-foreground/40'>Strategy Summary</p>
+                <p className='text-sm leading-relaxed text-[#EAEAEA]/80'>{oneLineSummary}</p>
+              </div>
             );
           })()}
           <div className='border-t border-border/30 pt-3'>

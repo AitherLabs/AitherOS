@@ -4,8 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"log"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +53,328 @@ var virtualPlatformTools = []engine.ToolDefinition{
 		},
 	},
 }
+
+func (o *Orchestrator) normalizeMediaPlan(ctx context.Context, objective string, plan []models.ExecutionSubtask, agents []*models.Agent) ([]models.ExecutionSubtask, bool) {
+	if len(plan) == 0 || len(agents) == 0 {
+		return plan, false
+	}
+
+	agentByID := make(map[uuid.UUID]*models.Agent, len(agents))
+	mediaAgent := make(map[uuid.UUID]bool, len(agents))
+	for _, a := range agents {
+		agentByID[a.ID] = a
+		mediaAgent[a.ID] = isMediaAgent(a)
+		if !mediaAgent[a.ID] {
+			if eng, _, err := o.resolveConnector(ctx, a); err == nil {
+				mediaAgent[a.ID] = engine.IsMediaConnector(eng)
+			}
+		}
+	}
+
+	objectiveReqs := extractMediaOutputRequirements(objective)
+	newPlan := make([]models.ExecutionSubtask, 0, len(plan)+len(objectiveReqs))
+	replaceDepID := make(map[string]string, len(plan)) // old id -> last replacement id
+	changed := false
+
+	for _, st := range plan {
+		replaceDepID[st.ID] = st.ID
+		agent := agentByID[st.AgentID]
+		if agent == nil || !mediaAgent[st.AgentID] {
+			newPlan = append(newPlan, st)
+			continue
+		}
+
+		reqs := extractMediaOutputRequirements(st.Subtask)
+		reqs = mergeRequirementDimensions(reqs, objectiveReqs)
+		if len(reqs) == 0 && len(objectiveReqs) > 1 && strings.Contains(strings.ToLower(st.Subtask), "generate") {
+			reqs = objectiveReqs
+		}
+		if len(reqs) <= 1 {
+			newPlan = append(newPlan, st)
+			continue
+		}
+
+		changed = true
+		prevID := ""
+		for i, req := range reqs {
+			clone := st
+			if i == 0 {
+				clone.ID = st.ID
+				clone.DependsOn = append([]string(nil), st.DependsOn...)
+			} else {
+				clone.ID = fmt.Sprintf("%s.%d", st.ID, i+1)
+				clone.DependsOn = []string{prevID}
+			}
+			clone.Subtask = buildSingleOutputMediaSubtask(req.Path, req.Width, req.Height)
+			clone.Status = models.SubtaskPending
+			clone.Output = ""
+			clone.ErrorMsg = ""
+			newPlan = append(newPlan, clone)
+			prevID = clone.ID
+		}
+		replaceDepID[st.ID] = prevID
+	}
+
+	if !changed {
+		return plan, false
+	}
+
+	for i := range newPlan {
+		if len(newPlan[i].DependsOn) == 0 {
+			continue
+		}
+		seen := map[string]struct{}{}
+		rewritten := make([]string, 0, len(newPlan[i].DependsOn))
+		for _, dep := range newPlan[i].DependsOn {
+			target := dep
+			if replacement, ok := replaceDepID[dep]; ok {
+				target = replacement
+			}
+			if _, ok := seen[target]; ok {
+				continue
+			}
+			seen[target] = struct{}{}
+			rewritten = append(rewritten, target)
+		}
+		newPlan[i].DependsOn = rewritten
+	}
+
+	return newPlan, true
+}
+
+func isMediaAgent(agent *models.Agent) bool {
+	if agent == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(agent.ModelType)) {
+	case string(models.ModelTypeImage), string(models.ModelTypeVideo), string(models.ModelTypeAudio):
+		return true
+	default:
+		return false
+	}
+}
+
+func buildSingleOutputMediaSubtask(path string, width, height int) string {
+	size := ""
+	if width > 0 && height > 0 {
+		size = fmt.Sprintf(" (%dx%d)", width, height)
+	}
+	return fmt.Sprintf("Generate exactly one media asset at `%s`%s. Do not combine multiple assets in one output. Finish only when this path is created.", path, size)
+}
+
+func selectSubtaskMediaRequirements(objective, subtask string) []mediaOutputRequirement {
+	objectiveReqs := extractMediaOutputRequirements(objective)
+	subtaskReqs := extractMediaOutputRequirements(subtask)
+	if len(subtaskReqs) > 0 {
+		return mergeRequirementDimensions(subtaskReqs, objectiveReqs)
+	}
+	if len(objectiveReqs) > 0 && strings.Contains(strings.ToLower(subtask), "generate") {
+		return objectiveReqs
+	}
+	return nil
+}
+
+func extractMediaOutputRequirements(text string) []mediaOutputRequirement {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+
+	dimensions := map[string][2]int{}
+	for _, line := range strings.Split(text, "\n") {
+		m := mediaPathDimensionLinePattern.FindStringSubmatch(strings.TrimSpace(line))
+		if len(m) != 5 {
+			continue
+		}
+		path := normalizeMediaPath(m[1])
+		if path == "" {
+			continue
+		}
+		w, errW := strconv.Atoi(m[3])
+		h, errH := strconv.Atoi(m[4])
+		if errW != nil || errH != nil {
+			continue
+		}
+		dimensions[strings.ToLower(path)] = [2]int{w, h}
+	}
+
+	matches := mediaOutputPathPattern.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	seen := map[string]struct{}{}
+	reqs := make([]mediaOutputRequirement, 0, len(matches))
+	for _, match := range matches {
+		path := normalizeMediaPath(match)
+		if path == "" || !strings.Contains(path, "/") {
+			continue
+		}
+		key := strings.ToLower(path)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		req := mediaOutputRequirement{Path: path}
+		if dim, ok := dimensions[key]; ok {
+			req.Width = dim[0]
+			req.Height = dim[1]
+		}
+		reqs = append(reqs, req)
+	}
+
+	return reqs
+}
+
+func mergeRequirementDimensions(primary, fallback []mediaOutputRequirement) []mediaOutputRequirement {
+	if len(primary) == 0 {
+		return nil
+	}
+	if len(fallback) == 0 {
+		out := make([]mediaOutputRequirement, len(primary))
+		copy(out, primary)
+		return out
+	}
+	byPath := map[string]mediaOutputRequirement{}
+	for _, req := range fallback {
+		byPath[strings.ToLower(req.Path)] = req
+	}
+	out := make([]mediaOutputRequirement, len(primary))
+	for i, req := range primary {
+		if req.Width == 0 || req.Height == 0 {
+			if fb, ok := byPath[strings.ToLower(req.Path)]; ok {
+				if req.Width == 0 {
+					req.Width = fb.Width
+				}
+				if req.Height == 0 {
+					req.Height = fb.Height
+				}
+			}
+		}
+		out[i] = req
+	}
+	return out
+}
+
+func normalizeMediaPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = strings.Trim(path, "`\"'()[]{}<>,;")
+	path = strings.ReplaceAll(path, "\\", "/")
+	path = strings.TrimPrefix(path, "./")
+	path = strings.TrimPrefix(path, "/workspace/")
+	path = strings.TrimPrefix(path, "workspace/")
+	path = strings.TrimPrefix(path, "/")
+	path = strings.TrimSpace(path)
+	if path == "." {
+		return ""
+	}
+	return path
+}
+
+func buildSingleOutputMediaPrompt(objective, subtask, handoffCtx, outputPath string) string {
+	parts := []string{
+		"Create exactly one media asset for the required output path below.",
+		fmt.Sprintf("Target output path: %s", outputPath),
+		"Do not create a collage or merge multiple states unless the target path explicitly describes a sprite sheet.",
+	}
+	if objective != "" {
+		parts = append(parts, "Objective context:\n"+truncateStr(objective, 1800))
+	}
+	if subtask != "" {
+		parts = append(parts, "Subtask context:\n"+truncateStr(subtask, 1200))
+	}
+	if handoffCtx != "" {
+		parts = append(parts, "Upstream style/context:\n"+truncateStr(handoffCtx, 1200))
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func buildMediaSpecMessage(prompt, outputPath, aspectRatio string) string {
+	if aspectRatio == "" {
+		aspectRatio = "1:1"
+	}
+	return fmt.Sprintf(`{"prompt":%q,"output_path":%q,"aspect_ratio":%q}`, prompt, outputPath, aspectRatio)
+}
+
+func inferAspectRatio(width, height int) string {
+	if width <= 0 || height <= 0 {
+		return "1:1"
+	}
+	if width == height {
+		return "1:1"
+	}
+	if width > height {
+		return "16:9"
+	}
+	return "9:16"
+}
+
+func extractGeneratedMediaPath(content string) string {
+	m := mediaGeneratedPathLinePattern.FindStringSubmatch(content)
+	if len(m) < 2 {
+		return ""
+	}
+	return normalizeMediaPath(m[1])
+}
+
+func validateRequiredMediaFile(workspacePath, outputPath string, width, height int) error {
+	cleanPath := normalizeMediaPath(outputPath)
+	if cleanPath == "" {
+		return fmt.Errorf("empty output path")
+	}
+	absPath := cleanPath
+	if filepath.IsAbs(outputPath) {
+		absPath = outputPath
+	} else if workspacePath != "" {
+		absPath = filepath.Join(workspacePath, cleanPath)
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fmt.Errorf("file not found at %s: %w", cleanPath, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("expected file at %s but found directory", cleanPath)
+	}
+
+	if width > 0 && height > 0 && isImagePath(cleanPath) {
+		f, err := os.Open(absPath)
+		if err != nil {
+			return fmt.Errorf("open image %s: %w", cleanPath, err)
+		}
+		defer f.Close()
+		cfg, _, err := image.DecodeConfig(f)
+		if err != nil {
+			return fmt.Errorf("decode image dimensions for %s: %w", cleanPath, err)
+		}
+		if cfg.Width != width || cfg.Height != height {
+			return fmt.Errorf("dimension mismatch for %s: got %dx%d, want %dx%d", cleanPath, cfg.Width, cfg.Height, width, height)
+		}
+	}
+
+	return nil
+}
+
+func isImagePath(path string) bool {
+	path = strings.ToLower(path)
+	for _, ext := range []string{".png", ".jpg", ".jpeg", ".gif"} {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+var workspaceArtifactPathPattern = regexp.MustCompile("/workspace/[^\\s\"'`,;\\)\\]\\}]+")
+
+var mediaOutputPathPattern = regexp.MustCompile(`(?i)[a-z0-9_./\\-]+\.(png|jpe?g|webp|gif|bmp|svg|mp4|mov|webm|mkv|mp3|wav|ogg|flac|m4a)`)
+var mediaPathDimensionLinePattern = regexp.MustCompile(`(?i)^\s*[-*]\s*` + "`?" + `([a-z0-9_./\\-]+\.(png|jpe?g|webp|gif|bmp|svg))` + "`?" + `\s*\((\d{2,4})\s*[x×]\s*(\d{2,4})\)\s*$`)
+var mediaGeneratedPathLinePattern = regexp.MustCompile(`(?im)^path:\s*([^\s]+)`)
+
+const executionModeInputKey = "__execution_mode"
+const executionAgentIDInputKey = "__execution_agent_id"
 
 // virtualSignalTools are injected into every agent's tool list so that LLMs
 // which prefer function-calling over inline JSON can still trigger the
@@ -190,11 +518,11 @@ func (o *Orchestrator) handlePlatformTool(ctx context.Context, wfID uuid.UUID, a
 
 // completionSignal is the structured JSON that agents return to signal their state.
 type completionSignal struct {
-	Status    string `json:"status"`    // "complete", "needs_help", "blocked", "ask_peer", or omit to continue
-	Summary   string `json:"summary"`   // Final summary (when status=="complete")
-	Reason    string `json:"reason"`    // Explanation for needs_help or blocked
-	PeerAgent string `json:"peer"`      // Peer agent name to consult (when status=="ask_peer")
-	Question  string `json:"question"`  // Question to ask the peer (when status=="ask_peer")
+	Status    string `json:"status"`   // "complete", "needs_help", "blocked", "ask_peer", or omit to continue
+	Summary   string `json:"summary"`  // Final summary (when status=="complete")
+	Reason    string `json:"reason"`   // Explanation for needs_help or blocked
+	PeerAgent string `json:"peer"`     // Peer agent name to consult (when status=="ask_peer")
+	Question  string `json:"question"` // Question to ask the peer (when status=="ask_peer")
 }
 
 // maxConversationMemory is the number of recent messages to include as context.
@@ -244,6 +572,10 @@ const defaultMaxNeedsHelpWait = 15 * time.Minute
 // while waiting for operator intervention.
 const defaultNeedsHelpReminderInterval = 60 * time.Second
 
+// mediaInterFileWait adds a short controlled pause between sequential file
+// generations for media subtasks to improve provider stability/coherence.
+const defaultMediaInterFileWait = 1200 * time.Millisecond
+
 // maxInterventionContextChars caps the accumulated operator intervention text
 // injected into a single execution round.
 const defaultMaxInterventionContextChars = 4000
@@ -262,6 +594,8 @@ var (
 	maxNeedsHelpWait = envDuration("ORCH_NEEDS_HELP_TIMEOUT", defaultMaxNeedsHelpWait, 30*time.Second)
 	// ORCH_NEEDS_HELP_REMINDER_INTERVAL: reminder cadence while paused.
 	needsHelpReminderInterval = envDuration("ORCH_NEEDS_HELP_REMINDER_INTERVAL", defaultNeedsHelpReminderInterval, 5*time.Second)
+	// ORCH_MEDIA_INTER_FILE_WAIT: delay between per-file media generations.
+	mediaInterFileWait = envDuration("ORCH_MEDIA_INTER_FILE_WAIT", defaultMediaInterFileWait, 0)
 
 	// ORCH_MAX_INTERVENTION_CONTEXT_CHARS: max accumulated operator instructions.
 	maxInterventionContextChars = envInt("ORCH_MAX_INTERVENTION_CONTEXT_CHARS", defaultMaxInterventionContextChars, 500, 20000)
@@ -379,6 +713,12 @@ type agentResult struct {
 	Err             error
 }
 
+type mediaOutputRequirement struct {
+	Path   string
+	Width  int
+	Height int
+}
+
 func New(s *store.Store, eb *eventbus.EventBus, llmCfg LLMConfig) *Orchestrator {
 	return &Orchestrator{
 		store:     s,
@@ -438,6 +778,30 @@ func (o *Orchestrator) resolveConnector(ctx context.Context, agent *models.Agent
 
 // StartExecution kicks off the planning → HitL → execution loop for a workforce.
 func (o *Orchestrator) StartExecution(ctx context.Context, workforceID uuid.UUID, objective string, inputs map[string]string) (*models.Execution, error) {
+	return o.startExecution(ctx, workforceID, objective, inputs, models.ExecutionModeAllAgents, nil)
+}
+
+// StartExecutionWithOptions starts an execution with explicit orchestration mode.
+// single_agent mode requires an agent ID in the same workforce and bypasses HitL approval.
+func (o *Orchestrator) StartExecutionWithOptions(
+	ctx context.Context,
+	workforceID uuid.UUID,
+	objective string,
+	inputs map[string]string,
+	mode models.ExecutionMode,
+	agentID *uuid.UUID,
+) (*models.Execution, error) {
+	return o.startExecution(ctx, workforceID, objective, inputs, mode, agentID)
+}
+
+func (o *Orchestrator) startExecution(
+	ctx context.Context,
+	workforceID uuid.UUID,
+	objective string,
+	inputs map[string]string,
+	mode models.ExecutionMode,
+	agentID *uuid.UUID,
+) (*models.Execution, error) {
 	wf, previousStatus, claimed, err := o.store.TryClaimWorkForceExecutionSlot(ctx, workforceID)
 	if err != nil {
 		return nil, fmt.Errorf("claim workforce execution slot: %w", err)
@@ -456,7 +820,8 @@ func (o *Orchestrator) StartExecution(ctx context.Context, workforceID uuid.UUID
 		}
 	}()
 
-	exec, err := o.store.CreateExecution(ctx, workforceID, objective, inputs)
+	execInputs := buildExecutionInputs(inputs, mode, agentID)
+	exec, err := o.store.CreateExecution(ctx, workforceID, objective, execInputs)
 	if err != nil {
 		return nil, fmt.Errorf("create execution: %w", err)
 	}
@@ -497,7 +862,7 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 	defer o.activeExecs.Delete(exec.ID)
 	planningBudget := newPlanningBudgetTracker(exec, wf)
 
-	agents, err := o.loadWorkForceAgents(ctx, wf)
+	agents, err := o.resolveExecutionAgents(ctx, wf, exec)
 	if err != nil {
 		log.Printf("orchestrator: load agents: %v", err)
 		o.failExecution(ctx, exec.ID, wf.ID, err.Error())
@@ -532,6 +897,12 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 		return
 	}
 
+	if normalizedPlan, changed := o.normalizeMediaPlan(ctx, exec.Objective, structuredPlan, agents); changed {
+		structuredPlan = normalizedPlan
+		o.eventBus.PublishSystem(ctx, exec.ID,
+			fmt.Sprintf("Media orchestration normalized: split into %d per-file subtasks.", len(structuredPlan)))
+	}
+
 	if err := o.store.UpdateExecutionStrategy(ctx, exec.ID, strategy); err != nil {
 		log.Printf("orchestrator: update strategy: %v", err)
 	}
@@ -557,6 +928,14 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 		return
 	}
 
+	if shouldAutoRunWithoutApproval(exec) {
+		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypePlanApproved,
+			"Single-agent mode selected. Skipping approval and starting execution.",
+			map[string]any{"mode": executionModeFromInputs(exec.Inputs)}))
+		go o.runExecutionLoop(exec, false)
+		return
+	}
+
 	// If the execution was halted during planning, do not overwrite the halted status
 	select {
 	case <-ctx.Done():
@@ -579,12 +958,12 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 	// Create a formal approval request for plan review
 	wfID := wf.ID
 	approvalReq := &models.CreateApprovalRequest{
-		ExecutionID:  &exec.ID,
-		ActionType:   models.ApprovalActionExecutionStart,
-		Title:        fmt.Sprintf("Approve execution plan for '%s'", wf.Name),
-		Description:  approvalSummary,
-		Confidence:   0.0,
-		RequestedBy:  "orchestrator",
+		ExecutionID: &exec.ID,
+		ActionType:  models.ApprovalActionExecutionStart,
+		Title:       fmt.Sprintf("Approve execution plan for '%s'", wf.Name),
+		Description: approvalSummary,
+		Confidence:  0.0,
+		RequestedBy: "orchestrator",
 	}
 	if approval, err := o.store.CreateApproval(ctx, wfID, approvalReq); err != nil {
 		log.Printf("orchestrator: create approval: %v", err)
@@ -908,7 +1287,7 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		return
 	}
 
-	agents, err := o.loadWorkForceAgents(ctx, wf)
+	agents, err := o.resolveExecutionAgents(ctx, wf, exec)
 	if err != nil {
 		log.Printf("orchestrator: load agents: %v", err)
 		o.failExecution(ctx, exec.ID, wf.ID, err.Error())
@@ -954,6 +1333,9 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		if err := o.store.UpdateExecutionPlan(ctx, exec.ID, plan); err != nil {
 			log.Printf("orchestrator: store simple plan: %v", err)
 		}
+	}
+	if normalizedPlan, changed := o.normalizeMediaPlan(ctx, exec.Objective, plan, agents); changed {
+		plan = normalizedPlan
 	}
 
 	if resume {
@@ -1246,7 +1628,7 @@ type runAgentParams struct {
 	exec            *models.Execution
 	wf              *models.WorkForce
 	agent           *models.Agent
-	allAgents       []*models.Agent          // all agents in the workforce — needed for ask_peer (P2)
+	allAgents       []*models.Agent // all agents in the workforce — needed for ask_peer (P2)
 	iteration       int
 	subtask         *models.ExecutionSubtask // current pipeline step
 	handoffCtx      string                   // outputs from completed depends_on subtasks
@@ -1426,6 +1808,10 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	}
 	if err := o.store.CreateMessage(ctx, promptMsg); err != nil {
 		log.Printf("orchestrator: log prompt message: %v", err)
+	}
+
+	if engine.IsMediaConnector(eng) {
+		return o.runMediaSubtask(ctx, p, eng, modelName, systemPrompt, instructions, workspacePath, taskMsg)
 	}
 
 	// Resolve MCP tool definitions for this agent
@@ -1742,6 +2128,155 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		Summary:         summary,
 		NeedsHelp:       needsHelp || blocked,
 		NeedsHelpReason: reason,
+	}
+}
+
+func (o *Orchestrator) runMediaSubtask(
+	ctx context.Context,
+	p runAgentParams,
+	eng engine.Connector,
+	modelName, systemPrompt, instructions, workspacePath, fallbackMessage string,
+) agentResult {
+	agent := p.agent
+	agentID := agent.ID
+	requirements := selectSubtaskMediaRequirements(p.exec.Objective, p.subtask.Subtask)
+	if len(requirements) == 0 {
+		requirements = []mediaOutputRequirement{{}}
+	}
+
+	var totalTokensIn, totalTokensOut, totalTokensUsed, totalLatency int64
+	contentParts := make([]string, 0, len(requirements))
+	validatedPaths := make([]string, 0, len(requirements))
+
+	for i, req := range requirements {
+		message := fallbackMessage
+		if req.Path != "" {
+			message = buildMediaSpecMessage(
+				buildSingleOutputMediaPrompt(p.exec.Objective, p.subtask.Subtask, p.handoffCtx, req.Path),
+				req.Path,
+				inferAspectRatio(req.Width, req.Height),
+			)
+		}
+
+		o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentActing,
+			fmt.Sprintf("%s is generating media %d/%d...", agent.Name, i+1, len(requirements)),
+			map[string]any{"output_path": req.Path, "index": i + 1, "total": len(requirements)}))
+
+		resp, err := eng.Submit(ctx, engine.TaskRequest{
+			AgentID:       agent.ID,
+			AgentName:     agent.Name,
+			SystemPrompt:  systemPrompt,
+			Instructions:  instructions,
+			Message:       message,
+			Model:         modelName,
+			WorkspacePath: workspacePath,
+		})
+		if err != nil {
+			return agentResult{
+				AgentID:         agentID,
+				AgentName:       agent.Name,
+				NeedsHelp:       true,
+				NeedsHelpReason: fmt.Sprintf("media generation failed for %q: %v", req.Path, err),
+			}
+		}
+
+		contentParts = append(contentParts, strings.TrimSpace(resp.Content))
+		totalTokensIn += resp.TokensIn
+		totalTokensOut += resp.TokensOut
+		totalTokensUsed += resp.TokensUsed
+		totalLatency += resp.LatencyMs
+
+		reportedPath := req.Path
+		if reportedPath == "" {
+			reportedPath = extractGeneratedMediaPath(resp.Content)
+		}
+		if reportedPath != "" {
+			if err := validateRequiredMediaFile(workspacePath, reportedPath, req.Width, req.Height); err != nil {
+				return agentResult{
+					AgentID:         agentID,
+					AgentName:       agent.Name,
+					NeedsHelp:       true,
+					NeedsHelpReason: fmt.Sprintf("validation failed for required media output %q: %v", reportedPath, err),
+				}
+			}
+			validatedPaths = append(validatedPaths, reportedPath)
+		} else if req.Path != "" {
+			return agentResult{
+				AgentID:         agentID,
+				AgentName:       agent.Name,
+				NeedsHelp:       true,
+				NeedsHelpReason: fmt.Sprintf("media provider did not report a generated path for required output %q", req.Path),
+			}
+		}
+
+		if i < len(requirements)-1 && mediaInterFileWait > 0 {
+			select {
+			case <-ctx.Done():
+				return agentResult{AgentID: agentID, AgentName: agent.Name, Err: ctx.Err()}
+			case <-time.After(mediaInterFileWait):
+			}
+		}
+	}
+
+	content := strings.TrimSpace(strings.Join(contentParts, "\n\n"))
+	if len(validatedPaths) > 0 {
+		content = fmt.Sprintf("Generated media files: %s\n\n%s", strings.Join(validatedPaths, ", "), content)
+	}
+
+	responseMsg := &models.Message{
+		ID:          uuid.New(),
+		ExecutionID: p.exec.ID,
+		AgentID:     &agentID,
+		AgentName:   agent.Name,
+		Iteration:   p.iteration,
+		Role:        models.MessageRoleAssistant,
+		Content:     content,
+		TokensIn:    totalTokensIn,
+		TokensOut:   totalTokensOut,
+		Model:       modelName,
+		LatencyMs:   totalLatency,
+		CreatedAt:   time.Now(),
+	}
+	if err := o.store.CreateMessage(ctx, responseMsg); err != nil {
+		log.Printf("orchestrator: log media response message: %v", err)
+	}
+
+	tokensForCall := totalTokensIn + totalTokensOut
+	if tokensForCall == 0 {
+		tokensForCall = totalTokensUsed
+	}
+	p.execCtx.tokensUsed.Add(tokensForCall)
+	o.store.IncrementExecutionTokens(ctx, p.exec.ID, tokensForCall)
+
+	o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentCompleted,
+		fmt.Sprintf("%s completed their subtask.", agent.Name),
+		map[string]any{
+			"content":       content,
+			"tokens_total":  tokensForCall,
+			"tokens_input":  totalTokensIn,
+			"tokens_output": totalTokensOut,
+			"model":         modelName,
+			"latency_ms":    totalLatency,
+			"outputs":       validatedPaths,
+		}))
+
+	if o.knowledgeManager != nil {
+		o.knowledgeManager.IngestSingleMessage(ctx, p.wf.ID, p.exec.ID, &agentID,
+			agent.Name, p.iteration, content, modelName)
+	}
+
+	summary := ""
+	if len(validatedPaths) > 0 {
+		summary = fmt.Sprintf("Generated %d media file(s): %s", len(validatedPaths), strings.Join(validatedPaths, ", "))
+	}
+
+	return agentResult{
+		AgentID:   agentID,
+		AgentName: agent.Name,
+		Content:   content,
+		Tokens:    tokensForCall,
+		Complete:  true,
+		Summary:   summary,
 	}
 }
 
@@ -2088,6 +2623,93 @@ func (o *Orchestrator) loadWorkForceAgents(ctx context.Context, wf *models.WorkF
 	return o.store.GetAgentsBatch(ctx, wf.AgentIDs)
 }
 
+func (o *Orchestrator) resolveExecutionAgents(ctx context.Context, wf *models.WorkForce, exec *models.Execution) ([]*models.Agent, error) {
+	agents, err := o.loadWorkForceAgents(ctx, wf)
+	if err != nil {
+		return nil, err
+	}
+	if len(agents) == 0 {
+		return agents, nil
+	}
+	if executionModeFromInputs(exec.Inputs) != models.ExecutionModeSingleAgent {
+		return agents, nil
+	}
+
+	if selected, ok := selectedExecutionAgentID(exec.Inputs); ok {
+		for _, a := range agents {
+			if a.ID == selected {
+				return []*models.Agent{a}, nil
+			}
+		}
+	}
+
+	if wf.LeaderAgentID != nil {
+		for _, a := range agents {
+			if a.ID == *wf.LeaderAgentID {
+				return []*models.Agent{a}, nil
+			}
+		}
+	}
+
+	return []*models.Agent{agents[0]}, nil
+}
+
+func buildExecutionInputs(inputs map[string]string, mode models.ExecutionMode, agentID *uuid.UUID) map[string]string {
+	out := make(map[string]string, len(inputs)+2)
+	for k, v := range inputs {
+		out[k] = v
+	}
+
+	resolvedMode := normalizeExecutionMode(mode)
+	out[executionModeInputKey] = string(resolvedMode)
+	if resolvedMode == models.ExecutionModeSingleAgent && agentID != nil {
+		out[executionAgentIDInputKey] = agentID.String()
+	}
+
+	return out
+}
+
+func normalizeExecutionMode(mode models.ExecutionMode) models.ExecutionMode {
+	mode = models.ExecutionMode(strings.TrimSpace(strings.ToLower(string(mode))))
+	switch mode {
+	case "", models.ExecutionModeAllAgents:
+		return models.ExecutionModeAllAgents
+	case models.ExecutionModeSingleAgent:
+		return models.ExecutionModeSingleAgent
+	default:
+		return models.ExecutionModeAllAgents
+	}
+}
+
+func executionModeFromInputs(inputs map[string]string) models.ExecutionMode {
+	if inputs == nil {
+		return models.ExecutionModeAllAgents
+	}
+	return normalizeExecutionMode(models.ExecutionMode(inputs[executionModeInputKey]))
+}
+
+func selectedExecutionAgentID(inputs map[string]string) (uuid.UUID, bool) {
+	if inputs == nil {
+		return uuid.Nil, false
+	}
+	raw := strings.TrimSpace(inputs[executionAgentIDInputKey])
+	if raw == "" {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func shouldAutoRunWithoutApproval(exec *models.Execution) bool {
+	if exec == nil {
+		return false
+	}
+	return executionModeFromInputs(exec.Inputs) == models.ExecutionModeSingleAgent
+}
+
 func (o *Orchestrator) failExecution(ctx context.Context, execID, wfID uuid.UUID, errMsg string) {
 	o.store.UpdateExecutionStatus(ctx, execID, models.ExecutionStatusFailed)
 	o.store.UpdateWorkForceStatus(ctx, wfID, models.WorkForceStatusFailed)
@@ -2164,16 +2786,37 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 
 	// Enrich activity metadata with human-readable names and title
 	var wfName, execTitle string
+	var execModel *models.Execution
 	if wf, err := o.store.GetWorkForce(ctx, wfID); err == nil {
 		wfName = wf.Name
 	}
-	if exec, err := o.store.GetExecution(ctx, execID); err == nil && exec.Title != "" {
-		execTitle = exec.Title
+	if exec, err := o.store.GetExecution(ctx, execID); err == nil {
+		execModel = exec
+		if exec.Title != "" {
+			execTitle = exec.Title
+		}
 	}
 	// If this execution was linked to a kanban task, mark it done and run QA review.
 	if task, _ := o.store.FindKanbanTaskByExecutionID(ctx, execID); task != nil {
 		done := models.KanbanStatusDone
-		o.store.UpdateKanbanTask(ctx, task.ID, models.UpdateKanbanTaskRequest{Status: &done})
+		updateReq := models.UpdateKanbanTaskRequest{Status: &done}
+		completionNote := buildKanbanCompletionKnowledgeEntry(
+			result,
+			o.knowledgeManager != nil,
+			execModel != nil && execModel.ProjectID != nil && *execModel.ProjectID != uuid.Nil,
+		)
+		if completionNote != "" {
+			notes := completionNote
+			if strings.TrimSpace(task.Notes) != "" {
+				notes = task.Notes + "\n" + completionNote
+			}
+			updateReq.Notes = &notes
+		}
+		if updatedTask, err := o.store.UpdateKanbanTask(ctx, task.ID, updateReq); err != nil {
+			log.Printf("kanban: failed to update task %s after execution completion: %v", task.ID, err)
+		} else if updatedTask != nil {
+			task = updatedTask
+		}
 		// QA runs in background — don't block the completion flow
 		go o.evaluateKanbanTaskCompletion(context.Background(), task, result, wfID)
 	}
@@ -2243,6 +2886,75 @@ func (o *Orchestrator) completeExecution(ctx context.Context, execID, wfID uuid.
 		}
 		o.enqueueProjectBriefRefresh(*exec.ProjectID, "post_execution")
 	}()
+}
+
+func buildKanbanCompletionKnowledgeEntry(result string, includeKnowledge bool, includeProjectFacts bool) string {
+	summary := summarizeExecutionResultForKanban(result)
+	if summary == "" {
+		summary = "Task completed successfully."
+	}
+
+	parts := []string{fmt.Sprintf("[%s] ✓ done: %s", time.Now().Format("2006-01-02 15:04"), summary)}
+
+	if artifacts := extractWorkspaceArtifacts(result, 4); len(artifacts) > 0 {
+		parts = append(parts, fmt.Sprintf("artifacts: %s", strings.Join(artifacts, ", ")))
+	}
+
+	if includeKnowledge {
+		ragSources := []string{"execution_result", "agent_messages", "lessons"}
+		if includeProjectFacts {
+			ragSources = append(ragSources, "project_facts")
+		}
+		parts = append(parts, fmt.Sprintf("knowledge saved for RAG: %s", strings.Join(ragSources, ", ")))
+	}
+
+	return strings.Join(parts, " | ")
+}
+
+func summarizeExecutionResultForKanban(result string) string {
+	for _, rawLine := range strings.Split(result, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "```") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			if idx := strings.Index(line, "]:"); idx > 0 && idx+2 < len(line) {
+				line = strings.TrimSpace(line[idx+2:])
+			}
+		}
+		line = strings.TrimSpace(strings.TrimLeft(line, "#*- "))
+		if line == "" || strings.HasPrefix(line, "{") {
+			continue
+		}
+		return truncateStr(line, 280)
+	}
+	return ""
+}
+
+func extractWorkspaceArtifacts(text string, maxCount int) []string {
+	if maxCount <= 0 {
+		return nil
+	}
+
+	matches := workspaceArtifactPathPattern.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(matches))
+	artifacts := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if _, ok := seen[match]; ok {
+			continue
+		}
+		seen[match] = struct{}{}
+		artifacts = append(artifacts, match)
+		if len(artifacts) >= maxCount {
+			break
+		}
+	}
+
+	return artifacts
 }
 
 // extractAndIngestLessons runs a lightweight LLM call to distill 3-5 reusable lessons
@@ -3020,6 +3732,7 @@ func (o *Orchestrator) runDiscussion(ctx context.Context, exec *models.Execution
 			"- If one agent can handle everything efficiently, assign ALL subtasks to them (minimize token waste)\n"+
 			"- Only include an agent if they add unique value the primary executor cannot provide\n"+
 			"- Each subtask must be a concrete, actionable deliverable — not vague\n"+
+			"- If a media agent must produce multiple output files, create one subtask per output file and chain them with depends_on\n"+
 			"- Keep the plan minimal: fewer steps = faster, cheaper execution\n\n"+
 			"Respond with ONLY this JSON (no other text, no markdown fence):\n"+
 			`{"plan":[{"id":"1","agent_id":"<uuid>","agent_name":"<name>","subtask":"<concrete description>","depends_on":[]},`+
@@ -3174,10 +3887,10 @@ func (o *Orchestrator) runPeerConsultation(
 		ID: uuid.New(), ExecutionID: exec.ID,
 		AgentID: &peerID, AgentName: peer.Name,
 		Iteration: 0, Phase: models.MessagePhasePeerConsultation,
-		Role:      models.MessageRoleAssistant,
-		Content:   resp.Content,
-		TokensIn:  resp.TokensIn, TokensOut: resp.TokensOut,
-		Model:     resp.Model, LatencyMs: resp.LatencyMs, CreatedAt: time.Now(),
+		Role:     models.MessageRoleAssistant,
+		Content:  resp.Content,
+		TokensIn: resp.TokensIn, TokensOut: resp.TokensOut,
+		Model: resp.Model, LatencyMs: resp.LatencyMs, CreatedAt: time.Now(),
 	})
 
 	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &peerID, peer.Name,
@@ -3285,10 +3998,10 @@ func (o *Orchestrator) runReview(
 		ID: uuid.New(), ExecutionID: exec.ID,
 		AgentID: &leaderID, AgentName: leaderAgent.Name,
 		Iteration: 0, Phase: models.MessagePhaseReview,
-		Role:      models.MessageRoleAssistant,
-		Content:   resp.Content,
-		TokensIn:  resp.TokensIn, TokensOut: resp.TokensOut,
-		Model:     resp.Model, LatencyMs: resp.LatencyMs, CreatedAt: time.Now(),
+		Role:     models.MessageRoleAssistant,
+		Content:  resp.Content,
+		TokensIn: resp.TokensIn, TokensOut: resp.TokensOut,
+		Model: resp.Model, LatencyMs: resp.LatencyMs, CreatedAt: time.Now(),
 	})
 
 	// Parse review signal for event metadata
@@ -3467,13 +4180,13 @@ func (o *Orchestrator) ContinueExecution(ctx context.Context, prevExecID uuid.UU
 func (o *Orchestrator) ResumeWithInstruction(ctx context.Context, execID uuid.UUID, instruction string) error {
 	// Store the instruction as a message so agents see it after resume
 	msg := &models.Message{
-		ID:        uuid.New(),
+		ID:          uuid.New(),
 		ExecutionID: execID,
-		Iteration: 0,
-		Role:      models.MessageRoleUser,
-		AgentName: "operator",
-		Content:   "[Operator instruction]: " + instruction,
-		CreatedAt: time.Now(),
+		Iteration:   0,
+		Role:        models.MessageRoleUser,
+		AgentName:   "operator",
+		Content:     "[Operator instruction]: " + instruction,
+		CreatedAt:   time.Now(),
 	}
 	o.store.CreateMessage(ctx, msg)
 	return o.ResumeExecution(ctx, execID)

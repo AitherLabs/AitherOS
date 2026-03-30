@@ -278,7 +278,7 @@ function ActionCard({ exec }: { exec: ExecWithMeta }) {
 
 /* ─── Main component ─── */
 export function OverviewStats() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const router = useRouter();
   const [loading, setLoading]                   = useState(true);
   const [agents, setAgents]                     = useState<Agent[]>([]);
@@ -297,8 +297,16 @@ export function OverviewStats() {
   }, []);
 
   const loadAll = useCallback(async () => {
+    if (status === 'loading') return;
+    const accessToken = (session as any)?.accessToken as string | undefined;
+    if (!accessToken) {
+      api.setToken(null);
+      setLoading(false);
+      return;
+    }
+
     try {
-      if (session?.accessToken) api.setToken(session.accessToken);
+      api.setToken(accessToken);
       const [agRes, wfRes, pvRes, execRes, actRes] = await Promise.all([
         api.listAgents(),
         api.listWorkforces(),
@@ -336,7 +344,7 @@ export function OverviewStats() {
     } finally {
       setLoading(false);
     }
-  }, [session]);
+  }, [session, status]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 

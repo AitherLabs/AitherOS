@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/aitheros/backend/internal/models"
 	"github.com/aitheros/backend/internal/store"
@@ -150,6 +152,57 @@ func (h *WorkForceHandler) Provision(w http.ResponseWriter, r *http.Request) {
 		"message":        "provisioning started",
 		"workspace_path": workspace.WorkspacePath(wf.Name),
 	})
+}
+
+// File serves a file from the workforce workspace.
+// GET /api/v1/workforces/{id}/files?path=generated/example.png
+func (h *WorkForceHandler) File(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workforce id")
+		return
+	}
+
+	rel := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rel == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	// Normalize and prevent traversal outside workspace root.
+	cleanRel := filepath.Clean(strings.TrimPrefix(rel, "/"))
+	if cleanRel == "." || strings.HasPrefix(cleanRel, "..") {
+		writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	wf, err := h.store.GetWorkForce(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	workspaceRoot := workspace.WorkspacePath(wf.Name)
+	abs := filepath.Join(workspaceRoot, cleanRel)
+	workspacePrefix := workspaceRoot + string(os.PathSeparator)
+	if abs != workspaceRoot && !strings.HasPrefix(abs, workspacePrefix) {
+		writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path must be a file")
+		return
+	}
+
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	http.ServeFile(w, r, abs)
 }
 
 func (h *WorkForceHandler) Delete(w http.ResponseWriter, r *http.Request) {

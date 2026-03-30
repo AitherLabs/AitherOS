@@ -240,10 +240,23 @@ class ApiClient {
   }
 
   // ── Executions ────────────────────────────────────────
-  async startExecution(workforceId: string, objective: string, inputs?: Record<string, string>, projectId?: string) {
+  async startExecution(
+    workforceId: string,
+    objective: string,
+    inputs?: Record<string, string>,
+    projectId?: string,
+    mode: ExecutionMode = 'all_agents',
+    agentId?: string
+  ) {
     return this.request<Execution>(`/api/v1/workforces/${workforceId}/executions`, {
       method: 'POST',
-      body: JSON.stringify({ objective, inputs, project_id: projectId || undefined })
+      body: JSON.stringify({
+        objective,
+        inputs,
+        project_id: projectId || undefined,
+        mode,
+        agent_id: mode === 'single_agent' ? agentId || undefined : undefined
+      })
     });
   }
 
@@ -714,6 +727,8 @@ export interface ExecutionSubtask {
   output: string;
   error_msg?: string;
 }
+
+export type ExecutionMode = 'all_agents' | 'single_agent';
 
 export interface Execution {
   id: string;

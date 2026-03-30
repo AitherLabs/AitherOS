@@ -2,16 +2,59 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/aitheros/backend/internal/engine"
 	"github.com/aitheros/backend/internal/mcp"
 	"github.com/aitheros/backend/internal/models"
 	"github.com/aitheros/backend/internal/store"
+	"github.com/aitheros/backend/internal/workspace"
 	"github.com/google/uuid"
 )
+
+func sanitizeMediaFilename(name string) string {
+	base := strings.TrimSpace(name)
+	if base == "" {
+		return ""
+	}
+
+	base = filepath.Base(strings.ReplaceAll(base, "\\", "/"))
+	if base == "." || base == ".." {
+		return ""
+	}
+
+	base = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '.', r == '-', r == '_':
+			return r
+		case r == ' ':
+			return '_'
+		default:
+			return -1
+		}
+	}, base)
+
+	base = strings.Trim(base, "._")
+	if base == "" {
+		return ""
+	}
+	if filepath.Ext(base) == "" {
+		base += ".png"
+	}
+	return base
+}
 
 type DebugHandler struct {
 	store    *store.Store
@@ -188,6 +231,53 @@ func (h *DebugHandler) Debug(w http.ResponseWriter, r *http.Request) {
 		Model:        modelName,
 		Tools:        agent.Tools,
 		ToolDefs:     toolDefs,
+	}
+
+	if req.Inputs != nil {
+		if wfIDRaw := strings.TrimSpace(req.Inputs["workforce_id"]); wfIDRaw != "" {
+			if wfID, parseErr := uuid.Parse(wfIDRaw); parseErr == nil {
+				if wf, wfErr := h.store.GetWorkForce(r.Context(), wfID); wfErr == nil {
+					isMember := false
+					for _, memberAgentID := range wf.AgentIDs {
+						if memberAgentID == agentID {
+							isMember = true
+							break
+						}
+					}
+					if isMember {
+						taskReq.WorkspacePath = workspace.WorkspacePath(wf.Name)
+					}
+				}
+			}
+		}
+	}
+
+	if engine.IsMediaConnector(conn) {
+		prompt := ""
+		filename := ""
+		aspectRatio := ""
+		if req.Inputs != nil {
+			prompt = strings.TrimSpace(req.Inputs["prompt"])
+			filename = sanitizeMediaFilename(req.Inputs["output_filename"])
+			aspectRatio = strings.TrimSpace(req.Inputs["aspect_ratio"])
+		}
+		if prompt == "" {
+			prompt = strings.TrimSpace(req.Message)
+		}
+		if filename == "" {
+			filename = fmt.Sprintf("image_%d.png", time.Now().UnixMilli())
+		}
+
+		spec := map[string]string{
+			"prompt":      prompt,
+			"output_path": filepath.ToSlash(filepath.Join("generated", filename)),
+		}
+		if aspectRatio != "" {
+			spec["aspect_ratio"] = aspectRatio
+		}
+		if b, marshalErr := json.Marshal(spec); marshalErr == nil {
+			taskReq.Message = string(b)
+		}
 	}
 
 	// If we have history, use it (overrides SystemPrompt+Message in the connector)

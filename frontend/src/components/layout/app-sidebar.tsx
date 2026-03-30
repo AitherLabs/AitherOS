@@ -81,6 +81,24 @@ export default function AppSidebar() {
     return () => window.removeEventListener('profileUpdated', handler);
   }, [fetchProfile]);
 
+  const getSignOutCallbackUrl = React.useCallback(() => {
+    if (typeof window !== 'undefined') {
+      return `${window.location.origin}/auth/sign-in`;
+    }
+    const configuredAppUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+    if (configuredAppUrl) {
+      return `${configuredAppUrl.replace(/\/$/, '')}/auth/sign-in`;
+    }
+    return '/auth/sign-in';
+  }, []);
+
+  const handleSignOut = React.useCallback(async () => {
+    await signOut({ redirect: false, callbackUrl: getSignOutCallbackUrl() });
+    if (typeof window !== 'undefined') {
+      window.location.assign('/auth/sign-in');
+    }
+  }, [getSignOutCallbackUrl]);
+
   return (
     <Sidebar collapsible='icon'>
       <SidebarHeader>
@@ -265,7 +283,7 @@ export default function AppSidebar() {
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => signOut({ callbackUrl: `${window.location.origin}/auth/sign-in` })}
+                  onClick={handleSignOut}
                 >
                   <IconLogout className='mr-2 h-4 w-4' />
                   Sign out

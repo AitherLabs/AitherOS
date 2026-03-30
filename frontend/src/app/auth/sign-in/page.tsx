@@ -10,7 +10,17 @@ import { Label } from '@/components/ui/label';
 export default function SignInPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get('callbackUrl') || '/dashboard/overview';
+  const rawCallbackUrl = searchParams.get('callbackUrl') || '/dashboard/overview';
+  const callbackPath = (() => {
+    if (!rawCallbackUrl) return '/dashboard/overview';
+    if (rawCallbackUrl.startsWith('/')) return rawCallbackUrl;
+    try {
+      const parsed = new URL(rawCallbackUrl);
+      return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/dashboard/overview';
+    } catch {
+      return '/dashboard/overview';
+    }
+  })();
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -24,6 +34,7 @@ export default function SignInPage() {
     const result = await signIn('credentials', {
       login,
       password,
+      callbackUrl: callbackPath,
       redirect: false
     });
 
@@ -34,7 +45,15 @@ export default function SignInPage() {
       return;
     }
 
-    router.push(callbackUrl);
+    // Force a full navigation so auth cookies/session are guaranteed to be
+    // visible immediately across server + client rendered routes.
+    if (typeof window !== 'undefined') {
+      window.location.assign(callbackPath);
+      return;
+    }
+
+    router.replace(callbackPath);
+    router.refresh();
   }
 
   return (

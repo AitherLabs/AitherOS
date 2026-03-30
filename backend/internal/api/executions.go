@@ -40,7 +40,46 @@ func (h *ExecutionHandler) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exec, err := h.orchestrator.StartExecution(r.Context(), wfID, req.Objective, req.Inputs)
+	mode := req.Mode
+	if mode == "" {
+		mode = models.ExecutionModeAllAgents
+	}
+	if mode != models.ExecutionModeAllAgents && mode != models.ExecutionModeSingleAgent {
+		writeError(w, http.StatusBadRequest, "invalid mode: use 'all_agents' or 'single_agent'")
+		return
+	}
+
+	var selectedAgentID *uuid.UUID
+	if mode == models.ExecutionModeSingleAgent {
+		if req.AgentID == nil || strings.TrimSpace(*req.AgentID) == "" {
+			writeError(w, http.StatusBadRequest, "agent_id is required for single_agent mode")
+			return
+		}
+		parsedAgentID, parseErr := uuid.Parse(strings.TrimSpace(*req.AgentID))
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid agent_id")
+			return
+		}
+		wf, wfErr := h.store.GetWorkForce(r.Context(), wfID)
+		if wfErr != nil {
+			writeError(w, http.StatusNotFound, "workforce not found")
+			return
+		}
+		allowed := false
+		for _, id := range wf.AgentIDs {
+			if id == parsedAgentID {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			writeError(w, http.StatusBadRequest, "agent_id does not belong to this workforce")
+			return
+		}
+		selectedAgentID = &parsedAgentID
+	}
+
+	exec, err := h.orchestrator.StartExecutionWithOptions(r.Context(), wfID, req.Objective, req.Inputs, mode, selectedAgentID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start execution: "+err.Error())
 		return
