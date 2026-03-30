@@ -1786,29 +1786,37 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	if toolRoundBudget < 4 {
 		toolRoundBudget = 4
 	}
-	taskParts = append(taskParts, fmt.Sprintf(
+
+	// Pre-fetch workspace snapshot and available secrets so agents don't waste
+	// tool rounds on list_directory / list_secrets discovery at the start of every subtask.
+	wsSnapshot := buildWorkspaceSnapshot(workspacePath)
+	secretsLines := buildSecretsSnapshot(ctx, o.store, p.wf.ID)
+
+	wsSection := fmt.Sprintf(
 		"## Your Workspace\n"+
 			"Path: `%s`\n\n"+
 			"This is your dedicated workspace — treat it exactly like a local development machine:\n"+
 			"- Full read/write access. Create, edit, delete files freely.\n"+
 			"- Use `run_command` to run git, npm, python, cargo, curl, bash scripts — anything.\n"+
 			"- Clone repos here, run builds, write output files. Files persist for this workforce.\n"+
-			"- Prefer local workspace/repo files first; fetch from GitHub only when the file is not available locally.\n\n"+
-			"**Credentials** — your team's stored secrets are available via Aither-Tools:\n"+
-			"- `list_secrets()` — discover all available service/key pairs before making authenticated requests\n"+
-			"- `get_secret(\"service\", \"key_name\")` — retrieve a specific credential value\n"+
-			"- If a credential you need is not listed, signal `needs_help` with the exact service and key name.",
-		workspacePath))
+			"- Prefer local workspace/repo files first; fetch from GitHub only when the file is not available locally.\n"+
+			"- `/workspace/` is an alias for your workspace root — use it in tool paths (e.g. `/workspace/output.md`).",
+		workspacePath)
+	if wsSnapshot != "" {
+		wsSection += "\n\n**Current workspace contents:**\n" + wsSnapshot
+	}
+	wsSection += "\n\n**Credentials** — call `get_secret(service, key)` directly. You do NOT need to call `list_secrets()` first.\n" + secretsLines +
+		"\nIf a credential you need is not listed above, signal `needs_help` with the exact service and key name."
+	taskParts = append(taskParts, wsSection)
 
 	taskParts = append(taskParts, fmt.Sprintf("---\n"+
 		"Execute your subtask now using efficient cycles: plan → act → verify.\n"+
 		"Tool budget: up to %d tool rounds for this subtask.\n"+
 		"Efficiency policy:\n"+
-		"- Before first edit, use at most 3 discovery calls.\n"+
+		"- Workspace contents and credentials are listed above — do NOT call list_directory or list_secrets at the start.\n"+
 		"- Avoid repeating the same failing call; after 2 failed attempts, switch approach or signal `needs_help`.\n"+
 		"- Prefer focused reads/searches over broad scans.\n"+
-		"- Use structured tool output (`format=\"json\"`) when supported.\n"+
-		"Workspace: `"+workspacePath+"`  |  Secrets: call `list_secrets()` before any authenticated request.\n"+
+		"- Use http_request directly for all API calls — do NOT write Python/shell scripts for API interactions.\n"+
 		"Kanban: `kanban_list_tasks()` / `kanban_create_task(title, description, priority)` to manage the board.\n\n"+
 		"When done:\n```json\n{\"status\": \"complete\", \"summary\": \"<one sentence>\"}\n```\n"+
 		"Need human input:\n```json\n{\"status\": \"needs_help\", \"reason\": \"<what you tried and need>\"}\n```\n"+
@@ -1877,6 +1885,10 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	maxToolRounds := toolRoundBudget
 	var allToolCalls []engine.ToolCallInfo
 	var totalTokensIn, totalTokensOut, totalLatency int64
+	toolErrorCounts := map[string]int{} // per-tool consecutive error tracking
+	const tokenNudge50k = 50_000
+	const tokenNudge100k = 100_000
+	tokenNudgeFired := map[int]bool{} // tracks which thresholds have fired
 
 	sysContent := systemPrompt
 	if instructions != "" {
@@ -1901,6 +1913,24 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		}
 		if signalled {
 			break
+		}
+
+		// Deduplicate tool calls within this round (same tool + identical args).
+		// Some models occasionally emit the same call twice in one response; skip dupes.
+		{
+			seen := make(map[string]bool, len(resp.ToolCalls))
+			deduped := resp.ToolCalls[:0]
+			for _, tc := range resp.ToolCalls {
+				key := tc.Name + "\x00" + fmt.Sprintf("%v", tc.Args)
+				if seen[key] {
+					o.eventBus.PublishSystem(ctx, p.exec.ID,
+						fmt.Sprintf("%s: skipping duplicate tool call %s (same args as sibling call)", agent.Name, tc.Name))
+					continue
+				}
+				seen[key] = true
+				deduped = append(deduped, tc)
+			}
+			resp.ToolCalls = deduped
 		}
 
 		// Second pass: execute all tool calls concurrently.
@@ -1976,6 +2006,40 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				Content:    result,
 				ToolCallID: tc.ID,
 			})
+			// Track per-tool error counts; inject nudge when a tool keeps failing.
+			if strings.HasPrefix(tc.Result, "Error:") {
+				toolErrorCounts[tc.Name]++
+				if toolErrorCounts[tc.Name] == 3 {
+					nudge := fmt.Sprintf(
+						"SYSTEM NOTICE: Tool '%s' has returned an error %d times. "+
+							"Stop using it for this task. Try a different approach, use a different tool, "+
+							"or signal `needs_help` with what you've tried so far.", tc.Name, toolErrorCounts[tc.Name])
+					o.eventBus.PublishSystem(ctx, p.exec.ID,
+						fmt.Sprintf("%s: injecting error-tool nudge for %s", agent.Name, tc.Name))
+					history = append(history, engine.ChatMessage{Role: "user", Content: nudge})
+				}
+			} else {
+				toolErrorCounts[tc.Name] = 0 // reset on success
+			}
+		}
+
+		// Token budget warnings — remind the agent to wrap up as context grows.
+		totalTokensSoFar := int(totalTokensIn + totalTokensOut)
+		for _, threshold := range []int{tokenNudge50k, tokenNudge100k} {
+			if totalTokensSoFar >= threshold && !tokenNudgeFired[threshold] {
+				tokenNudgeFired[threshold] = true
+				urgency := "approaching"
+				if threshold == tokenNudge100k {
+					urgency = "well past"
+				}
+				history = append(history, engine.ChatMessage{
+					Role: "user",
+					Content: fmt.Sprintf(
+						"SYSTEM NOTICE: You are %s %d tokens of context used in this subtask. "+
+							"Wrap up soon: deliver a partial result, signal `complete` with what you have, "+
+							"or signal `needs_help` if you're blocked. Do not continue indefinitely.", urgency, threshold),
+				})
+			}
 		}
 
 		// Detect tool-call loops and inject a corrective intervention before the next LLM call.
@@ -4589,4 +4653,57 @@ func (o *Orchestrator) AnswerQuestion(ctx context.Context, execID uuid.UUID, que
 		return "", fmt.Errorf("llm call: %w", err)
 	}
 	return resp.Content, nil
+}
+
+// buildWorkspaceSnapshot returns a shallow directory listing of the workspace
+// formatted for injection into the agent's task message. Returns "" on error or
+// empty workspace so callers can skip the section gracefully.
+func buildWorkspaceSnapshot(workspacePath string) string {
+	entries, err := os.ReadDir(workspacePath)
+	if err != nil || len(entries) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, e := range entries {
+		if e.IsDir() {
+			lines = append(lines, "  "+e.Name()+"/")
+		} else {
+			info, _ := e.Info()
+			size := ""
+			if info != nil {
+				lines = append(lines, fmt.Sprintf("  %s (%s)", e.Name(), humanSize(info.Size())))
+			} else {
+				lines = append(lines, "  "+e.Name()+size)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// buildSecretsSnapshot lists stored credential handles (service + key name, no values)
+// so agents know which secrets are available without having to call list_secrets().
+func buildSecretsSnapshot(ctx context.Context, s *store.Store, wfID uuid.UUID) string {
+	creds, err := s.ListCredentials(ctx, wfID)
+	if err != nil || len(creds) == 0 {
+		return "No credentials stored yet."
+	}
+	var lines []string
+	for _, c := range creds {
+		lines = append(lines, fmt.Sprintf("- get_secret(%q, %q)", c.Service, c.KeyName))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// humanSize formats a byte count as a human-readable string (B / KB / MB / GB).
+func humanSize(b int64) string {
+	switch {
+	case b < 1024:
+		return fmt.Sprintf("%d B", b)
+	case b < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(b)/1024)
+	case b < 1024*1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.2f GB", float64(b)/(1024*1024*1024))
+	}
 }
