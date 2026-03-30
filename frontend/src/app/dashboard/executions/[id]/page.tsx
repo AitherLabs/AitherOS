@@ -173,6 +173,79 @@ function formatEventDataKey(key: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Returns the relative path within the workforce workspace if `value` is an
+// absolute path under that workspace root, otherwise null.
+function extractWorkspaceRelPath(value: string, workspacePath: string): string | null {
+  const prefix = workspacePath.endsWith('/') ? workspacePath : workspacePath + '/';
+  const trimmed = value.trim();
+  if (!trimmed.startsWith(prefix)) return null;
+  const rel = trimmed.slice(prefix.length);
+  // Only treat it as a plain path if there are no newlines (not embedded in prose)
+  if (!rel || rel.includes('\n')) return null;
+  return rel;
+}
+
+const PREVIEWABLE_EXTS = new Set([
+  'md', 'txt', 'json', 'yaml', 'yml', 'csv', 'log', 'sh', 'py', 'js', 'ts',
+  'go', 'html', 'xml', 'toml', 'conf', 'cfg', 'ini', 'env', 'rs', 'rb', 'java',
+]);
+
+function WorkspaceFilePath({ relPath, workforceId }: { relPath: string; workforceId: string }) {
+  const [open, setOpen] = useState(false);
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const ext = relPath.split('.').pop()?.toLowerCase() || '';
+  const canPreview = PREVIEWABLE_EXTS.has(ext);
+
+  function handleClick(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!canPreview) return;
+    setOpen(true);
+    if (content === null && !loading) {
+      setLoading(true);
+      setFetchError(null);
+      fetch(`/api/workforces/${workforceId}/files?path=${encodeURIComponent(relPath)}`)
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+          return res.text();
+        })
+        .then((text) => { setContent(text); setLoading(false); })
+        .catch((err) => { setFetchError(err.message || 'Failed to load file'); setLoading(false); });
+    }
+  }
+
+  return (
+    <>
+      <span
+        className={`font-mono text-xs break-all ${canPreview ? 'text-[#9A66FF] cursor-pointer hover:underline decoration-[#9A66FF]/40' : 'text-[#EAEAEA]/80'}`}
+        onClick={canPreview ? handleClick : undefined}
+        title={canPreview ? 'Click to preview file' : undefined}
+      >
+        /workspace/{relPath}
+      </span>
+      {canPreview && (
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent className='max-w-3xl max-h-[80vh] flex flex-col'>
+            <DialogHeader>
+              <DialogTitle className='text-sm font-mono truncate text-[#9A66FF]/90'>/workspace/{relPath}</DialogTitle>
+            </DialogHeader>
+            <ScrollArea className='flex-1 min-h-0'>
+              {loading && <div className='p-4 text-xs text-muted-foreground/60'>Loading…</div>}
+              {fetchError && <div className='p-4 text-xs text-red-400/80'>{fetchError}</div>}
+              {content !== null && !loading && (
+                <pre className={`whitespace-pre-wrap break-words p-4 text-xs leading-relaxed ${ext === 'md' ? 'font-sans text-[#EAEAEA]/85' : 'font-mono text-[#EAEAEA]/80'}`}>
+                  {content}
+                </pre>
+              )}
+            </ScrollArea>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  );
+}
+
 function formatEventDataValue(value: any): string {
   if (value == null) return '';
   if (typeof value === 'string') return value;
@@ -1041,7 +1114,7 @@ interface LiveEvent {
 // EventDetailBody renders structured extra info for the dialog — things that
 // are NOT already shown as ev.content in the dialog header. Returns null if
 // there's nothing additional to display.
-function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
+function EventDetailBody({ ev, dot, workforceId, workspacePath }: { ev: LiveEvent; dot: string; workforceId?: string; workspacePath?: string }) {
   const d = ev.data;
 
   let specific: React.ReactNode = null;
@@ -1063,14 +1136,24 @@ function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
         {args && Object.keys(args).length > 0 && (
           <div className='rounded-lg bg-muted/20 p-3 space-y-2'>
             <span className='text-[10px] font-semibold uppercase text-muted-foreground/50'>Arguments</span>
-            {Object.entries(args).map(([k, v]) => (
-              <div key={k} className='space-y-0.5'>
-                <span className='text-[10px] text-muted-foreground/50'>{k}</span>
-                <pre className='whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-[#EAEAEA]/80 bg-muted/20 rounded p-2'>
-                  {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
-                </pre>
-              </div>
-            ))}
+            {Object.entries(args).map(([k, v]) => {
+              const strVal = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+              const relPath = workspacePath && workforceId ? extractWorkspaceRelPath(strVal, workspacePath) : null;
+              return (
+                <div key={k} className='space-y-0.5'>
+                  <span className='text-[10px] text-muted-foreground/50'>{k}</span>
+                  {relPath ? (
+                    <div className='bg-muted/20 rounded p-2'>
+                      <WorkspaceFilePath relPath={relPath} workforceId={workforceId!} />
+                    </div>
+                  ) : (
+                    <pre className='whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-[#EAEAEA]/80 bg-muted/20 rounded p-2'>
+                      {strVal}
+                    </pre>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -1142,11 +1225,16 @@ function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
       <span className='text-[10px] font-semibold uppercase text-muted-foreground/50'>Event Data</span>
       {metadataEntries.map(([k, v]) => {
         const value = formatEventDataValue(v);
-        const isMultiline = value.includes('\n') || value.length > 90;
+        const relPath = workspacePath && workforceId ? extractWorkspaceRelPath(value, workspacePath) : null;
+        const isMultiline = !relPath && (value.includes('\n') || value.length > 90);
         return (
           <div key={k} className='space-y-0.5'>
             <span className='text-[10px] text-muted-foreground/50'>{formatEventDataKey(k)}</span>
-            {isMultiline ? (
+            {relPath ? (
+              <div className='bg-muted/20 rounded p-2'>
+                <WorkspaceFilePath relPath={relPath} workforceId={workforceId!} />
+              </div>
+            ) : isMultiline ? (
               <pre className='whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-[#EAEAEA]/80 bg-muted/20 rounded p-2'>
                 {value}
               </pre>
@@ -1163,7 +1251,7 @@ function EventDetailBody({ ev, dot }: { ev: LiveEvent; dot: string }) {
   return <div className='space-y-3'>{specific}{metadata}</div>;
 }
 
-function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: string }) {
+function EventCard({ ev, dot, label, workforceId, workspacePath }: { ev: LiveEvent; dot: string; label: string; workforceId?: string; workspacePath?: string }) {
   const [open, setOpen] = useState(false);
   const hasDetail = true;
   const detailCfg = eventTypeDetailConfig[ev.type];
@@ -1230,7 +1318,7 @@ function EventCard({ ev, dot, label }: { ev: LiveEvent; dot: string; label: stri
                 </p>
               )}
               {/* Structured detail — extra info beyond ev.content */}
-              <EventDetailBody ev={ev} dot={dot} />
+              <EventDetailBody ev={ev} dot={dot} workforceId={workforceId} workspacePath={workspacePath} />
             </div>
           </ScrollArea>
         </DialogContent>
@@ -2646,7 +2734,7 @@ export default function ExecutionDetailPage() {
                     const evCfg = eventTypeConfig[ev.type];
                     const dot = evCfg?.dot || '#6B7280';
                     const label = evCfg?.label || ev.type.replace(/_/g, ' ');
-                    return <EventCard key={ev.id} ev={ev} dot={dot} label={label} />;
+                    return <EventCard key={ev.id} ev={ev} dot={dot} label={label} workforceId={workforce?.id} workspacePath={workforce?.workspace_path} />;
                   })
                 )}
                 <div ref={eventsEndRef} />
