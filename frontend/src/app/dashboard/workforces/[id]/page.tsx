@@ -951,7 +951,7 @@ export default function WorkforceDetailPage() {
     setChatFilename('');
     setChatError('');
     setChatActivity([]);
-    setShowAllMediaChatHistory(false);
+    setShowAllChatHistory(false);
   }, [chatAgentId]);
 
   useEffect(() => {

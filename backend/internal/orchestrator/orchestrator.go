@@ -1888,9 +1888,9 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	}
 
 	for toolRound := 0; toolRound < maxToolRounds && len(resp.ToolCalls) > 0; toolRound++ {
+		// First pass: check for virtual signal tools (mutate resp, must be sequential).
 		signalled := false
-		for i, tc := range resp.ToolCalls {
-			// Intercept virtual signal tools before dispatching to MCP.
+		for _, tc := range resp.ToolCalls {
 			if handleVirtualSignalTool(tc, resp) {
 				o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
 					fmt.Sprintf("%s signalled via %s", agent.Name, tc.Name),
@@ -1898,52 +1898,63 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				signalled = true
 				break
 			}
-
-			// Intercept virtual platform tools (Kanban, etc.) before dispatching to MCP.
-			if platformResult, handled := o.handlePlatformTool(ctx, p.wf.ID, agent.Name, tc); handled {
-				resp.ToolCalls[i].Result = platformResult
-				o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
-					fmt.Sprintf("%s called platform tool: %s", agent.Name, tc.Name),
-					map[string]any{"tool": tc.Name, "args": tc.Args, "result": platformResult}))
-				continue
-			}
-
-			o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
-				fmt.Sprintf("%s is calling tool: %s (round %d)", agent.Name, tc.Name, toolRound+1),
-				map[string]any{"tool": tc.Name, "args": tc.Args, "round": toolRound + 1}))
-
-			if p.mcpSession == nil {
-				resp.ToolCalls[i].Result = fmt.Sprintf("Error: tool %q requires MCP — no MCP server is connected to this agent", tc.Name)
-				continue
-			}
-			result, toolErr := p.mcpSession.ExecuteToolCall(ctx, p.wf.ID, tc.Name, tc.Args)
-			// Retry once on rate-limit errors (GitHub secondary rate limit needs ~60s)
-			if toolErr != nil && isRateLimitError(toolErr) {
-				o.eventBus.PublishSystem(ctx, p.exec.ID,
-					fmt.Sprintf("%s: rate limit hit on %s — waiting 62s before retry", agent.Name, tc.Name))
-				select {
-				case <-time.After(62 * time.Second):
-				case <-ctx.Done():
-					resp.ToolCalls[i].Result = "Error: execution cancelled during rate-limit wait"
-					continue
-				}
-				result, toolErr = p.mcpSession.ExecuteToolCall(ctx, p.wf.ID, tc.Name, tc.Args)
-			}
-			if toolErr != nil {
-				resp.ToolCalls[i].Result = fmt.Sprintf("Error: %s", toolErr.Error())
-				o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
-					fmt.Sprintf("Tool %s error: %s", tc.Name, toolErr.Error()), nil))
-			} else {
-				resp.ToolCalls[i].Result = result
-				o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
-					fmt.Sprintf("%s received result from %s (round %d)", agent.Name, tc.Name, toolRound+1),
-					map[string]any{"tool": tc.Name, "result_length": len(result), "round": toolRound + 1}))
-			}
 		}
-
 		if signalled {
 			break
 		}
+
+		// Second pass: execute all tool calls concurrently.
+		// Each goroutine writes to its own index in resp.ToolCalls — no shared state.
+		var wg sync.WaitGroup
+		for i := range resp.ToolCalls {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				tc := resp.ToolCalls[i]
+
+				// Platform tools (Kanban, Knowledge, etc.)
+				if platformResult, handled := o.handlePlatformTool(ctx, p.wf.ID, agent.Name, tc); handled {
+					resp.ToolCalls[i].Result = platformResult
+					o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
+						fmt.Sprintf("%s called platform tool: %s", agent.Name, tc.Name),
+						map[string]any{"tool": tc.Name, "args": tc.Args, "result": platformResult}))
+					return
+				}
+
+				o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
+					fmt.Sprintf("%s is calling tool: %s (round %d)", agent.Name, tc.Name, toolRound+1),
+					map[string]any{"tool": tc.Name, "args": tc.Args, "round": toolRound + 1}))
+
+				if p.mcpSession == nil {
+					resp.ToolCalls[i].Result = fmt.Sprintf("Error: tool %q requires MCP — no MCP server is connected to this agent", tc.Name)
+					return
+				}
+				result, toolErr := p.mcpSession.ExecuteToolCall(ctx, p.wf.ID, tc.Name, tc.Args)
+				// Retry once on rate-limit errors (GitHub secondary rate limit needs ~60s)
+				if toolErr != nil && isRateLimitError(toolErr) {
+					o.eventBus.PublishSystem(ctx, p.exec.ID,
+						fmt.Sprintf("%s: rate limit hit on %s — waiting 62s before retry", agent.Name, tc.Name))
+					select {
+					case <-time.After(62 * time.Second):
+					case <-ctx.Done():
+						resp.ToolCalls[i].Result = "Error: execution cancelled during rate-limit wait"
+						return
+					}
+					result, toolErr = p.mcpSession.ExecuteToolCall(ctx, p.wf.ID, tc.Name, tc.Args)
+				}
+				if toolErr != nil {
+					resp.ToolCalls[i].Result = fmt.Sprintf("Error: %s", toolErr.Error())
+					o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeAgentError,
+						fmt.Sprintf("Tool %s error: %s", tc.Name, toolErr.Error()), nil))
+				} else {
+					resp.ToolCalls[i].Result = result
+					o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name, models.EventTypeToolCall,
+						fmt.Sprintf("%s received result from %s (round %d)", agent.Name, tc.Name, toolRound+1),
+						map[string]any{"tool": tc.Name, "result_length": len(result), "round": toolRound + 1}))
+				}
+			}(i)
+		}
+		wg.Wait()
 
 		allToolCalls = append(allToolCalls, resp.ToolCalls...)
 		totalTokensIn += resp.TokensIn

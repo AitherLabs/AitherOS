@@ -18,6 +18,8 @@ import {
   IconChevronRight,
   IconDownload,
   IconExternalLink,
+  IconFile,
+  IconFolder,
   IconHandStop,
   IconKey,
   IconLoader2,
@@ -37,7 +39,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog';
-import api, { Agent, ChatReply, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
+import api, { Agent, ChatReply, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce, WorkspaceFileEntry } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { Input } from '@/components/ui/input';
@@ -1972,6 +1974,9 @@ export default function ExecutionDetailPage() {
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [objOpen, setObjOpen] = useState(false);
+  const [wsFilesOpen, setWsFilesOpen] = useState(false);
+  const [wsFiles, setWsFiles] = useState<WorkspaceFileEntry[] | null>(null);
+  const [wsFilesLoading, setWsFilesLoading] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const msgContainerRef = useRef<HTMLDivElement>(null);
@@ -2275,6 +2280,15 @@ export default function ExecutionDetailPage() {
     setShowScrollBtn(false);
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [execution?.status]);
+
+  // Lazy-load workspace files when panel is opened
+  useEffect(() => {
+    if (!wsFilesOpen || wsFiles !== null || !workforce?.id) return;
+    setWsFilesLoading(true);
+    api.listWorkspaceFiles(workforce.id)
+      .then((res) => { setWsFiles(res.data ?? []); setWsFilesLoading(false); })
+      .catch(() => { setWsFiles([]); setWsFilesLoading(false); });
+  }, [wsFilesOpen, wsFiles, workforce?.id]);
 
   function handleMsgScroll() {
     const el = msgContainerRef.current;
@@ -3398,7 +3412,56 @@ export default function ExecutionDetailPage() {
               </div>
             )}
 
-            {/* Danger Zone */}
+            {/* Workspace Files */}
+            {workforce?.id && (
+              <div className='border-b border-border/50 shrink-0'>
+                <button
+                  type='button'
+                  onClick={() => setWsFilesOpen(v => !v)}
+                  className='w-full flex items-center justify-between px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors'
+                >
+                  <span className='flex items-center gap-1.5'>
+                    <IconFolder className='h-3 w-3' />
+                    Workspace Files
+                    {wsFiles !== null && (
+                      <span className='ml-1 rounded-full bg-muted/40 px-1.5 py-0.5 text-[9px] font-mono text-muted-foreground/60'>
+                        {wsFiles.length}
+                      </span>
+                    )}
+                  </span>
+                  <IconChevronDown className={`h-3 w-3 transition-transform ${wsFilesOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {wsFilesOpen && (
+                  <div className='px-3 pb-3 space-y-0.5 max-h-52 overflow-y-auto'>
+                    {wsFilesLoading && (
+                      <div className='flex items-center gap-1.5 py-2 text-xs text-muted-foreground/50'>
+                        <IconLoader2 className='h-3 w-3 animate-spin' />
+                        Loading…
+                      </div>
+                    )}
+                    {!wsFilesLoading && wsFiles?.length === 0 && (
+                      <p className='py-2 text-xs text-muted-foreground/40 italic'>No files found</p>
+                    )}
+                    {!wsFilesLoading && wsFiles?.map((f) => {
+                      const ext = f.ext.replace('.', '').toLowerCase();
+                      const isImg = IMAGE_EXTS.has(ext);
+                      const size = f.size < 1024 ? `${f.size}B` : f.size < 1024 * 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${(f.size / 1024 / 1024).toFixed(1)}MB`;
+                      return (
+                        <div key={f.path} className='flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-muted/20 group'>
+                          {isImg
+                            ? <IconFile className='h-3 w-3 shrink-0 text-[#14FFF7]/60' />
+                            : <IconFile className='h-3 w-3 shrink-0 text-muted-foreground/40' />}
+                          <WorkspaceFilePath relPath={f.path} workforceId={workforce.id} />
+                          <span className='ml-auto text-[9px] font-mono text-muted-foreground/30 shrink-0'>{size}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Actions */}
             <div className='p-4 space-y-2 mt-auto'>
               <p className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40'>Actions</p>
               {isRunning && (
