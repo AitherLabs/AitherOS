@@ -1252,14 +1252,15 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
           if (!o) { setNewTitle(''); setNewDesc(''); setNewPriority(1); setNewAssignee(''); setNewProjectId(''); setNewAttachments([]); setNewTaskRefs([]); setFileSearch(''); setTaskRefSearch(''); }
         }}
       >
-        <DialogContent className='max-w-lg'>
-          <DialogHeader>
+        <DialogContent className='max-w-lg flex flex-col max-h-[90vh]'>
+          <DialogHeader className='flex-shrink-0'>
             <DialogTitle>New Task</DialogTitle>
             <DialogDescription>
               Add a task to the Open backlog. Drag it to To Do when ready to action.
             </DialogDescription>
           </DialogHeader>
-          <div className='space-y-4 py-2'>
+          <div className='flex-1 min-h-0 overflow-y-auto'>
+          <div className='space-y-4 py-2 pr-1'>
             <div className='space-y-1.5'>
               <Label>Title <span className='text-destructive'>*</span></Label>
               <Input
@@ -1443,7 +1444,8 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
               })()}
             </div>
           </div>
-          <DialogFooter>
+          </div>
+          <DialogFooter className='flex-shrink-0 border-t border-border/20 pt-4'>
             <Button variant='outline' onClick={() => setAddOpen(false)}>Cancel</Button>
             <Button
               disabled={!newTitle.trim() || adding}

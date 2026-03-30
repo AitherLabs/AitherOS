@@ -435,7 +435,7 @@ export default function AitherHero({ onSignupDone }: AitherHeroProps) {
       {/* Dark overlay so text is always legible */}
       <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg, rgba(10,11,16,0.72) 0%, rgba(10,11,16,0.45) 50%, rgba(10,11,16,0.72) 100%)' }} />
 
-      <div className="relative z-10 h-full flex flex-col justify-between p-8 md:p-12 lg:p-16">
+      <div className="relative z-10 h-full flex flex-col justify-between px-8 pb-8 pt-24 md:px-12 md:pb-12 md:pt-28 lg:px-16 lg:pb-16 lg:pt-32">
 
         {/* ── Top bar ── */}
         <div className="flex items-center justify-between">
