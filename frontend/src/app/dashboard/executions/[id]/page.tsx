@@ -279,7 +279,9 @@ function WorkspaceFilePath({ relPath, workforceId, displayText }: { relPath: str
   return (
     <>
       <span
-        className={`font-mono text-xs break-all ${canPreview ? 'text-[#9A66FF] cursor-pointer hover:underline decoration-[#9A66FF]/40' : 'text-[#EAEAEA]/80'}`}
+        className={displayText
+          ? `font-mono ${canPreview ? 'text-[#9A66FF] cursor-pointer hover:underline underline-offset-2' : ''}`
+          : `font-mono text-xs break-all ${canPreview ? 'text-[#9A66FF] cursor-pointer hover:underline decoration-[#9A66FF]/40' : 'text-[#EAEAEA]/80'}`}
         onClick={canPreview ? handleClick : undefined}
         title={canPreview ? 'Click to preview' : undefined}
       >
