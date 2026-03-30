@@ -8,8 +8,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
-import { IconDeviceFloppy, IconLoader2 } from '@tabler/icons-react';
-import api, { User } from '@/lib/api';
+import { IconDeviceFloppy, IconLoader2, IconUsers } from '@tabler/icons-react';
+import api, { BetaSignup, User } from '@/lib/api';
 import { AvatarUpload } from '@/components/avatar-upload';
 
 export default function ProfilePage() {
@@ -20,6 +20,11 @@ export default function ProfilePage() {
   const [displayName, setDisplayName] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Admin: beta signups
+  const [betaSignups, setBetaSignups] = useState<BetaSignup[]>([]);
+  const [betaLoading, setBetaLoading] = useState(false);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
 
   const loadProfile = useCallback(async () => {
     if (!session?.accessToken) {
@@ -34,6 +39,13 @@ export default function ProfilePage() {
         setUser(u);
         setDisplayName(u.display_name || '');
         setAvatarUrl(u.avatar_url || '');
+        if (u.role === 'admin') {
+          setBetaLoading(true);
+          api.adminListBetaSignups()
+            .then(r => setBetaSignups(r.data || []))
+            .catch(() => {})
+            .finally(() => setBetaLoading(false));
+        }
       }
     } catch (err) {
       console.error('Failed to load profile:', err);
@@ -41,6 +53,18 @@ export default function ProfilePage() {
       setLoading(false);
     }
   }, [session]);
+
+  async function handleBetaStatus(id: string, status: 'pending' | 'approved' | 'rejected') {
+    setUpdatingId(id);
+    try {
+      await api.adminUpdateBetaSignupStatus(id, status);
+      setBetaSignups(prev => prev.map(s => s.id === id ? { ...s, status } : s));
+    } catch (err) {
+      console.error('Failed to update status:', err);
+    } finally {
+      setUpdatingId(null);
+    }
+  }
 
   useEffect(() => {
     loadProfile();
@@ -173,6 +197,91 @@ export default function ProfilePage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Admin-only: Beta Waitlist */}
+      {user?.role === 'admin' && (
+        <>
+          <Separator />
+          <div className='max-w-4xl space-y-4'>
+            <div className='flex items-center gap-2'>
+              <IconUsers className='h-5 w-5 text-[#9A66FF]' />
+              <div>
+                <h3 className='text-base font-semibold'>Beta Waitlist</h3>
+                <p className='text-sm text-muted-foreground'>Closed beta signups from aither.systems</p>
+              </div>
+              <Badge variant='outline' className='ml-auto text-xs'>
+                {betaSignups.length} {betaSignups.length === 1 ? 'signup' : 'signups'}
+              </Badge>
+            </div>
+
+            <Card className='border-border/50'>
+              <CardContent className='p-0'>
+                {betaLoading ? (
+                  <div className='flex items-center justify-center py-10'>
+                    <IconLoader2 className='h-5 w-5 animate-spin text-muted-foreground/50' />
+                  </div>
+                ) : betaSignups.length === 0 ? (
+                  <p className='py-10 text-center text-sm text-muted-foreground/50'>No signups yet.</p>
+                ) : (
+                  <div className='divide-y divide-border/40'>
+                    {betaSignups.map(s => (
+                      <div key={s.id} className='flex items-center gap-4 px-4 py-3'>
+                        <div className='min-w-0 flex-1 space-y-0.5'>
+                          <div className='flex items-center gap-2'>
+                            <span className='text-sm font-medium truncate'>{s.name || '—'}</span>
+                            {s.company && (
+                              <span className='text-xs text-muted-foreground truncate'>· {s.company}</span>
+                            )}
+                          </div>
+                          <p className='text-xs font-mono text-muted-foreground truncate'>{s.email}</p>
+                          <p className='text-[10px] text-muted-foreground/50'>
+                            {new Date(s.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                          </p>
+                        </div>
+                        <div className='flex items-center gap-2 shrink-0'>
+                          <Badge
+                            variant='outline'
+                            className='text-[10px]'
+                            style={{
+                              backgroundColor: s.status === 'approved' ? '#56D09015' : s.status === 'rejected' ? '#EF444415' : '#FFBF4715',
+                              borderColor: s.status === 'approved' ? '#56D09040' : s.status === 'rejected' ? '#EF444440' : '#FFBF4740',
+                              color: s.status === 'approved' ? '#56D090' : s.status === 'rejected' ? '#EF4444' : '#FFBF47',
+                            }}
+                          >
+                            {s.status}
+                          </Badge>
+                          {s.status !== 'approved' && (
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              className='h-7 text-[11px] border-[#56D090]/30 text-[#56D090] hover:bg-[#56D090]/10'
+                              disabled={updatingId === s.id}
+                              onClick={() => handleBetaStatus(s.id, 'approved')}
+                            >
+                              {updatingId === s.id ? <IconLoader2 className='h-3 w-3 animate-spin' /> : 'Approve'}
+                            </Button>
+                          )}
+                          {s.status !== 'rejected' && (
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              className='h-7 text-[11px] border-red-500/30 text-red-400 hover:bg-red-500/10'
+                              disabled={updatingId === s.id}
+                              onClick={() => handleBetaStatus(s.id, 'rejected')}
+                            >
+                              {updatingId === s.id ? <IconLoader2 className='h-3 w-3 animate-spin' /> : 'Reject'}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </>
+      )}
     </div>
   );
 }

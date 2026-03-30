@@ -16,6 +16,7 @@ import (
 func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventBus, reg *engine.ProviderRegistry, jwtMgr *auth.JWTManager, km *knowledge.Manager, mcpMgr *mcp.Manager, corsOrigins string, registrationToken string, serviceToken string) http.Handler {
 	mux := http.NewServeMux()
 
+	beta := NewBetaHandler(s)
 	agents := NewAgentHandler(s)
 	workforces := NewWorkForceHandler(s, workspace.NewProvisioner(s))
 	executions := NewExecutionHandler(s, o)
@@ -71,6 +72,13 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 		mux.Handle("GET /api/v1/admin/users", adminOnly(http.HandlerFunc(authH.AdminListUsers)))
 		mux.Handle("POST /api/v1/admin/users", adminOnly(http.HandlerFunc(authH.AdminCreateUser)))
 		mux.Handle("PATCH /api/v1/admin/users/{id}/active", adminOnly(http.HandlerFunc(authH.AdminSetUserActive)))
+	}
+
+	// ── Beta waitlist (public signup, admin management) ───
+	mux.HandleFunc("POST /api/v1/beta/signup", beta.Signup)
+	if jwtMgr != nil {
+		mux.Handle("GET /api/v1/admin/beta/signups", adminOnly(http.HandlerFunc(beta.List)))
+		mux.Handle("PATCH /api/v1/admin/beta/signups/{id}/status", adminOnly(http.HandlerFunc(beta.UpdateStatus)))
 	}
 
 	// ── Protected API routes ───────────────────────────────

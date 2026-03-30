@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, useScroll, useTransform, AnimatePresence } from 'motion/react';
 import Link from 'next/link';
 
@@ -348,6 +348,35 @@ export default function LandingPage() {
   const heroOpacity = useTransform(scrollYProgress, [0, 1], [1, 0]);
   const heroY = useTransform(scrollYProgress, [0, 1], [0, 80]);
 
+  // Beta signup form state
+  const [betaName, setBetaName] = useState('');
+  const [betaEmail, setBetaEmail] = useState('');
+  const [betaCompany, setBetaCompany] = useState('');
+  const [betaSubmitting, setBetaSubmitting] = useState(false);
+  const [betaDone, setBetaDone] = useState(false);
+  const [betaError, setBetaError] = useState('');
+
+  const handleBetaSubmit = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!betaEmail.trim()) return;
+    setBetaSubmitting(true);
+    setBetaError('');
+    try {
+      const res = await fetch('/api/beta/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: betaEmail.trim(), name: betaName.trim(), company: betaCompany.trim() }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Something went wrong');
+      setBetaDone(true);
+    } catch (err: any) {
+      setBetaError(err.message || 'Something went wrong. Please try again.');
+    } finally {
+      setBetaSubmitting(false);
+    }
+  }, [betaEmail, betaName, betaCompany]);
+
   return (
     <div
       style={{
@@ -409,8 +438,8 @@ export default function LandingPage() {
           <a href="#use-cases" style={{ color: C.muted, fontSize: '0.9rem', textDecoration: 'none' }}>
             Use Cases
           </a>
-          <Link
-            href="/dashboard/overview"
+          <a
+            href="#beta"
             style={{
               background: `linear-gradient(135deg, ${C.purple}, #7B4FDF)`,
               color: '#fff',
@@ -422,8 +451,8 @@ export default function LandingPage() {
               boxShadow: `0 0 20px ${C.purple}44`,
             }}
           >
-            Open App →
-          </Link>
+            Request Access →
+          </a>
         </div>
       </nav>
 
@@ -566,43 +595,121 @@ export default function LandingPage() {
             Not a chatbot. An actual workforce.
           </motion.p>
 
+          {/* ── Beta signup form ── */}
           <motion.div
+            id="beta"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.4 }}
-            style={{ display: 'flex', gap: 16, justifyContent: 'center', flexWrap: 'wrap' }}
+            style={{ width: '100%', maxWidth: 480, margin: '0 auto' }}
           >
-            <Link
-              href="/dashboard/overview"
-              style={{
-                background: `linear-gradient(135deg, ${C.purple}, #7B4FDF)`,
-                color: '#fff',
-                padding: '0.85rem 2rem',
-                borderRadius: 10,
-                fontSize: '1rem',
-                fontWeight: 700,
-                textDecoration: 'none',
-                boxShadow: `0 4px 24px ${C.purple}55`,
-                transition: 'transform 0.2s, box-shadow 0.2s',
-              }}
-            >
-              Launch App →
-            </Link>
-            <a
-              href="#how-it-works"
-              style={{
-                background: 'transparent',
-                color: C.text,
-                padding: '0.85rem 2rem',
-                borderRadius: 10,
-                fontSize: '1rem',
-                fontWeight: 600,
-                textDecoration: 'none',
-                border: `1px solid ${C.border}`,
-                backdropFilter: 'blur(8px)',
-              }}
-            >
-              See how it works
+            {betaDone ? (
+              <div style={{
+                background: `${C.green}12`,
+                border: `1px solid ${C.green}40`,
+                borderRadius: 14,
+                padding: '1.5rem 2rem',
+                textAlign: 'center',
+              }}>
+                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🎉</div>
+                <p style={{ color: C.green, fontWeight: 700, fontSize: '1.05rem', marginBottom: '0.4rem' }}>
+                  You&apos;re on the list!
+                </p>
+                <p style={{ color: C.muted, fontSize: '0.9rem', lineHeight: 1.6 }}>
+                  We&apos;ll reach out to {betaEmail} when your access is ready.
+                </p>
+              </div>
+            ) : (
+              <form onSubmit={handleBetaSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <input
+                    type="text"
+                    placeholder="Your name"
+                    value={betaName}
+                    onChange={e => setBetaName(e.target.value)}
+                    style={{
+                      flex: 1,
+                      background: 'rgba(255,255,255,0.05)',
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 10,
+                      padding: '0.75rem 1rem',
+                      color: C.text,
+                      fontSize: '0.95rem',
+                      outline: 'none',
+                    }}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Company (optional)"
+                    value={betaCompany}
+                    onChange={e => setBetaCompany(e.target.value)}
+                    style={{
+                      flex: 1,
+                      background: 'rgba(255,255,255,0.05)',
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 10,
+                      padding: '0.75rem 1rem',
+                      color: C.text,
+                      fontSize: '0.95rem',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <input
+                    type="email"
+                    placeholder="your@email.com"
+                    required
+                    value={betaEmail}
+                    onChange={e => setBetaEmail(e.target.value)}
+                    style={{
+                      flex: 1,
+                      background: 'rgba(255,255,255,0.05)',
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 10,
+                      padding: '0.75rem 1rem',
+                      color: C.text,
+                      fontSize: '0.95rem',
+                      outline: 'none',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={betaSubmitting || !betaEmail.trim()}
+                    style={{
+                      background: betaSubmitting ? C.muted : `linear-gradient(135deg, ${C.purple}, #7B4FDF)`,
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 10,
+                      padding: '0.75rem 1.5rem',
+                      fontSize: '0.95rem',
+                      fontWeight: 700,
+                      cursor: betaSubmitting ? 'not-allowed' : 'pointer',
+                      whiteSpace: 'nowrap',
+                      boxShadow: betaSubmitting ? 'none' : `0 4px 20px ${C.purple}55`,
+                      transition: 'opacity 0.2s',
+                    }}
+                  >
+                    {betaSubmitting ? 'Sending…' : 'Request Access →'}
+                  </button>
+                </div>
+                {betaError && (
+                  <p style={{ color: '#FF6B6B', fontSize: '0.85rem', margin: 0 }}>{betaError}</p>
+                )}
+                <p style={{ color: C.muted, fontSize: '0.78rem', margin: 0 }}>
+                  No spam, ever. We&apos;ll only email you when your access is ready.
+                </p>
+              </form>
+            )}
+          </motion.div>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.6, delay: 0.6 }}
+            style={{ marginTop: '0.75rem' }}
+          >
+            <a href="#how-it-works" style={{ color: C.muted, fontSize: '0.88rem', textDecoration: 'none' }}>
+              See how it works ↓
             </a>
           </motion.div>
 

@@ -73,6 +73,17 @@ class ApiClient {
     });
   }
 
+  async adminListBetaSignups() {
+    return this.request<BetaSignup[]>('/api/v1/admin/beta/signups');
+  }
+
+  async adminUpdateBetaSignupStatus(id: string, status: 'pending' | 'approved' | 'rejected') {
+    return this.request<{ status: string }>(`/api/v1/admin/beta/signups/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status })
+    });
+  }
+
   // ── Agents ────────────────────────────────────────────
   async listAgents() {
     return this.request<Agent[]>('/api/v1/agents');
@@ -1069,6 +1080,18 @@ export interface Skill {
 export interface AssignSkillRequest {
   skill_id: string;
   position?: number;
+}
+
+// ── Beta Signup Types ────────────────────────────────────
+
+export interface BetaSignup {
+  id: string;
+  email: string;
+  name: string;
+  company: string;
+  message: string;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
 }
 
 export const api = new ApiClient();
