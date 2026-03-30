@@ -8,7 +8,7 @@
   <p>
     <a href="https://github.com/AitherLabs/AitherOS/releases"><img src="https://img.shields.io/github/v/release/AitherLabs/AitherOS?color=9A66FF&label=version&style=flat-square" alt="Version" /></a>
     <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=flat-square" alt="License: AGPL v3" /></a>
-    <img src="https://img.shields.io/badge/self--hosted-yes-56D090?style=flat-square" alt="Self-hosted" />
+    <img src="https://img.shields.io/badge/open--source-AGPLv3-56D090?style=flat-square" alt="Open Source" />
     <img src="https://img.shields.io/badge/stack-Go%20%2B%20Next.js-FFBF47?style=flat-square" alt="Stack" />
     <img src="https://img.shields.io/badge/real--time-WebSocket-14FFF7?style=flat-square" alt="Real-time" />
     <img src="https://img.shields.io/github/stars/AitherLabs/AitherOS?style=flat-square&color=9A66FF" alt="Stars" />
@@ -17,11 +17,11 @@
 
 ---
 
-AitherOS is a **self-hosted platform for building and running autonomous multi-agent AI teams**. Compose specialized agents into workforces that plan together, share long-term memory, use tools via the Model Context Protocol (MCP), and produce results through genuine coordination — not just sequential chaining or parallel API calls.
+AitherOS is an **open-source platform for building and running autonomous multi-agent AI teams**. Compose specialized agents into workforces that plan together, share long-term memory, use tools via the Model Context Protocol (MCP), and produce results through genuine coordination — not just sequential chaining or parallel API calls.
 
 If you've outgrown single-agent prompting and need a real **LLM orchestration layer** with a live dashboard, human-in-the-loop controls, credential management, and a task board — AitherOS is built for that.
 
-> Looking for an open-source AutoGen alternative? A self-hosted CrewAI alternative with a UI? A LangGraph alternative that handles memory, tools, and real-time visibility out of the box? That's exactly what AitherOS is.
+> Looking for an open-source AutoGen alternative? An open-source CrewAI alternative with a real UI? A LangGraph alternative that handles memory, tools, and real-time visibility out of the box? That's exactly what AitherOS is.
 
 ---
 
@@ -243,7 +243,7 @@ Objective
 
 ---
 
-## Self-Hosting
+## Installation & Deployment
 
 ### Requirements
 
@@ -335,7 +335,7 @@ The `ecosystem.config.js` starts the Go backend (with auto-build on restart) and
 
 ### Publishing with Cloudflare Tunnel (recommended)
 
-Cloudflare Tunnel exposes your self-hosted instance to the internet without opening firewall ports or configuring a reverse proxy. Requires a free Cloudflare account with a domain.
+Cloudflare Tunnel exposes your instance to the internet without opening firewall ports or configuring a reverse proxy. Requires a free Cloudflare account with a domain.
 
 #### Install cloudflared
 
@@ -443,7 +443,7 @@ Any multi-step business process that requires judgment, tool use, and human over
 - ✅ Image generation (Google Imagen 4, DALL-E, Cloudflare Workers AI, fal.ai)
 - ✅ Autonomous kanban loop with post-execution LLM QA review
 - ✅ Cloudflare Workers AI provider with model catalog sync
-- ✅ Self-hosting guide with Cloudflare Tunnel
+- ✅ Deployment guide with Cloudflare Tunnel
 - 🔜 **Virtual Office** — 2D workspace with agent sprites, real-time movement, speech bubbles
 - 🔜 **Webhooks & external triggers** — start executions from Slack messages, GitHub events, cron schedules, or HTTP webhooks
 - 🔜 **Execution templates** — save and replay workforce configurations, plans, and task sequences
