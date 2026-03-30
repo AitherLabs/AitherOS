@@ -183,14 +183,18 @@ class ApiClient {
     return this.request<KanbanTask[]>(`/api/v1/workforces/${workforceId}/kanban`);
   }
 
-  async createKanbanTask(workforceId: string, data: { title: string; description?: string; priority?: number; assigned_to?: string; created_by?: string; project_id?: string }) {
+  async listWorkspaceFiles(workforceId: string) {
+    return this.request<WorkspaceFileEntry[]>(`/api/v1/workforces/${workforceId}/workspace/ls`);
+  }
+
+  async createKanbanTask(workforceId: string, data: { title: string; description?: string; priority?: number; assigned_to?: string; created_by?: string; project_id?: string; attachments?: string[]; task_refs?: string[] }) {
     return this.request<KanbanTask>(`/api/v1/workforces/${workforceId}/kanban`, {
       method: 'POST',
       body: JSON.stringify(data)
     });
   }
 
-  async updateKanbanTask(taskId: string, data: Partial<{ title: string; description: string; status: KanbanStatus; priority: number; assigned_to: string; execution_id: string; notes: string; qa_status: KanbanQAStatus; qa_notes: string; project_id: string }>) {
+  async updateKanbanTask(taskId: string, data: Partial<{ title: string; description: string; status: KanbanStatus; priority: number; assigned_to: string; execution_id: string; notes: string; qa_status: KanbanQAStatus; qa_notes: string; project_id: string; attachments: string[]; task_refs: string[] }>) {
     return this.request<KanbanTask>(`/api/v1/kanban/${taskId}`, {
       method: 'PATCH',
       body: JSON.stringify(data)
@@ -726,6 +730,8 @@ export interface KanbanTask {
   done_at?: string;
   created_at: string;
   updated_at: string;
+  attachments: string[];
+  task_refs: string[];
 }
 
 export interface ExecutionSubtask {
@@ -1083,6 +1089,12 @@ export interface AssignSkillRequest {
 }
 
 // ── Beta Signup Types ────────────────────────────────────
+
+export interface WorkspaceFileEntry {
+  path: string; // relative to workspace root, e.g. "content/report.md"
+  size: number;
+  ext: string;  // lowercase, no dot
+}
 
 export interface BetaSignup {
   id: string;

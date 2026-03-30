@@ -118,6 +118,7 @@ func NewRouter(s *store.Store, o *orchestrator.Orchestrator, eb *eventbus.EventB
 	mux.Handle("DELETE /api/v1/workforces/{id}", protect(http.HandlerFunc(workforces.Delete)))
 	mux.Handle("POST /api/v1/workforces/{id}/provision", protect(http.HandlerFunc(workforces.Provision)))
 	mux.Handle("GET /api/v1/workforces/{id}/files", protect(http.HandlerFunc(workforces.File)))
+	mux.Handle("GET /api/v1/workforces/{id}/workspace/ls", protect(http.HandlerFunc(workforces.ListWorkspaceFiles)))
 
 	// Global stats
 	mux.Handle("GET /api/v1/stats", protect(http.HandlerFunc(executions.GlobalStats)))

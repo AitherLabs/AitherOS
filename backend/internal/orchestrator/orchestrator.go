@@ -576,6 +576,10 @@ const defaultNeedsHelpReminderInterval = 60 * time.Second
 // generations for media subtasks to improve provider stability/coherence.
 const defaultMediaInterFileWait = 1200 * time.Millisecond
 
+// maxAgentToolRounds caps tool-call feedback loops per subtask to prevent
+// runaway multi-minute tool churn.
+const defaultMaxAgentToolRounds = 24
+
 // maxInterventionContextChars caps the accumulated operator intervention text
 // injected into a single execution round.
 const defaultMaxInterventionContextChars = 4000
@@ -596,6 +600,8 @@ var (
 	needsHelpReminderInterval = envDuration("ORCH_NEEDS_HELP_REMINDER_INTERVAL", defaultNeedsHelpReminderInterval, 5*time.Second)
 	// ORCH_MEDIA_INTER_FILE_WAIT: delay between per-file media generations.
 	mediaInterFileWait = envDuration("ORCH_MEDIA_INTER_FILE_WAIT", defaultMediaInterFileWait, 0)
+	// ORCH_MAX_TOOL_ROUNDS: hard cap for tool-loop rounds per agent subtask.
+	maxAgentToolRounds = envInt("ORCH_MAX_TOOL_ROUNDS", defaultMaxAgentToolRounds, 4, 120)
 
 	// ORCH_MAX_INTERVENTION_CONTEXT_CHARS: max accumulated operator instructions.
 	maxInterventionContextChars = envInt("ORCH_MAX_INTERVENTION_CONTEXT_CHARS", defaultMaxInterventionContextChars, 500, 20000)
@@ -1769,6 +1775,13 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 
 	// ── Workspace + credentials context ──────────────────────────────────────
 	workspacePath := workspace.WorkspacePath(p.wf.Name)
+	toolRoundBudget := maxAgentToolRounds
+	if agent.MaxIterations > 0 && agent.MaxIterations < toolRoundBudget {
+		toolRoundBudget = agent.MaxIterations
+	}
+	if toolRoundBudget < 4 {
+		toolRoundBudget = 4
+	}
 	taskParts = append(taskParts, fmt.Sprintf(
 		"## Your Workspace\n"+
 			"Path: `%s`\n\n"+
@@ -1776,21 +1789,27 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			"- Full read/write access. Create, edit, delete files freely.\n"+
 			"- Use `run_command` to run git, npm, python, cargo, curl, bash scripts — anything.\n"+
 			"- Clone repos here, run builds, write output files. Files persist for this workforce.\n"+
-			"- To read AitherOS source code or docs, fetch from GitHub: https://raw.githubusercontent.com/AitherLabs/AitherOS/main/<path>\n\n"+
+			"- Prefer local workspace/repo files first; fetch from GitHub only when the file is not available locally.\n\n"+
 			"**Credentials** — your team's stored secrets are available via Aither-Tools:\n"+
 			"- `list_secrets()` — discover all available service/key pairs before making authenticated requests\n"+
 			"- `get_secret(\"service\", \"key_name\")` — retrieve a specific credential value\n"+
 			"- If a credential you need is not listed, signal `needs_help` with the exact service and key name.",
 		workspacePath))
 
-	taskParts = append(taskParts, "---\n"+
-		"Execute your subtask now. Use your tools aggressively — make as many calls as needed, keep going until done.\n"+
+	taskParts = append(taskParts, fmt.Sprintf("---\n"+
+		"Execute your subtask now using efficient cycles: plan → act → verify.\n"+
+		"Tool budget: up to %d tool rounds for this subtask.\n"+
+		"Efficiency policy:\n"+
+		"- Before first edit, use at most 3 discovery calls.\n"+
+		"- Avoid repeating the same failing call; after 2 failed attempts, switch approach or signal `needs_help`.\n"+
+		"- Prefer focused reads/searches over broad scans.\n"+
+		"- Use structured tool output (`format=\"json\"`) when supported.\n"+
 		"Workspace: `"+workspacePath+"`  |  Secrets: call `list_secrets()` before any authenticated request.\n"+
 		"Kanban: `kanban_list_tasks()` / `kanban_create_task(title, description, priority)` to manage the board.\n\n"+
 		"When done:\n```json\n{\"status\": \"complete\", \"summary\": \"<one sentence>\"}\n```\n"+
 		"Need human input:\n```json\n{\"status\": \"needs_help\", \"reason\": \"<what you tried and need>\"}\n```\n"+
 		"Hard blocker:\n```json\n{\"status\": \"blocked\", \"reason\": \"<what is blocking>\"}\n```"+
-		peerList)
+		peerList, toolRoundBudget))
 
 	taskMsg := strings.Join(taskParts, "\n\n")
 
@@ -1851,7 +1870,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	}
 
 	// ── Tool call feedback loop ──
-	const maxToolRounds = 40
+	maxToolRounds := toolRoundBudget
 	var allToolCalls []engine.ToolCallInfo
 	var totalTokensIn, totalTokensOut, totalLatency int64
 
@@ -2402,6 +2421,48 @@ func (o *Orchestrator) runSchedulerTick(ctx context.Context) {
 			if nextTask.Description != "" {
 				objective = nextTask.Title + "\n\n" + nextTask.Description
 			}
+
+			// Inject attached workspace files into the objective.
+			if len(nextTask.Attachments) > 0 {
+				wsRoot := workspace.WorkspacePath(wf.Name)
+				objective += "\n\n## Attached Files\n"
+				for _, relPath := range nextTask.Attachments {
+					absPath := filepath.Join(wsRoot, filepath.Clean(relPath))
+					data, readErr := os.ReadFile(absPath)
+					if readErr != nil {
+						objective += fmt.Sprintf("\n### /workspace/%s\n[file not found]\n", relPath)
+						continue
+					}
+					objective += fmt.Sprintf("\n### /workspace/%s\n```\n%s\n```\n", relPath, string(data))
+				}
+			}
+
+			// Inject referenced task context.
+			if len(nextTask.TaskRefs) > 0 {
+				objective += "\n\n## Referenced Tasks\n"
+				for _, refIDStr := range nextTask.TaskRefs {
+					refID, parseErr := uuid.Parse(refIDStr)
+					if parseErr != nil {
+						continue
+					}
+					ref, refErr := o.store.GetKanbanTask(ctx, refID)
+					if refErr != nil {
+						continue
+					}
+					objective += fmt.Sprintf("\n### %s\n**Description:** %s\n", ref.Title, ref.Description)
+					if ref.ExecutionID != nil {
+						exec, execErr := o.store.GetExecution(ctx, *ref.ExecutionID)
+						if execErr == nil && exec.Result != "" {
+							result := exec.Result
+							if len(result) > 2000 {
+								result = result[:2000] + "\n…[truncated]"
+							}
+							objective += fmt.Sprintf("**Result:** %s\n", result)
+						}
+					}
+				}
+			}
+
 			log.Printf("scheduler: launching kanban task %q for workforce %q", nextTask.Title, wf.Name)
 			exec, err := o.StartExecution(ctx, wf.ID, objective, nil)
 			if err != nil {

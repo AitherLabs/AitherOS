@@ -45,15 +45,21 @@ type KanbanTask struct {
 	DoneAt      *time.Time     `json:"done_at,omitempty" db:"done_at"`
 	CreatedAt   time.Time      `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at" db:"updated_at"`
+	// Workspace file paths (relative to workspace root) attached to this task.
+	Attachments []string `json:"attachments" db:"attachments"`
+	// IDs of other KanbanTasks referenced as context for this task.
+	TaskRefs []string `json:"task_refs" db:"task_refs"`
 }
 
 type CreateKanbanTaskRequest struct {
-	Title       string  `json:"title" validate:"required,min=1,max=500"`
-	Description string  `json:"description" validate:"max=5000"`
-	Priority    int     `json:"priority" validate:"min=0,max=3"`
-	AssignedTo  *string `json:"assigned_to,omitempty"`
-	CreatedBy   string  `json:"created_by"` // "human" or agent name
-	ProjectID   *string `json:"project_id,omitempty"`
+	Title       string   `json:"title" validate:"required,min=1,max=500"`
+	Description string   `json:"description" validate:"max=5000"`
+	Priority    int      `json:"priority" validate:"min=0,max=3"`
+	AssignedTo  *string  `json:"assigned_to,omitempty"`
+	CreatedBy   string   `json:"created_by"` // "human" or agent name
+	ProjectID   *string  `json:"project_id,omitempty"`
+	Attachments []string `json:"attachments,omitempty"` // workspace-relative file paths
+	TaskRefs    []string `json:"task_refs,omitempty"`   // referenced KanbanTask IDs
 }
 
 type UpdateKanbanTaskRequest struct {
@@ -67,4 +73,6 @@ type UpdateKanbanTaskRequest struct {
 	QAStatus    *KanbanQAStatus `json:"qa_status,omitempty"`
 	QANotes     *string         `json:"qa_notes,omitempty"`
 	ProjectID   *string         `json:"project_id,omitempty"` // "" to clear
+	Attachments *[]string       `json:"attachments,omitempty"`
+	TaskRefs    *[]string       `json:"task_refs,omitempty"`
 }

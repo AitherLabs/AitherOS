@@ -20,13 +20,15 @@ import {
   IconExternalLink,
   IconFolder,
   IconLoader2,
+  IconPaperclip,
   IconPlayerPlay,
   IconPlus,
   IconRobot,
+  IconSearch,
   IconTrash,
   IconX,
 } from '@tabler/icons-react';
-import api, { Agent, ExecutionMode, KanbanStatus, KanbanTask, KanbanQAStatus, Project, Workforce } from '@/lib/api';
+import api, { Agent, ExecutionMode, KanbanStatus, KanbanTask, KanbanQAStatus, Project, Workforce, WorkspaceFileEntry } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -119,7 +121,15 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   const [newPriority, setNewPriority] = useState(1);
   const [newAssignee, setNewAssignee] = useState('');
   const [newProjectId, setNewProjectId] = useState('');
+  const [newAttachments, setNewAttachments] = useState<string[]>([]);
+  const [newTaskRefs, setNewTaskRefs] = useState<string[]>([]);
   const [adding, setAdding] = useState(false);
+
+  // Workspace file picker for Add Task dialog
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFileEntry[]>([]);
+  const [loadingWsFiles, setLoadingWsFiles] = useState(false);
+  const [fileSearch, setFileSearch] = useState('');
+  const [taskRefSearch, setTaskRefSearch] = useState('');
 
   // Projects for this workforce
   const [projects, setProjects] = useState<Project[]>([]);
@@ -150,6 +160,15 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   useEffect(() => {
     api.listProjects(workforceId).then(res => setProjects(res.data || [])).catch(() => {});
   }, [workforceId]);
+
+  useEffect(() => {
+    if (!addOpen) return;
+    setLoadingWsFiles(true);
+    api.listWorkspaceFiles(workforceId)
+      .then(res => setWorkspaceFiles(res.data || []))
+      .catch(() => setWorkspaceFiles([]))
+      .finally(() => setLoadingWsFiles(false));
+  }, [addOpen, workforceId]);
 
   // ── Task actions ───────────────────────────────────────────────────────────
 
@@ -278,10 +297,13 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
         assigned_to: newAssignee || undefined,
         created_by: 'human',
         project_id: newProjectId || undefined,
+        attachments: newAttachments.length > 0 ? newAttachments : undefined,
+        task_refs: newTaskRefs.length > 0 ? newTaskRefs : undefined,
       });
       if (res.data) setTasks(prev => [...prev, res.data!]);
       setAddOpen(false);
       setNewTitle(''); setNewDesc(''); setNewPriority(1); setNewAssignee(''); setNewProjectId('');
+      setNewAttachments([]); setNewTaskRefs([]); setFileSearch(''); setTaskRefSearch('');
     } finally {
       setAdding(false);
     }
@@ -1227,10 +1249,10 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
         open={addOpen}
         onOpenChange={o => {
           setAddOpen(o);
-          if (!o) { setNewTitle(''); setNewDesc(''); setNewPriority(1); setNewAssignee(''); setNewProjectId(''); }
+          if (!o) { setNewTitle(''); setNewDesc(''); setNewPriority(1); setNewAssignee(''); setNewProjectId(''); setNewAttachments([]); setNewTaskRefs([]); setFileSearch(''); setTaskRefSearch(''); }
         }}
       >
-        <DialogContent className='max-w-md'>
+        <DialogContent className='max-w-lg'>
           <DialogHeader>
             <DialogTitle>New Task</DialogTitle>
             <DialogDescription>
@@ -1299,6 +1321,127 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                 </select>
               </div>
             )}
+
+            {/* Attach workspace files */}
+            <div className='space-y-1.5'>
+              <div className='flex items-center gap-1.5'>
+                <IconPaperclip className='h-3.5 w-3.5 text-muted-foreground' />
+                <Label>Attach Files <span className='text-[10px] font-normal text-muted-foreground/60'>(optional — agent-generated)</span></Label>
+              </div>
+              {newAttachments.length > 0 && (
+                <div className='flex flex-wrap gap-1 pb-1'>
+                  {newAttachments.map(p => (
+                    <span key={p} className='flex items-center gap-1 rounded bg-[#9A66FF]/15 px-1.5 py-0.5 font-mono text-[10px] text-[#9A66FF]'>
+                      {p.split('/').pop()}
+                      <button onClick={() => setNewAttachments(prev => prev.filter(x => x !== p))} className='opacity-60 hover:opacity-100'>
+                        <IconX className='h-2.5 w-2.5' />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className='relative'>
+                <IconSearch className='absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/50' />
+                <input
+                  placeholder='Search files…'
+                  value={fileSearch}
+                  onChange={e => setFileSearch(e.target.value)}
+                  className='w-full rounded border border-border/40 bg-background/60 py-1.5 pl-7 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                />
+              </div>
+              <div className='max-h-32 overflow-y-auto rounded border border-border/30 bg-background/40'>
+                {loadingWsFiles ? (
+                  <div className='flex items-center justify-center py-4'>
+                    <IconLoader2 className='h-3.5 w-3.5 animate-spin text-muted-foreground/50' />
+                  </div>
+                ) : workspaceFiles.filter(f => !fileSearch || f.path.toLowerCase().includes(fileSearch.toLowerCase())).length === 0 ? (
+                  <p className='py-3 text-center text-[11px] text-muted-foreground/40'>
+                    {workspaceFiles.length === 0 ? 'No workspace files found' : 'No matches'}
+                  </p>
+                ) : (
+                  workspaceFiles
+                    .filter(f => !fileSearch || f.path.toLowerCase().includes(fileSearch.toLowerCase()))
+                    .map(f => {
+                      const selected = newAttachments.includes(f.path);
+                      return (
+                        <button
+                          key={f.path}
+                          type='button'
+                          onClick={() => setNewAttachments(prev => selected ? prev.filter(x => x !== f.path) : [...prev, f.path])}
+                          className={`flex w-full items-center gap-2 border-b border-border/20 px-2.5 py-1.5 text-left text-xs transition-colors last:border-0 ${selected ? 'bg-[#9A66FF]/10 text-[#9A66FF]' : 'text-muted-foreground hover:bg-muted/20 hover:text-foreground'}`}
+                        >
+                          <span className={`h-3.5 w-3.5 flex-shrink-0 rounded border text-center text-[9px] leading-3 ${selected ? 'border-[#9A66FF] bg-[#9A66FF] text-white' : 'border-border/60'}`}>
+                            {selected ? '✓' : ''}
+                          </span>
+                          <span className='flex-1 truncate font-mono'>{f.path}</span>
+                          <span className='flex-shrink-0 text-[9px] opacity-40'>{f.ext}</span>
+                        </button>
+                      );
+                    })
+                )}
+              </div>
+            </div>
+
+            {/* Reference previous tasks */}
+            <div className='space-y-1.5'>
+              <Label>Reference Tasks <span className='text-[10px] font-normal text-muted-foreground/60'>(optional — provide context from past work)</span></Label>
+              {newTaskRefs.length > 0 && (
+                <div className='flex flex-wrap gap-1 pb-1'>
+                  {newTaskRefs.map(refId => {
+                    const t = tasks.find(x => x.id === refId);
+                    return (
+                      <span key={refId} className='flex items-center gap-1 rounded bg-[#14FFF7]/10 px-1.5 py-0.5 text-[10px] text-[#14FFF7]'>
+                        {t ? t.title.slice(0, 30) + (t.title.length > 30 ? '…' : '') : refId.slice(0, 8)}
+                        <button onClick={() => setNewTaskRefs(prev => prev.filter(x => x !== refId))} className='opacity-60 hover:opacity-100'>
+                          <IconX className='h-2.5 w-2.5' />
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              {(() => {
+                const doneTasks = tasks.filter(t => t.status === 'done' && (!taskRefSearch || t.title.toLowerCase().includes(taskRefSearch.toLowerCase())));
+                const hasDone = tasks.some(t => t.status === 'done');
+                if (!hasDone) return (
+                  <p className='rounded border border-border/30 bg-background/40 py-3 text-center text-[11px] text-muted-foreground/40'>No completed tasks yet</p>
+                );
+                return (
+                  <>
+                    <div className='relative'>
+                      <IconSearch className='absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/50' />
+                      <input
+                        placeholder='Search completed tasks…'
+                        value={taskRefSearch}
+                        onChange={e => setTaskRefSearch(e.target.value)}
+                        className='w-full rounded border border-border/40 bg-background/60 py-1.5 pl-7 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-[#14FFF7]'
+                      />
+                    </div>
+                    <div className='max-h-28 overflow-y-auto rounded border border-border/30 bg-background/40'>
+                      {doneTasks.length === 0 ? (
+                        <p className='py-3 text-center text-[11px] text-muted-foreground/40'>No matches</p>
+                      ) : doneTasks.map(t => {
+                        const selected = newTaskRefs.includes(t.id);
+                        return (
+                          <button
+                            key={t.id}
+                            type='button'
+                            onClick={() => setNewTaskRefs(prev => selected ? prev.filter(x => x !== t.id) : [...prev, t.id])}
+                            className={`flex w-full items-center gap-2 border-b border-border/20 px-2.5 py-1.5 text-left text-xs transition-colors last:border-0 ${selected ? 'bg-[#14FFF7]/10 text-[#14FFF7]' : 'text-muted-foreground hover:bg-muted/20 hover:text-foreground'}`}
+                          >
+                            <span className={`h-3.5 w-3.5 flex-shrink-0 rounded border text-center text-[9px] leading-3 ${selected ? 'border-[#14FFF7] bg-[#14FFF7] text-[#0A0D11]' : 'border-border/60'}`}>
+                              {selected ? '✓' : ''}
+                            </span>
+                            <span className='flex-1 truncate'>{t.title}</span>
+                            {t.done_at && <span className='flex-shrink-0 text-[9px] opacity-40'>{new Date(t.done_at).toLocaleDateString()}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
           </div>
           <DialogFooter>
             <Button variant='outline' onClick={() => setAddOpen(false)}>Cancel</Button>

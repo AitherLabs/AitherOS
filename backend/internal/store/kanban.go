@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -12,14 +13,33 @@ import (
 
 const kanbanSelectCols = `id, workforce_id, project_id, title, description, status, priority,
        assigned_to, created_by, execution_id, notes, position,
-       qa_status, qa_notes, started_at, done_at, created_at, updated_at`
+       qa_status, qa_notes, started_at, done_at, created_at, updated_at,
+       attachments, task_refs`
 
 func scanKanbanTask(t *models.KanbanTask, row interface{ Scan(...any) error }) error {
-	return row.Scan(
+	var attachJSON, refsJSON []byte
+	err := row.Scan(
 		&t.ID, &t.WorkforceID, &t.ProjectID, &t.Title, &t.Description, &t.Status, &t.Priority,
 		&t.AssignedTo, &t.CreatedBy, &t.ExecutionID, &t.Notes, &t.Position,
 		&t.QAStatus, &t.QANotes, &t.StartedAt, &t.DoneAt, &t.CreatedAt, &t.UpdatedAt,
+		&attachJSON, &refsJSON,
 	)
+	if err != nil {
+		return err
+	}
+	if len(attachJSON) > 0 {
+		_ = json.Unmarshal(attachJSON, &t.Attachments)
+	}
+	if len(refsJSON) > 0 {
+		_ = json.Unmarshal(refsJSON, &t.TaskRefs)
+	}
+	if t.Attachments == nil {
+		t.Attachments = []string{}
+	}
+	if t.TaskRefs == nil {
+		t.TaskRefs = []string{}
+	}
+	return nil
 }
 
 func (s *Store) ListKanbanTasks(ctx context.Context, workforceID uuid.UUID) ([]*models.KanbanTask, error) {
@@ -73,11 +93,19 @@ func (s *Store) CreateKanbanTask(ctx context.Context, workforceID uuid.UUID, req
 		Priority:    req.Priority,
 		CreatedBy:   req.CreatedBy,
 		QAStatus:    models.KanbanQAStatusPending,
+		Attachments: req.Attachments,
+		TaskRefs:    req.TaskRefs,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
 	if t.CreatedBy == "" {
 		t.CreatedBy = "human"
+	}
+	if t.Attachments == nil {
+		t.Attachments = []string{}
+	}
+	if t.TaskRefs == nil {
+		t.TaskRefs = []string{}
 	}
 	if req.AssignedTo != nil && *req.AssignedTo != "" {
 		if id, err := uuid.Parse(*req.AssignedTo); err == nil {
@@ -95,13 +123,17 @@ func (s *Store) CreateKanbanTask(ctx context.Context, workforceID uuid.UUID, req
 	s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(position), -1) FROM kanban_tasks WHERE workforce_id = $1 AND status = 'open'`, workforceID).Scan(&maxPos)
 	t.Position = maxPos + 1
 
+	attJSON, _ := json.Marshal(t.Attachments)
+	refsJSON, _ := json.Marshal(t.TaskRefs)
+
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO kanban_tasks
-		  (id, workforce_id, project_id, title, description, status, priority, assigned_to, created_by, notes, position, qa_status, qa_notes, started_at, done_at, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		  (id, workforce_id, project_id, title, description, status, priority, assigned_to, created_by, notes, position, qa_status, qa_notes, started_at, done_at, created_at, updated_at, attachments, task_refs)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		t.ID, t.WorkforceID, t.ProjectID, t.Title, t.Description, t.Status, t.Priority,
 		t.AssignedTo, t.CreatedBy, t.Notes, t.Position, t.QAStatus, t.QANotes,
 		t.StartedAt, t.DoneAt, t.CreatedAt, t.UpdatedAt,
+		attJSON, refsJSON,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert kanban task: %w", err)
@@ -178,19 +210,28 @@ func (s *Store) UpdateKanbanTask(ctx context.Context, id uuid.UUID, req models.U
 			t.ProjectID = &pid
 		}
 	}
+	if req.Attachments != nil {
+		t.Attachments = *req.Attachments
+	}
+	if req.TaskRefs != nil {
+		t.TaskRefs = *req.TaskRefs
+	}
 	t.UpdatedAt = time.Now()
+
+	attJSON, _ := json.Marshal(t.Attachments)
+	refsJSON, _ := json.Marshal(t.TaskRefs)
 
 	_, err = s.pool.Exec(ctx, `
 		UPDATE kanban_tasks
 		SET title=$2, description=$3, status=$4, priority=$5,
 		    assigned_to=$6, execution_id=$7, notes=$8,
 		    qa_status=$9, qa_notes=$10, updated_at=$11, project_id=$12,
-		    started_at=$13, done_at=$14
+		    started_at=$13, done_at=$14, attachments=$15, task_refs=$16
 		WHERE id=$1`,
 		t.ID, t.Title, t.Description, t.Status, t.Priority,
 		t.AssignedTo, t.ExecutionID, t.Notes,
 		t.QAStatus, t.QANotes, t.UpdatedAt, t.ProjectID,
-		t.StartedAt, t.DoneAt,
+		t.StartedAt, t.DoneAt, attJSON, refsJSON,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update kanban task: %w", err)

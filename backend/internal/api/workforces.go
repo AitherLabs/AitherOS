@@ -15,6 +15,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// WorkspaceFileEntry is returned by ListWorkspaceFiles.
+type WorkspaceFileEntry struct {
+	Path string `json:"path"` // relative to workspace root (e.g. "content/report.md")
+	Size int64  `json:"size"`
+	Ext  string `json:"ext"` // lowercase extension without dot
+}
+
 // workspacePathIfProvisioned returns the workspace path only if the directory exists on disk.
 // Returns empty string otherwise so the frontend can show a "Provision" button.
 func workspacePathIfProvisioned(wfName string) string {
@@ -295,4 +302,60 @@ func (h *WorkForceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "workforce deleted"})
+}
+
+// ListWorkspaceFiles walks the workforce workspace and returns a flat list of files.
+// GET /api/v1/workforces/{id}/workspace/ls
+func (h *WorkForceHandler) ListWorkspaceFiles(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workforce id")
+		return
+	}
+	wf, err := h.store.GetWorkForce(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	root := workspace.WorkspacePath(wf.Name)
+	if _, statErr := os.Stat(root); statErr != nil {
+		// Workspace not provisioned — return empty list rather than 404
+		writeJSON(w, http.StatusOK, []WorkspaceFileEntry{})
+		return
+	}
+
+	var files []WorkspaceFileEntry
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		// Skip hidden files/dirs and common noise
+		base := info.Name()
+		if strings.HasPrefix(base, ".") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		// Skip hidden path components
+		for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+			if strings.HasPrefix(part, ".") {
+				return nil
+			}
+		}
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(base)), ".")
+		files = append(files, WorkspaceFileEntry{
+			Path: filepath.ToSlash(rel),
+			Size: info.Size(),
+			Ext:  ext,
+		})
+		return nil
+	})
+
+	if files == nil {
+		files = []WorkspaceFileEntry{}
+	}
+	writeJSON(w, http.StatusOK, files)
 }
