@@ -44,11 +44,13 @@ import {
   IconLink,
   IconLinkOff,
   IconLoader2,
+  IconPaperclip,
   IconPencil,
   IconPlayerPlay,
   IconPlus,
   IconRefresh,
   IconRobot,
+  IconSearch,
   IconTool,
   IconTrash,
   IconX
@@ -63,7 +65,7 @@ const BRIEF_INTERVAL_OPTIONS = [
   { value: 480,  label: 'Every 8 hours' },
   { value: 1440, label: 'Every 24 hours' },
 ];
-import api, { Agent, AgentChat, Approval, Credential, Execution, ExecutionMode, KanbanTask, KnowledgeEntry, MCPServer, MCPToolDefinition, Project, Workforce } from '@/lib/api';
+import api, { Agent, AgentChat, Approval, Credential, Execution, ExecutionMode, KanbanTask, KnowledgeEntry, MCPServer, MCPToolDefinition, Project, Workforce, WorkspaceFileEntry } from '@/lib/api';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { KanbanBoard } from '@/components/kanban-board';
@@ -782,7 +784,12 @@ export default function WorkforceDetailPage() {
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false);
   const [chatLoadedByAgent, setChatLoadedByAgent] = useState<Record<string, boolean>>({});
   const [chatActivity, setChatActivity] = useState<WorkforceChatActivityStep[]>([]);
-  const [showAllMediaChatHistory, setShowAllMediaChatHistory] = useState(false);
+  const [showAllChatHistory, setShowAllChatHistory] = useState(false);
+  const [chatAttachedFiles, setChatAttachedFiles] = useState<string[]>([]);
+  const [chatFileSearch, setChatFileSearch] = useState('');
+  const [chatFilePickerOpen, setChatFilePickerOpen] = useState(false);
+  const [chatWorkspaceFiles, setChatWorkspaceFiles] = useState<WorkspaceFileEntry[]>([]);
+  const [chatWorkspaceFilesLoading, setChatWorkspaceFilesLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatHistoryFetchingRef = useRef<Record<string, boolean>>({});
 
@@ -984,6 +991,16 @@ export default function WorkforceDetailPage() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatByAgent, chatAgentId]);
+
+  useEffect(() => {
+    if (!chatFilePickerOpen || !workforce?.id) return;
+    if (chatWorkspaceFiles.length > 0) return; // already loaded
+    setChatWorkspaceFilesLoading(true);
+    api.listWorkspaceFiles(workforce.id)
+      .then(res => setChatWorkspaceFiles(res.data || []))
+      .catch(() => setChatWorkspaceFiles([]))
+      .finally(() => setChatWorkspaceFilesLoading(false));
+  }, [chatFilePickerOpen, workforce?.id]);
 
   function openEdit() {
     if (!workforce) return;
@@ -1271,13 +1288,36 @@ export default function WorkforceDetailPage() {
       { key: 'persist_assistant', label: 'Saving assistant response', status: 'pending' }
     ]);
 
+    // Fetch any attached workspace file contents
+    let attachedFileBlock = '';
+    if (!mediaMode && chatAttachedFiles.length > 0) {
+      const apiBase = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
+      const token = session?.accessToken as string | undefined;
+      const fileResults = await Promise.all(
+        chatAttachedFiles.map(async (relPath) => {
+          try {
+            const url = `${apiBase}/api/v1/workforces/${workforce.id}/files?path=${encodeURIComponent(relPath)}`;
+            const res = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+            if (!res.ok) return `### ${relPath}\n[failed to load]`;
+            const text = await res.text();
+            const ext = relPath.split('.').pop()?.toLowerCase() || '';
+            return `### ${relPath}\n\`\`\`${ext}\n${text.slice(0, 8000)}\n\`\`\``;
+          } catch {
+            return `### ${relPath}\n[error reading file]`;
+          }
+        })
+      );
+      attachedFileBlock = `\n\n## Attached Files\n${fileResults.join('\n\n')}`;
+    }
+
     const contextLines = [
       `workforce=${workforce.name} (${workforce.id})`,
       selectedProject ? `project=${selectedProject.name}` : '',
       selectedTask ? `task=${selectedTask.title}` : '',
       selectedKnowledge ? `knowledge=${selectedKnowledge.title || selectedKnowledge.id}` : '',
       selectedExecution ? `past_execution=${selectedExecution.title || selectedExecution.objective}` : '',
-      mediaMode && filename ? `preferred_filename=${filename}` : ''
+      mediaMode && filename ? `preferred_filename=${filename}` : '',
+      chatAttachedFiles.length > 0 ? `attached_files=${chatAttachedFiles.join(', ')}` : ''
     ].filter(Boolean);
 
     const requestBlock = mediaMode
@@ -1297,8 +1337,8 @@ export default function WorkforceDetailPage() {
         ].join('\n');
 
     const contextualMessage = contextLines.length > 0
-      ? `Context:\n- ${contextLines.join('\n- ')}\n\n${requestBlock}`
-      : requestBlock;
+      ? `Context:\n- ${contextLines.join('\n- ')}\n\n${requestBlock}${attachedFileBlock}`
+      : `${requestBlock}${attachedFileBlock}`;
 
     const mediaRelativePath = mediaMode ? `generated/${filename}` : '';
     const mediaOutputPath = mediaMode ? mediaRelativePath : '';
@@ -1352,6 +1392,8 @@ export default function WorkforceDetailPage() {
       setChatFilename('');
     } else {
       setChatInput('');
+      setChatAttachedFiles([]);
+      setChatFilePickerOpen(false);
     }
     setChatError('');
     setChatLoading(true);
@@ -1498,11 +1540,11 @@ export default function WorkforceDetailPage() {
   const chatAgentIsMedia = isMediaModelType(selectedChatAgent?.model_type);
   const activeChatMessages = chatAgentId ? (chatByAgent[chatAgentId] || []) : [];
   const groupedChatMessages = buildWorkforceChatGroups(activeChatMessages);
-  const shouldAutoCollapseMediaHistory = chatAgentIsMedia && groupedChatMessages.length > 1;
-  const visibleGroupedChatMessages = shouldAutoCollapseMediaHistory && !showAllMediaChatHistory
+  const shouldAutoCollapseChatHistory = groupedChatMessages.length > 1;
+  const visibleGroupedChatMessages = shouldAutoCollapseChatHistory && !showAllChatHistory
     ? groupedChatMessages.slice(-1)
     : groupedChatMessages;
-  const hiddenMediaGroupCount = shouldAutoCollapseMediaHistory
+  const hiddenChatGroupCount = shouldAutoCollapseChatHistory
     ? groupedChatMessages.length - visibleGroupedChatMessages.length
     : 0;
   const selectedChatProject = projects.find((p) => p.id === chatProjectId) || null;
@@ -2186,21 +2228,85 @@ export default function WorkforceDetailPage() {
                     </div>
                   </div>
 
-                  <div className='rounded-lg border border-border/30 bg-background/40 px-2.5 py-2'>
-                    <p className='mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Context attachments</p>
-                    {chatComposerAttachments.length > 0 ? (
+                  <div className='rounded-lg border border-border/30 bg-background/40 px-2.5 py-2 space-y-2'>
+                    <div className='flex items-center justify-between'>
+                      <p className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70'>Context attachments</p>
+                      {!chatAgentIsMedia && (
+                        <button
+                          onClick={() => setChatFilePickerOpen(p => !p)}
+                          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors ${chatFilePickerOpen ? 'bg-[#9A66FF]/20 text-[#9A66FF]' : 'text-muted-foreground/60 hover:text-muted-foreground'}`}
+                        >
+                          <IconPaperclip className='h-3 w-3' />
+                          {chatAttachedFiles.length > 0 ? `${chatAttachedFiles.length} file${chatAttachedFiles.length > 1 ? 's' : ''}` : 'Attach files'}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Context badges */}
+                    {(chatComposerAttachments.length > 0 || chatAttachedFiles.length > 0) ? (
                       <div className='flex flex-wrap gap-1.5'>
                         {chatComposerAttachments.map((label) => (
-                          <span
-                            key={label}
-                            className='rounded-md border border-[#14FFF7]/25 bg-[#14FFF7]/10 px-2 py-0.5 text-[10px] text-[#14FFF7]'
-                          >
+                          <span key={label} className='rounded-md border border-[#14FFF7]/25 bg-[#14FFF7]/10 px-2 py-0.5 text-[10px] text-[#14FFF7]'>
                             {label}
+                          </span>
+                        ))}
+                        {chatAttachedFiles.map((p) => (
+                          <span key={p} className='flex items-center gap-1 rounded-md border border-[#9A66FF]/30 bg-[#9A66FF]/10 px-2 py-0.5 text-[10px] font-mono text-[#9A66FF]'>
+                            {p.split('/').pop()}
+                            <button onClick={() => setChatAttachedFiles(prev => prev.filter(x => x !== p))} className='opacity-60 hover:opacity-100'>
+                              <IconX className='h-2.5 w-2.5' />
+                            </button>
                           </span>
                         ))}
                       </div>
                     ) : (
-                      <p className='text-[10px] text-muted-foreground/60'>No context selected. Add project/task/knowledge/execution if needed.</p>
+                      <p className='text-[10px] text-muted-foreground/60'>No context selected. Add project/task/knowledge/execution or attach workspace files.</p>
+                    )}
+
+                    {/* File picker panel */}
+                    {chatFilePickerOpen && !chatAgentIsMedia && (
+                      <div className='space-y-1.5 pt-1'>
+                        <div className='relative'>
+                          <IconSearch className='absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/50' />
+                          <input
+                            placeholder='Search workspace files…'
+                            value={chatFileSearch}
+                            onChange={e => setChatFileSearch(e.target.value)}
+                            className='w-full rounded border border-border/40 bg-background/60 py-1 pl-6 pr-2 text-[11px] focus:outline-none focus:ring-1 focus:ring-[#9A66FF]'
+                          />
+                        </div>
+                        <div className='max-h-36 overflow-y-auto rounded border border-border/30 bg-background/40'>
+                          {chatWorkspaceFilesLoading ? (
+                            <div className='flex items-center justify-center py-3'>
+                              <IconLoader2 className='h-3.5 w-3.5 animate-spin text-muted-foreground/50' />
+                            </div>
+                          ) : chatWorkspaceFiles.filter(f => !chatFileSearch || f.path.toLowerCase().includes(chatFileSearch.toLowerCase())).length === 0 ? (
+                            <p className='py-3 text-center text-[11px] text-muted-foreground/40'>
+                              {chatWorkspaceFiles.length === 0 ? 'No workspace files found' : 'No matches'}
+                            </p>
+                          ) : (
+                            chatWorkspaceFiles
+                              .filter(f => !chatFileSearch || f.path.toLowerCase().includes(chatFileSearch.toLowerCase()))
+                              .map(f => {
+                                const selected = chatAttachedFiles.includes(f.path);
+                                return (
+                                  <button
+                                    key={f.path}
+                                    type='button'
+                                    onClick={() => setChatAttachedFiles(prev => selected ? prev.filter(x => x !== f.path) : [...prev, f.path])}
+                                    className={`flex w-full items-center gap-2 border-b border-border/20 px-2.5 py-1.5 text-left text-[11px] transition-colors last:border-0 ${selected ? 'bg-[#9A66FF]/10 text-[#9A66FF]' : 'text-muted-foreground hover:bg-muted/20 hover:text-foreground'}`}
+                                  >
+                                    <span className={`h-3 w-3 flex-shrink-0 rounded border text-center text-[8px] leading-[11px] ${selected ? 'border-[#9A66FF] bg-[#9A66FF] text-white' : 'border-border/60'}`}>
+                                      {selected ? '✓' : ''}
+                                    </span>
+                                    <span className='flex-1 truncate font-mono'>{f.path}</span>
+                                    <span className='flex-shrink-0 text-[9px] opacity-40'>{f.ext}</span>
+                                  </button>
+                                );
+                              })
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2229,20 +2335,20 @@ export default function WorkforceDetailPage() {
                       </div>
                     )}
 
-                    {shouldAutoCollapseMediaHistory && (
+                    {shouldAutoCollapseChatHistory && (
                       <div className='flex items-center justify-between rounded-lg border border-border/30 bg-background/50 px-2.5 py-1.5'>
                         <p className='text-[10px] text-muted-foreground/80'>
-                          Media chat keeps only the latest response expanded by default.
+                          Showing latest response only.
                         </p>
                         <Button
                           variant='ghost'
                           size='sm'
                           className='h-7 px-2 text-[10px]'
-                          onClick={() => setShowAllMediaChatHistory((prev) => !prev)}
+                          onClick={() => setShowAllChatHistory((prev) => !prev)}
                         >
-                          {showAllMediaChatHistory
+                          {showAllChatHistory
                             ? 'Collapse older messages'
-                            : `Show ${hiddenMediaGroupCount} older message${hiddenMediaGroupCount === 1 ? '' : 's'}`}
+                            : `Show ${hiddenChatGroupCount} older message${hiddenChatGroupCount === 1 ? '' : 's'}`}
                         </Button>
                       </div>
                     )}
