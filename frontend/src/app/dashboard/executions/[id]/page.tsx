@@ -40,7 +40,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog';
-import api, { Agent, ChatReply, DeliveryAction, DeliveryFile, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce, WorkspaceFileEntry } from '@/lib/api';
+import api, { Agent, ChatReply, DeliveryAction, DeliveryFile, Execution, ExecutionEvent, ExecutionQA, ExecutionSubtask, Message, ToolCallRecord, Workforce } from '@/lib/api';
 import { EntityAvatar } from '@/components/entity-avatar';
 import { AvatarUpload } from '@/components/avatar-upload';
 import { Input } from '@/components/ui/input';
@@ -2130,8 +2130,6 @@ export default function ExecutionDetailPage() {
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
   const [objOpen, setObjOpen] = useState(false);
   const [wsFilesOpen, setWsFilesOpen] = useState(false);
-  const [wsFiles, setWsFiles] = useState<WorkspaceFileEntry[] | null>(null);
-  const [wsFilesLoading, setWsFilesLoading] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const msgContainerRef = useRef<HTMLDivElement>(null);
@@ -2436,14 +2434,57 @@ export default function ExecutionDetailPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [execution?.status]);
 
-  // Lazy-load workspace files when panel is opened
-  useEffect(() => {
-    if (!wsFilesOpen || wsFiles !== null || !workforce?.id) return;
-    setWsFilesLoading(true);
-    api.listWorkspaceFiles(workforce.id)
-      .then((res) => { setWsFiles(res.data ?? []); setWsFilesLoading(false); })
-      .catch(() => { setWsFiles([]); setWsFilesLoading(false); });
-  }, [wsFilesOpen, wsFiles, workforce?.id]);
+  // Derive the set of files touched in THIS execution from tool call events.
+  // Tracks the last operation per path so "wrote" overwrites "read" for the same file.
+  const touchedFiles = useMemo(() => {
+    const FILE_OP_TOOLS: Record<string, string> = {
+      write_file:      'wrote',
+      append_to_file:  'appended',
+      read_file:       'read',
+      read_file_lines: 'read',
+      delete_file:     'deleted',
+      move_file:       'moved',
+      copy_file:       'copied',
+    };
+    // Priority order: higher index = higher priority (wins if same file touched multiple ways)
+    const OP_PRIORITY: Record<string, number> = {
+      read: 0, appended: 1, moved: 1, copied: 1, deleted: 2, wrote: 3,
+    };
+
+    const fileMap = new Map<string, string>(); // relPath → op
+
+    for (const ev of liveEvents) {
+      if (ev.type !== 'tool_call' || !ev.data?.args) continue;
+      const args = ev.data.args as Record<string, unknown>;
+      const tool = ev.data.tool as string | undefined;
+      if (!tool) continue;
+
+      const op = FILE_OP_TOOLS[tool];
+      if (!op) continue;
+
+      const paths: string[] = [];
+      if (args.path) paths.push(String(args.path));
+      if (args.source) paths.push(String(args.source));
+      if (args.destination) paths.push(String(args.destination));
+
+      for (const raw of paths) {
+        // Normalise to workspace-relative: strip /workspace/ alias or bare filename
+        let rel = raw.trim();
+        if (rel.startsWith('/workspace/')) rel = rel.slice('/workspace/'.length);
+        else if (rel.startsWith('./')) rel = rel.slice(2);
+        if (!rel || rel === '/workspace') continue;
+
+        const existing = fileMap.get(rel);
+        if (!existing || (OP_PRIORITY[op] ?? 0) >= (OP_PRIORITY[existing] ?? 0)) {
+          fileMap.set(rel, op);
+        }
+      }
+    }
+
+    return Array.from(fileMap.entries())
+      .map(([path, op]) => ({ path, op, ext: path.split('.').pop()?.toLowerCase() ?? '' }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }, [liveEvents]);
 
   function handleMsgScroll() {
     const el = msgContainerRef.current;
@@ -3579,7 +3620,7 @@ export default function ExecutionDetailPage() {
             )}
 
             {/* Workspace Files */}
-            {workforce?.id && (
+            {workforce?.id && touchedFiles.length > 0 && (
               <div className='border-b border-border/50 shrink-0'>
                 <button
                   type='button'
@@ -3588,37 +3629,31 @@ export default function ExecutionDetailPage() {
                 >
                   <span className='flex items-center gap-1.5'>
                     <IconFolder className='h-3 w-3' />
-                    Workspace Files
-                    {wsFiles !== null && (
-                      <span className='ml-1 rounded-full bg-muted/40 px-1.5 py-0.5 text-[9px] font-mono text-muted-foreground/60'>
-                        {wsFiles.length}
-                      </span>
-                    )}
+                    Files Used
+                    <span className='ml-1 rounded-full bg-muted/40 px-1.5 py-0.5 text-[9px] font-mono text-muted-foreground/60'>
+                      {touchedFiles.length}
+                    </span>
                   </span>
                   <IconChevronDown className={`h-3 w-3 transition-transform ${wsFilesOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {wsFilesOpen && (
                   <div className='px-3 pb-3 space-y-0.5 max-h-52 overflow-y-auto'>
-                    {wsFilesLoading && (
-                      <div className='flex items-center gap-1.5 py-2 text-xs text-muted-foreground/50'>
-                        <IconLoader2 className='h-3 w-3 animate-spin' />
-                        Loading…
-                      </div>
-                    )}
-                    {!wsFilesLoading && wsFiles?.length === 0 && (
-                      <p className='py-2 text-xs text-muted-foreground/40 italic'>No files found</p>
-                    )}
-                    {!wsFilesLoading && wsFiles?.map((f) => {
-                      const ext = f.ext.replace('.', '').toLowerCase();
-                      const isImg = IMAGE_EXTS.has(ext);
-                      const size = f.size < 1024 ? `${f.size}B` : f.size < 1024 * 1024 ? `${(f.size / 1024).toFixed(1)}KB` : `${(f.size / 1024 / 1024).toFixed(1)}MB`;
+                    {touchedFiles.map((f) => {
+                      const opColors: Record<string, string> = {
+                        wrote: '#56D090', appended: '#56D090', deleted: '#FF6B6B',
+                        moved: '#14FFF7', copied: '#14FFF7', read: '#EAEAEA',
+                      };
+                      const opColor = opColors[f.op] ?? '#EAEAEA';
                       return (
-                        <div key={f.path} className='flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-muted/20 group'>
-                          {isImg
-                            ? <IconFile className='h-3 w-3 shrink-0 text-[#14FFF7]/60' />
-                            : <IconFile className='h-3 w-3 shrink-0 text-muted-foreground/40' />}
+                        <div key={f.path} className='flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-muted/20'>
+                          <IconFile className='h-3 w-3 shrink-0 text-muted-foreground/40' />
                           <WorkspaceFilePath relPath={f.path} workforceId={workforce.id} />
-                          <span className='ml-auto text-[9px] font-mono text-muted-foreground/30 shrink-0'>{size}</span>
+                          <span
+                            className='ml-auto text-[9px] font-mono shrink-0 opacity-60'
+                            style={{ color: opColor }}
+                          >
+                            {f.op}
+                          </span>
                         </div>
                       );
                     })}
