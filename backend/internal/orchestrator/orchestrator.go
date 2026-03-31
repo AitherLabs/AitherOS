@@ -1626,13 +1626,43 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		}
 	}
 
+	// Build a workspace file manifest from tool call events so the review and final
+	// result reflect what was ACTUALLY produced on disk, not just agent text signals.
+	// This prevents false "no output" verdicts when agents write files without
+	// mentioning them explicitly in their completion summaries.
+	var wsManifest string
+	if events, err := o.store.ListExecutionEvents(ctx, exec.ID); err == nil {
+		wsPath := workspace.WorkspacePath(wf.Name)
+		report := buildDeliveryReport(events, wsPath)
+		if len(report.Files) > 0 {
+			lines := make([]string, 0, len(report.Files))
+			for _, f := range report.Files {
+				if f.SizeBytes > 0 {
+					lines = append(lines, fmt.Sprintf("  - %s (%s)", f.Path, humanSize(f.SizeBytes)))
+				} else {
+					lines = append(lines, "  - "+f.Path)
+				}
+			}
+			wsManifest = "**Files written to workspace:**\n" + strings.Join(lines, "\n")
+		}
+	}
+
 	// P3: Post-execution quality review by leader (multi-agent only, advisory)
 	leaderAgent := findLeaderAgent(agents, wf.LeaderAgentID)
 	if leaderAgent != nil && len(agents) > 1 {
-		o.runReview(ctx, exec, wf, agents, leaderAgent, plan)
+		o.runReview(ctx, exec, wf, agents, leaderAgent, plan, wsManifest)
 	}
 
-	o.completeExecution(ctx, exec.ID, wf.ID, joinResults(outputs), execCtx.tokensUsed.Load(), stepCount)
+	finalResult := joinResults(outputs)
+	if wsManifest != "" {
+		finalResult = strings.TrimSpace(finalResult)
+		if finalResult == "" || finalResult == "(none yet)" {
+			finalResult = wsManifest
+		} else {
+			finalResult += "\n\n" + wsManifest
+		}
+	}
+	o.completeExecution(ctx, exec.ID, wf.ID, finalResult, execCtx.tokensUsed.Load(), stepCount)
 }
 
 // runAgentParams holds everything needed to run a single agent subtask.
@@ -4326,6 +4356,7 @@ func (o *Orchestrator) runReview(
 	agents []*models.Agent,
 	leaderAgent *models.Agent,
 	plan []models.ExecutionSubtask,
+	wsManifest string,
 ) string {
 	leaderID := leaderAgent.ID
 
@@ -4365,18 +4396,25 @@ func (o *Orchestrator) runReview(
 
 	leaderSystemPrompt, _ := engine.InterpolatePrompt(leaderAgent.SystemPrompt, leaderAgent.Variables, exec.Inputs)
 
+	wsSection := ""
+	if wsManifest != "" {
+		wsSection = "\n\n" + wsManifest + "\n\n" +
+			"**Important:** Files listed above were written to the team workspace during this execution. " +
+			"A file that fulfils the objective counts as a completed deliverable even if the agent's text summary is sparse."
+	}
+
 	reviewPrompt := fmt.Sprintf(
 		"## Post-Execution Quality Review\n\n"+
 			"You are **%s**, the team leader. Your team has just completed the following objective:\n\n"+
 			"**Objective:** %s\n\n"+
-			"**Team outputs (one section per subtask):**\n%s\n\n"+
+			"**Team outputs (one section per subtask):**\n%s%s\n\n"+
 			"Review the combined output against the objective. Be lenient — partial completion, minor imperfections, "+
-			"and rough formatting are acceptable. Only flag serious failures where the core objective was not addressed.\n\n"+
+			"and rough formatting are acceptable. Only flag serious failures where the core objective was not addressed at all.\n\n"+
 			"Respond with ONLY this JSON (no other text):\n"+
 			`{"status":"review_passed","summary":"<2-3 sentences>","highlights":["<what was done well>"]}`+"\n\n"+
 			"OR if there are critical gaps:\n"+
 			`{"status":"review_needs_revision","summary":"<what was done>","issues":["<critical gap>"]}`,
-		leaderAgent.Name, exec.Objective, outputsText,
+		leaderAgent.Name, exec.Objective, outputsText, wsSection,
 	)
 
 	// Store the review prompt
