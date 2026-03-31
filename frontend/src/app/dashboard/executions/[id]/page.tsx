@@ -1476,6 +1476,42 @@ function EventDetailBody({ ev, dot, workforceId, workspacePath }: { ev: LiveEven
   return <div className='space-y-3'>{specific}{metadata}</div>;
 }
 
+// ThinkingEventCard renders an agent_thinking event as a "thought bubble" —
+// visually distinct from action events, with italic text and expandable content.
+function ThinkingEventCard({ ev }: { ev: LiveEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const content = ev.content || '';
+  const lines = content.split('\n').filter(Boolean);
+  const preview = lines.slice(0, 3).join('\n');
+  const hasMore = lines.length > 3 || content.length > 300;
+
+  return (
+    <div className='flow-event-enter rounded-md border border-[#14FFF7]/10 bg-[#14FFF7]/[0.03] px-2.5 py-2 space-y-1'>
+      <div className='flex items-center gap-1.5'>
+        <span className='text-[10px]'>💭</span>
+        <span className='text-[10px] font-semibold text-[#14FFF7]/60'>
+          {ev.agent_name ? `${ev.agent_name}` : 'Agent'} · Reasoning
+        </span>
+        <span className='ml-auto text-[9px] text-muted-foreground/30'>
+          {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        </span>
+      </div>
+      <p className='text-[10px] italic leading-relaxed text-[#EAEAEA]/50 whitespace-pre-wrap break-words'>
+        {expanded ? content : preview}
+        {!expanded && hasMore && '…'}
+      </p>
+      {hasMore && (
+        <button
+          onClick={() => setExpanded(v => !v)}
+          className='text-[9px] text-[#14FFF7]/40 hover:text-[#14FFF7]/70 transition-colors'
+        >
+          {expanded ? 'Show less' : 'Show full reasoning'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function EventCard({ ev, dot, label, workforceId, workspacePath }: { ev: LiveEvent; dot: string; label: string; workforceId?: string; workspacePath?: string }) {
   const [open, setOpen] = useState(false);
   const hasDetail = true;
@@ -2296,7 +2332,7 @@ export default function ExecutionDetailPage() {
         try {
           const data = JSON.parse(ev.data);
           // Skip noise events — same filter as the backend API
-          if (['agent_thinking', 'iteration_done', 'system'].includes(data.type)) return;
+          if (['iteration_done', 'system'].includes(data.type)) return;
           // Handle title assignment — update execution state live
           if (data.type === 'execution_titled' && data.data?.title) {
             setExecution(prev => prev ? { ...prev, title: data.data.title } : prev);
@@ -2968,6 +3004,9 @@ export default function ExecutionDetailPage() {
                   </p>
                 ) : (
                   liveEvents.map((ev) => {
+                    if (ev.type === 'agent_thinking') {
+                      return <ThinkingEventCard key={ev.id} ev={ev} />;
+                    }
                     const evCfg = eventTypeConfig[ev.type];
                     const dot = evCfg?.dot || '#6B7280';
                     const label = evCfg?.label || ev.type.replace(/_/g, ' ');

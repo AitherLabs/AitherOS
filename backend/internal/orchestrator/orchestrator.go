@@ -1901,6 +1901,30 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		{Role: "user", Content: taskMsg},
 	}
 
+	// publishThinking emits the agent's reasoning text as a thinking event so users
+	// can see the chain-of-thought in the execution timeline.
+	publishThinking := func(content string, round int) {
+		text := strings.TrimSpace(content)
+		if text == "" {
+			return
+		}
+		// Skip bare JSON completion signals — those are handled separately.
+		if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "```json") {
+			return
+		}
+		if len(text) > 4000 {
+			text = text[:4000] + "\n…[truncated]"
+		}
+		o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name,
+			models.EventTypeAgentThinking,
+			text,
+			map[string]any{"round": round, "thinking": true},
+		))
+	}
+
+	// Emit initial reasoning — what the agent said before its first tool call.
+	publishThinking(resp.Content, 0)
+
 	for toolRound := 0; toolRound < maxToolRounds && len(resp.ToolCalls) > 0; toolRound++ {
 		// First pass: check for virtual signal tools (mutate resp, must be sequential).
 		signalled := false
@@ -2079,6 +2103,10 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			if toolLoopErr == nil {
 				break
 			}
+		}
+		// Emit reasoning text the agent produced after seeing this round's tool results.
+		if toolLoopErr == nil {
+			publishThinking(resp.Content, toolRound+1)
 		}
 		if toolLoopErr != nil {
 			cleanErr := cleanAPIError(toolLoopErr.Error())
