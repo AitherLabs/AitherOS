@@ -1514,53 +1514,78 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 			return
 		}
 
-		// ── Execute each ready subtask (sequential for full observability) ──
+		// ── Execute ready subtasks in parallel ──
+		// Subtasks in `ready` have all dependencies met — they're truly independent
+		// and safe to run concurrently. We mark all as Running upfront, fan out into
+		// goroutines, then apply results sequentially after the WaitGroup drains.
 		interventionForRound := pendingIntervention
-		usedInterventionThisRound := false
-		for _, subtaskIdx := range ready {
-			subtask := &plan[subtaskIdx]
-			subtask.Status = models.SubtaskRunning
-			subtask.ErrorMsg = ""
-			o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
 
-			agent := findAgentByID(agents, subtask.AgentID)
+		type runnableEntry struct {
+			idx   int
+			agent *models.Agent
+		}
+		var runnable []runnableEntry
+		for _, subtaskIdx := range ready {
+			plan[subtaskIdx].Status = models.SubtaskRunning
+			plan[subtaskIdx].ErrorMsg = ""
+			agent := findAgentByID(agents, plan[subtaskIdx].AgentID)
 			if agent == nil {
-				subtask.Status = models.SubtaskBlocked
-				subtask.ErrorMsg = fmt.Sprintf("agent %s not found in this workforce", subtask.AgentID)
-				o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
+				plan[subtaskIdx].Status = models.SubtaskBlocked
+				plan[subtaskIdx].ErrorMsg = fmt.Sprintf("agent %s not found in this workforce", plan[subtaskIdx].AgentID)
 				o.eventBus.PublishSystem(ctx, exec.ID,
-					fmt.Sprintf("Agent %s not found for subtask %s — blocked", subtask.AgentID, subtask.ID))
+					fmt.Sprintf("Agent %s not found for subtask %s — blocked", plan[subtaskIdx].AgentID, plan[subtaskIdx].ID))
 				continue
 			}
-
-			o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &subtask.AgentID, subtask.AgentName,
+			o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &plan[subtaskIdx].AgentID, plan[subtaskIdx].AgentName,
 				models.EventTypeSubtaskStarted,
-				fmt.Sprintf("[%s/%s] Starting: %s", subtask.ID, subtask.AgentName, truncateStr(subtask.Subtask, 100)),
-				map[string]any{"subtask_id": subtask.ID, "subtask": subtask.Subtask, "depends_on": subtask.DependsOn}))
+				fmt.Sprintf("[%s/%s] Starting: %s", plan[subtaskIdx].ID, plan[subtaskIdx].AgentName, truncateStr(plan[subtaskIdx].Subtask, 100)),
+				map[string]any{"subtask_id": plan[subtaskIdx].ID, "subtask": plan[subtaskIdx].Subtask, "depends_on": plan[subtaskIdx].DependsOn}))
+			runnable = append(runnable, runnableEntry{idx: subtaskIdx, agent: agent})
+		}
+		o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
 
-			handoffCtx := buildHandoffContext(plan, subtask.DependsOn)
-			convCtx := o.buildConversationContext(ctx, exec.ID, wf.ID, exec.Objective)
+		type subtaskBatchResult struct {
+			subtaskIdx int
+			res        agentResult
+		}
+		batchResults := make([]subtaskBatchResult, len(runnable))
+		var batchWg sync.WaitGroup
+		for i, entry := range runnable {
+			i, entry := i, entry
+			subtask := plan[entry.idx] // copy — each goroutine owns its snapshot
+			batchWg.Add(1)
+			go func() {
+				defer batchWg.Done()
+				handoffCtx := buildHandoffContext(plan, subtask.DependsOn)
+				convCtx := o.buildConversationContext(ctx, exec.ID, wf.ID, exec.Objective)
+				res := o.runAgentTask(ctx, runAgentParams{
+					exec:            exec,
+					wf:              wf,
+					agent:           entry.agent,
+					allAgents:       agents,
+					iteration:       stepCount + 1,
+					subtask:         &subtask,
+					handoffCtx:      handoffCtx,
+					interventionMsg: interventionForRound,
+					convCtx:         convCtx,
+					mcpSession:      mcpSession,
+					execCtx:         execCtx,
+				})
+				batchResults[i] = subtaskBatchResult{subtaskIdx: entry.idx, res: res}
+			}()
+		}
+		batchWg.Wait()
 
-			res := o.runAgentTask(ctx, runAgentParams{
-				exec:            exec,
-				wf:              wf,
-				agent:           agent,
-				allAgents:       agents,
-				iteration:       stepCount + 1,
-				subtask:         subtask,
-				handoffCtx:      handoffCtx,
-				interventionMsg: interventionForRound,
-				convCtx:         convCtx,
-				mcpSession:      mcpSession,
-				execCtx:         execCtx,
-			})
+		// Apply results sequentially — goroutines are done, plan writes are safe.
+		usedInterventionThisRound := false
+		for _, br := range batchResults {
+			subtask := &plan[br.subtaskIdx]
+			res := br.res
 			if interventionForRound != "" {
 				usedInterventionThisRound = true
 			}
 
 			if res.Err != nil {
-				// Convert hard errors to needs_help so the execution pauses and the
-				// user can intervene rather than deadlocking into an unrecoverable halt.
 				subtask.Status = models.SubtaskNeedsHelp
 				subtask.ErrorMsg = res.Err.Error()
 				o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &subtask.AgentID, subtask.AgentName,
@@ -1580,7 +1605,6 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 			} else {
 				subtask.Status = models.SubtaskDone
 				subtask.ErrorMsg = ""
-				// Prefer summary from completion signal when available
 				if res.Summary != "" {
 					subtask.Output = res.Summary + "\n\n" + res.Content
 				} else {
@@ -1592,7 +1616,6 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 					fmt.Sprintf("[%s/%s] Subtask complete", subtask.ID, subtask.AgentName),
 					map[string]any{"subtask_id": subtask.ID, "tokens": res.Tokens}))
 
-				// Emit handoff events for agents waiting on this subtask
 				for i, st := range plan {
 					if containsStr(st.DependsOn, subtask.ID) && plan[i].Status == models.SubtaskPending {
 						depCopy := plan[i]
@@ -1605,14 +1628,13 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 				}
 			}
 
-			o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
 			stepCount++
 			execCtx.iterations.Add(1)
-
 			o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypeIterationDone,
 				fmt.Sprintf("Step %d complete. Tokens: %d", stepCount, execCtx.tokensUsed.Load()),
 				map[string]any{"step": stepCount, "tokens_used": execCtx.tokensUsed.Load()}))
 		}
+		o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
 		if usedInterventionThisRound {
 			pendingIntervention = ""
 		}
@@ -1926,9 +1948,16 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	if instructions != "" {
 		sysContent += "\n\n## Instructions\n" + instructions
 	}
+	// Strip the workspace snapshot and credentials list from the history anchor.
+	// The agent already saw them in the initial Message call above; re-sending
+	// kilobytes of file listings and secret names on every tool-loop round wastes
+	// tokens and increases TTFT. Subsequent rounds only need the workspace path.
+	wsRef := fmt.Sprintf("## Your Workspace\nPath: `%s`", workspacePath)
+	taskMsgCompact := strings.Replace(taskMsg, wsSection, wsRef, 1)
+
 	history := []engine.ChatMessage{
 		{Role: "system", Content: sysContent},
-		{Role: "user", Content: taskMsg},
+		{Role: "user", Content: taskMsgCompact},
 	}
 
 	// publishThinking emits the agent's reasoning text as a thinking event so users
