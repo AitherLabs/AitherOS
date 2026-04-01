@@ -1800,7 +1800,8 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		taskParts = append(taskParts, fmt.Sprintf("## Your Skills\n%s", skillsCtx))
 	}
 
-	taskParts = append(taskParts, fmt.Sprintf("## Your Assigned Subtask (step %d)\n%s", p.iteration, subtaskDesc))
+	subtaskDescPart := fmt.Sprintf("## Your Assigned Subtask (step %d)\n%s", p.iteration, subtaskDesc)
+	taskParts = append(taskParts, subtaskDescPart)
 
 	if p.handoffCtx != "" {
 		taskParts = append(taskParts, fmt.Sprintf("## Context from Previous Agents\n%s", p.handoffCtx))
@@ -1863,7 +1864,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		"\nIf a credential you need is not listed above, signal `needs_help` with the exact service and key name."
 	taskParts = append(taskParts, wsSection)
 
-	taskParts = append(taskParts, fmt.Sprintf("---\n"+
+	instructionsFooter := fmt.Sprintf("---\n"+
 		"Execute your subtask now using efficient cycles: plan → act → verify.\n"+
 		"Tool budget: up to %d tool rounds for this subtask.\n"+
 		"Efficiency policy:\n"+
@@ -1875,7 +1876,8 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		"When done:\n```json\n{\"status\": \"complete\", \"summary\": \"<one sentence>\"}\n```\n"+
 		"Need human input:\n```json\n{\"status\": \"needs_help\", \"reason\": \"<what you tried and need>\"}\n```\n"+
 		"Hard blocker:\n```json\n{\"status\": \"blocked\", \"reason\": \"<what is blocking>\"}\n```"+
-		peerList, toolRoundBudget))
+		peerList, toolRoundBudget)
+	taskParts = append(taskParts, instructionsFooter)
 
 	taskMsg := strings.Join(taskParts, "\n\n")
 
@@ -1909,7 +1911,38 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	toolDefs = append(toolDefs, virtualPlatformTools...)
 	toolDefs = append(toolDefs, virtualSignalTools...)
 
-	resp, err := eng.Submit(ctx, engine.TaskRequest{
+	// streamSubmit wraps SubmitWithStream to emit live agent_token events per
+	// content chunk. Falls back to Submit if streaming fails (e.g., provider
+	// does not support streaming with tools).
+	var currentStreamID string
+	streamSubmit := func(req engine.TaskRequest) (*engine.TaskResponse, error) {
+		sid := uuid.New().String()
+		currentStreamID = sid
+		firstChunk := true
+		isJSONResp := false
+		result, err := eng.SubmitWithStream(ctx, req, func(chunk string) {
+			if firstChunk {
+				firstChunk = false
+				if t := strings.TrimSpace(chunk); strings.HasPrefix(t, "{") || strings.HasPrefix(t, "```json") {
+					isJSONResp = true
+				}
+			}
+			if isJSONResp {
+				return
+			}
+			o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name,
+				models.EventTypeAgentToken, chunk,
+				map[string]any{"stream_id": sid, "chunk": chunk},
+			))
+		})
+		if err != nil {
+			currentStreamID = ""
+			return eng.Submit(ctx, req)
+		}
+		return result, nil
+	}
+
+	resp, err := streamSubmit(engine.TaskRequest{
 		AgentID:       agent.ID,
 		AgentName:     agent.Name,
 		SystemPrompt:  systemPrompt,
@@ -1948,12 +1981,18 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	if instructions != "" {
 		sysContent += "\n\n## Instructions\n" + instructions
 	}
-	// Strip the workspace snapshot and credentials list from the history anchor.
-	// The agent already saw them in the initial Message call above; re-sending
-	// kilobytes of file listings and secret names on every tool-loop round wastes
-	// tokens and increases TTFT. Subsequent rounds only need the workspace path.
-	wsRef := fmt.Sprintf("## Your Workspace\nPath: `%s`", workspacePath)
-	taskMsgCompact := strings.Replace(taskMsg, wsSection, wsRef, 1)
+	// Build an ultra-compact history anchor for tool-loop rounds. The agent
+	// already processed the full context (brief, skills, memory, handoff,
+	// workspace snapshot, credentials) in round 0. Subsequent rounds only need
+	// to remember the subtask and where to write output.
+	var compactParts []string
+	compactParts = append(compactParts, subtaskDescPart)
+	if p.interventionMsg != "" {
+		compactParts = append(compactParts, fmt.Sprintf("## Human Operator Instruction\n%s", p.interventionMsg))
+	}
+	compactParts = append(compactParts, fmt.Sprintf("## Your Workspace\nPath: `%s`", workspacePath))
+	compactParts = append(compactParts, instructionsFooter)
+	taskMsgCompact := strings.Join(compactParts, "\n\n")
 
 	history := []engine.ChatMessage{
 		{Role: "system", Content: sysContent},
@@ -1967,17 +2006,18 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		if text == "" {
 			return
 		}
-		// Skip bare JSON completion signals — those are handled separately.
 		if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "```json") {
 			return
 		}
 		if len(text) > 4000 {
 			text = text[:4000] + "\n…[truncated]"
 		}
+		data := map[string]any{"round": round, "thinking": true}
+		if currentStreamID != "" {
+			data["stream_id"] = currentStreamID
+		}
 		o.eventBus.Publish(ctx, models.NewEvent(p.exec.ID, &agentID, agent.Name,
-			models.EventTypeAgentThinking,
-			text,
-			map[string]any{"round": round, "thinking": true},
+			models.EventTypeAgentThinking, text, data,
 		))
 	}
 
@@ -2151,7 +2191,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 					break
 				}
 			}
-			resp, toolLoopErr = eng.Submit(ctx, engine.TaskRequest{
+			resp, toolLoopErr = streamSubmit(engine.TaskRequest{
 				AgentID:   agent.ID,
 				AgentName: agent.Name,
 				Model:     modelName,
@@ -2222,7 +2262,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			},
 		)
 
-		resp, err = eng.Submit(ctx, engine.TaskRequest{
+		resp, err = streamSubmit(engine.TaskRequest{
 			AgentID:   agent.ID,
 			AgentName: agent.Name,
 			Model:     modelName,

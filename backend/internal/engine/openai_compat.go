@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aitheros/backend/internal/models"
@@ -110,12 +111,23 @@ type oaiResponse struct {
 type oaiStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content,omitempty"`
+			Content   string `json:"content,omitempty"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id,omitempty"`
+				Type     string `json:"type,omitempty"`
+				Function struct {
+					Name      string `json:"name,omitempty"`
+					Arguments string `json:"arguments,omitempty"`
+				} `json:"function"`
+			} `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		TotalTokens int64 `json:"total_tokens"`
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
 	} `json:"usage,omitempty"`
 }
 
@@ -264,6 +276,130 @@ func (c *openAICompatConnector) SubmitStream(ctx context.Context, req TaskReques
 	}()
 
 	return ch, nil
+}
+
+func (c *openAICompatConnector) SubmitWithStream(ctx context.Context, req TaskRequest, onChunk StreamChunkFn) (*TaskResponse, error) {
+	start := time.Now()
+	messages := buildOAIMessages(req)
+
+	oaiReq := oaiRequest{
+		Model:    req.Model,
+		Messages: messages,
+		Stream:   true,
+		Tools:    buildOAITools(req.ToolDefs),
+	}
+
+	body, err := json.Marshal(oaiReq)
+	if err != nil {
+		return nil, fmt.Errorf("%s stream: marshal: %w", c.providerName, err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("%s stream: %w", c.providerName, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("%s stream: %w", c.providerName, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%s stream: status %d: %s", c.providerName, resp.StatusCode, string(respBody))
+	}
+
+	var contentBuf strings.Builder
+	type toolAccum struct {
+		id   string
+		name string
+		args strings.Builder
+	}
+	pending := map[int]*toolAccum{}
+	var tokensIn, tokensOut int64
+	firstContent := true
+	isJSONContent := false
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 512*1024), 512*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || line == "data: [DONE]" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var chunk oaiStreamChunk
+		if err := json.Unmarshal([]byte(line[6:]), &chunk); err != nil {
+			continue
+		}
+		if chunk.Usage != nil {
+			tokensIn = chunk.Usage.PromptTokens
+			tokensOut = chunk.Usage.CompletionTokens
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta
+		if delta.Content != "" {
+			contentBuf.WriteString(delta.Content)
+			if onChunk != nil {
+				if firstContent {
+					firstContent = false
+					t := strings.TrimSpace(delta.Content)
+					if strings.HasPrefix(t, "{") || strings.HasPrefix(t, "```json") {
+						isJSONContent = true
+					}
+				}
+				if !isJSONContent {
+					onChunk(delta.Content)
+				}
+			}
+		}
+		for _, tc := range delta.ToolCalls {
+			if _, ok := pending[tc.Index]; !ok {
+				pending[tc.Index] = &toolAccum{id: tc.ID, name: tc.Function.Name}
+			}
+			acc := pending[tc.Index]
+			if tc.ID != "" {
+				acc.id = tc.ID
+			}
+			if tc.Function.Name != "" {
+				acc.name = tc.Function.Name
+			}
+			acc.args.WriteString(tc.Function.Arguments)
+		}
+	}
+
+	result := &TaskResponse{
+		Content:    contentBuf.String(),
+		TokensIn:   tokensIn,
+		TokensOut:  tokensOut,
+		TokensUsed: tokensIn + tokensOut,
+		LatencyMs:  time.Since(start).Milliseconds(),
+		Done:       true,
+	}
+	for i := 0; i < len(pending); i++ {
+		acc, ok := pending[i]
+		if !ok {
+			break
+		}
+		var args map[string]any
+		json.Unmarshal([]byte(acc.args.String()), &args)
+		result.ToolCalls = append(result.ToolCalls, ToolCallInfo{
+			ID:   acc.id,
+			Name: acc.name,
+			Args: args,
+		})
+	}
+	return result, nil
 }
 
 func buildOAITools(defs []ToolDefinition) []oaiTool {

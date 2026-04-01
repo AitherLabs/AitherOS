@@ -63,6 +63,9 @@ type StreamEvent struct {
 	Data    map[string]any   `json:"data,omitempty"`
 }
 
+// StreamChunkFn is called for each content chunk during streaming.
+type StreamChunkFn func(chunk string)
+
 // Connector is the interface that all agent engine adapters must implement.
 type Connector interface {
 	// Name returns the engine type identifier.
@@ -76,4 +79,8 @@ type Connector interface {
 
 	// SubmitStream sends a task and streams events back via a channel.
 	SubmitStream(ctx context.Context, req TaskRequest) (<-chan StreamEvent, error)
+
+	// SubmitWithStream sends a task, calling onChunk for each content token,
+	// and returns the full response including tool calls when complete.
+	SubmitWithStream(ctx context.Context, req TaskRequest, onChunk StreamChunkFn) (*TaskResponse, error)
 }

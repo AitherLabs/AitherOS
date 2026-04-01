@@ -14,6 +14,7 @@ type EventType string
 const (
 	EventTypeAgentThinking    EventType = "agent_thinking"
 	EventTypeAgentActing      EventType = "agent_acting"
+	EventTypeAgentToken       EventType = "agent_token"
 	EventTypeAgentCompleted   EventType = "agent_completed"
 	EventTypeAgentError       EventType = "agent_error"
 	EventTypeToolCall         EventType = "tool_call"

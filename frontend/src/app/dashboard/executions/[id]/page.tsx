@@ -85,6 +85,7 @@ const eventTypeConfig: Record<string, { dot: string; label: string }> = {
   review_started:       { dot: '#F59E0B', label: 'Review' },
   review_complete:      { dot: '#56D090', label: 'Review' },
   execution_titled:     { dot: '#9A66FF', label: 'Named' },
+  agent_token:          { dot: '#14FFF7', label: 'Stream' },
 };
 
 const eventTypeDetailConfig: Record<string, { title: string; summary: string; action?: string }> = {
@@ -1490,7 +1491,7 @@ function ThinkingEventCard({ ev }: { ev: LiveEvent }) {
       <div className='flex items-center gap-1.5'>
         <span className='text-[10px]'>💭</span>
         <span className='text-[10px] font-semibold text-[#14FFF7]/60'>
-          {ev.agent_name ? `${ev.agent_name}` : 'Agent'} · Reasoning
+          {ev.agent_name ? `${ev.agent_name}` : 'Agent'} · {ev.data?.streaming ? 'Streaming' : 'Reasoning'}
         </span>
         <span className='ml-auto text-[9px] text-muted-foreground/30'>
           {ev.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -1499,6 +1500,7 @@ function ThinkingEventCard({ ev }: { ev: LiveEvent }) {
       <p className='text-[10px] italic leading-relaxed text-[#EAEAEA]/50 whitespace-pre-wrap break-words'>
         {expanded ? content : preview}
         {!expanded && hasMore && '…'}
+        {ev.data?.streaming && <span className='inline-block h-[0.65em] w-[2px] bg-[#14FFF7]/70 animate-pulse align-middle ml-0.5' />}
       </p>
       {hasMore && (
         <button
@@ -2329,14 +2331,66 @@ export default function ExecutionDetailPage() {
       ws.onmessage = (ev) => {
         try {
           const data = JSON.parse(ev.data);
-          // Skip noise events — same filter as the backend API
           if (['iteration_done', 'system'].includes(data.type)) return;
-          // Handle title assignment — update execution state live
           if (data.type === 'execution_titled' && data.data?.title) {
             setExecution(prev => prev ? { ...prev, title: data.data.title } : prev);
             setTitleFlash(true);
             setTimeout(() => setTitleFlash(false), 1800);
           }
+
+          // ── Streaming token: update or create a live thinking card ──
+          if (data.type === 'agent_token') {
+            const sid: string = data.data?.stream_id;
+            const chunk: string = data.data?.chunk || '';
+            if (!sid || !chunk) return;
+            setLiveEvents(prev => {
+              const idx = prev.reduceRight((acc, e, i) => acc === -1 && e.data?.stream_id === sid ? i : acc, -1);
+              if (idx >= 0) {
+                return prev.map((e, i) =>
+                  i === idx ? { ...e, content: e.content + chunk } : e
+                );
+              }
+              return [...prev, {
+                id: sid,
+                type: 'agent_thinking' as const,
+                agent_name: data.agent_name,
+                content: chunk,
+                data: { stream_id: sid, streaming: true },
+                timestamp: new Date(),
+                isNew: true,
+              }].slice(-200);
+            });
+            return;
+          }
+
+          // ── Final agent_thinking for a streamed session: mark done ──
+          if (data.type === 'agent_thinking' && data.data?.stream_id) {
+            const sid: string = data.data.stream_id;
+            setLiveEvents(prev => {
+              const idx = prev.reduceRight((acc, e, i) => acc === -1 && e.data?.stream_id === sid ? i : acc, -1);
+              if (idx >= 0) {
+                return prev.map((e, i) =>
+                  i === idx
+                    ? { ...e, id: data.id || e.id, content: data.message || data.content || e.content, data: { ...e.data, streaming: false } }
+                    : e
+                );
+              }
+              // No matching stream card — add as normal thinking event
+              const evt: LiveEvent = {
+                id: data.id || Math.random().toString(36).slice(2),
+                type: 'agent_thinking',
+                agent_name: data.agent_name,
+                content: data.message || data.content || '',
+                data: data.data,
+                timestamp: new Date(),
+                isNew: true,
+              };
+              if (prev.some(e => e.id === evt.id)) return prev;
+              return [...prev, evt].slice(-200);
+            });
+            return;
+          }
+
           const evt: LiveEvent = {
             id: data.id || Math.random().toString(36).slice(2),
             type: data.type || 'event',
@@ -2347,7 +2401,6 @@ export default function ExecutionDetailPage() {
             isNew: true
           };
           setLiveEvents((prev) => {
-            // Deduplicate: if we already loaded this event from DB, skip it
             if (prev.some(e => e.id === evt.id)) return prev;
             return [...prev, evt].slice(-200);
           });

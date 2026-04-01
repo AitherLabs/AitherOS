@@ -242,6 +242,17 @@ func (a *Adapter) SubmitStream(ctx context.Context, req engine.TaskRequest) (<-c
 	return ch, nil
 }
 
+func (a *Adapter) SubmitWithStream(ctx context.Context, req engine.TaskRequest, onChunk engine.StreamChunkFn) (*engine.TaskResponse, error) {
+	resp, err := a.Submit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if onChunk != nil && resp.Content != "" {
+		onChunk(resp.Content)
+	}
+	return resp, nil
+}
+
 func buildMessages(req engine.TaskRequest) []picoClawMsg {
 	var msgs []picoClawMsg
 

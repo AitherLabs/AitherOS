@@ -178,6 +178,17 @@ func (c *imageConnector) SubmitStream(_ context.Context, req TaskRequest) (<-cha
 	return ch, nil
 }
 
+func (c *imageConnector) SubmitWithStream(ctx context.Context, req TaskRequest, onChunk StreamChunkFn) (*TaskResponse, error) {
+	resp, err := c.Submit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if onChunk != nil && resp.Content != "" {
+		onChunk(resp.Content)
+	}
+	return resp, nil
+}
+
 // ── Provider implementations ──────────────────────────────────────────────────
 
 func (c *imageConnector) generateGoogle(ctx context.Context, prompt, aspectRatio string) ([]byte, error) {
