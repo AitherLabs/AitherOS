@@ -581,7 +581,7 @@ const defaultMediaInterFileWait = 1200 * time.Millisecond
 
 // maxAgentToolRounds caps tool-call feedback loops per subtask to prevent
 // runaway multi-minute tool churn.
-const defaultMaxAgentToolRounds = 24
+const defaultMaxAgentToolRounds = 50
 
 // maxInterventionContextChars caps the accumulated operator intervention text
 // injected into a single execution round.
@@ -634,6 +634,48 @@ func trimHistory(history []engine.ChatMessage) []engine.ChatMessage {
 	copy(trimmed, history[:anchors])
 	return append(trimmed, history[cutFrom:]...)
 }
+
+// compressToolResult preprocesses a tool result before it enters the rolling
+// history. Large outputs (shell stdout, HTML pages) are trimmed so the model
+// stays focused on conclusions rather than scrolling through noise.
+func compressToolResult(toolName, result string) string {
+	if len(result) <= maxToolResultHistoryChars {
+		return result
+	}
+	total := len(result)
+
+	// Shell commands: conclusion is at the end. Keep head (command echo / early
+	// lines) + tail (final output / exit status).
+	if toolName == "run_command" || toolName == "execute" || toolName == "bash" {
+		const head = 800
+		const tail = 1600
+		if total > head+tail+100 {
+			return result[:head] +
+				fmt.Sprintf("\n… [%d chars omitted] …\n", total-head-tail) +
+				result[total-tail:]
+		}
+	}
+
+	// HTML pages: strip tags, collapse whitespace, then re-check size.
+	if strings.Contains(result, "<html") || strings.Contains(result, "<HTML") ||
+		(strings.Contains(result, "<body") && strings.Contains(result, "</body>")) {
+		stripped := htmlTagRE.ReplaceAllString(result, " ")
+		stripped = excessWhitespaceRE.ReplaceAllString(stripped, "\n")
+		stripped = strings.TrimSpace(stripped)
+		if len(stripped) < len(result)/2 {
+			result = stripped
+		}
+		if len(result) <= maxToolResultHistoryChars {
+			return result
+		}
+	}
+
+	// Default: keep first maxToolResultHistoryChars with a note.
+	return result[:maxToolResultHistoryChars] + fmt.Sprintf("\n… (truncated, %d chars total)", total)
+}
+
+var htmlTagRE = regexp.MustCompile(`<[^>]+>`)
+var excessWhitespaceRE = regexp.MustCompile(`\s{3,}`)
 
 type Orchestrator struct {
 	store            *store.Store
@@ -1433,6 +1475,7 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 	var pendingIntervention string
 	var needsHelpSince time.Time
 	var lastNeedsHelpReminder time.Time
+	executionLeader := findLeaderAgent(agents, wf.LeaderAgentID)
 
 	for !allSubtasksDone(plan) {
 		// ── Cancellation ──
@@ -1676,6 +1719,23 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		if usedInterventionThisRound {
 			pendingIntervention = ""
 		}
+
+		// Adaptive replanning checkpoint: after each batch, let the leader inspect
+		// completed work and optionally adjust pending subtask descriptions before
+		// the next batch runs. Only for multi-agent workforces with pending work.
+		if executionLeader != nil && len(agents) > 1 {
+			hasPending := false
+			for _, st := range plan {
+				if st.Status == models.SubtaskPending {
+					hasPending = true
+					break
+				}
+			}
+			if hasPending {
+				plan = o.runReplanningCheckpoint(ctx, exec, wf, agents, executionLeader, plan)
+				o.store.UpdateExecutionPlan(ctx, exec.ID, plan)
+			}
+		}
 	}
 
 	// All subtasks done — collect outputs
@@ -1708,9 +1768,8 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 	}
 
 	// P3: Post-execution quality review by leader (multi-agent only, advisory)
-	leaderAgent := findLeaderAgent(agents, wf.LeaderAgentID)
-	if leaderAgent != nil && len(agents) > 1 {
-		o.runReview(ctx, exec, wf, agents, leaderAgent, plan, wsManifest)
+	if executionLeader != nil && len(agents) > 1 {
+		o.runReview(ctx, exec, wf, agents, executionLeader, plan, wsManifest)
 	}
 
 	finalResult := joinResults(outputs)
@@ -1855,6 +1914,14 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		subtaskDesc = p.subtask.Subtask
 	}
 
+	// ── Resolve MCP tool definitions early so we can include them in the task message ──
+	var toolDefs []engine.ToolDefinition
+	if o.mcpManager != nil {
+		toolDefs = o.mcpManager.ResolveAgentToolDefs(ctx, p.wf.ID, agent.ID)
+	}
+	toolDefs = append(toolDefs, virtualPlatformTools...)
+	toolDefs = append(toolDefs, virtualSignalTools...)
+
 	// ── Build task message ──
 	var taskParts []string
 	taskParts = append(taskParts, fmt.Sprintf("## Overall Objective\n%s", p.exec.Objective))
@@ -1942,6 +2009,30 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		"\nIf a credential you need is not listed above, signal `needs_help` with the exact service and key name."
 	taskParts = append(taskParts, wsSection)
 
+	// ── Tool roster: list available tools so the agent knows what it can call ──
+	// Signal tools are excluded — they are already documented in the footer below.
+	signalToolNames := map[string]bool{
+		"signal_complete": true, "signal_needs_help": true,
+		"signal_blocked": true, "signal_ask_peer": true,
+	}
+	var rosterLines []string
+	for _, td := range toolDefs {
+		if signalToolNames[td.Name] {
+			continue
+		}
+		desc := td.Description
+		if idx := strings.IndexByte(desc, '\n'); idx > 0 {
+			desc = desc[:idx]
+		}
+		if len(desc) > 120 {
+			desc = desc[:117] + "..."
+		}
+		rosterLines = append(rosterLines, fmt.Sprintf("- `%s`: %s", td.Name, desc))
+	}
+	if len(rosterLines) > 0 {
+		taskParts = append(taskParts, "## Available Tools\n"+strings.Join(rosterLines, "\n"))
+	}
+
 	instructionsFooter := fmt.Sprintf("---\n"+
 		"Execute your subtask now using efficient cycles: plan → act → verify.\n"+
 		"Tool budget: up to %d tool rounds for this subtask.\n"+
@@ -1950,6 +2041,7 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 		"- Avoid repeating the same failing call; after 2 failed attempts, switch approach or signal `needs_help`.\n"+
 		"- Prefer focused reads/searches over broad scans.\n"+
 		"- Use http_request directly for all API calls — do NOT write Python/shell scripts for API interactions.\n"+
+		"- **Batch independent tool calls**: when multiple tools don't depend on each other's output, call them all in one response — they execute in parallel.\n"+
 		"Kanban: `kanban_list_tasks()` / `kanban_create_task(title, description, priority)` to manage the board.\n\n"+
 		"When done:\n```json\n{\"status\": \"complete\", \"summary\": \"<one sentence>\"}\n```\n"+
 		"Need human input:\n```json\n{\"status\": \"needs_help\", \"reason\": \"<what you tried and need>\"}\n```\n"+
@@ -1978,16 +2070,6 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 	if engine.IsMediaConnector(eng) {
 		return o.runMediaSubtask(ctx, p, eng, modelName, systemPrompt, instructions, workspacePath, taskMsg)
 	}
-
-	// Resolve MCP tool definitions for this agent
-	var toolDefs []engine.ToolDefinition
-	if o.mcpManager != nil {
-		toolDefs = o.mcpManager.ResolveAgentToolDefs(ctx, p.wf.ID, agent.ID)
-	}
-	// Append virtual platform tools (Kanban, etc.) and signal tools so LLMs
-	// that prefer function-calling can use both without going through MCP.
-	toolDefs = append(toolDefs, virtualPlatformTools...)
-	toolDefs = append(toolDefs, virtualSignalTools...)
 
 	// streamSubmit wraps SubmitWithStream to emit live agent_token events per
 	// content chunk. Falls back to Submit if streaming fails (e.g., provider
@@ -2200,13 +2282,9 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 			ToolCalls: resp.ToolCalls,
 		})
 		for _, tc := range resp.ToolCalls {
-			result := tc.Result
-			if len(result) > maxToolResultHistoryChars {
-				result = result[:maxToolResultHistoryChars] + fmt.Sprintf("\n… (truncated, %d chars total)", len(tc.Result))
-			}
 			history = append(history, engine.ChatMessage{
 				Role:       "tool",
-				Content:    result,
+				Content:    compressToolResult(tc.Name, tc.Result),
 				ToolCallID: tc.ID,
 			})
 			// Track per-tool error counts; inject nudge when a tool keeps failing.
@@ -2223,6 +2301,39 @@ func (o *Orchestrator) runAgentTask(ctx context.Context, p runAgentParams) agent
 				}
 			} else {
 				toolErrorCounts[tc.Name] = 0 // reset on success
+			}
+		}
+
+		// Forced reasoning turn: when a tool has hit exactly 2 errors, give the
+		// model a no-tool thinking pass to diagnose why before the next call.
+		var stalledTools []string
+		for toolName, count := range toolErrorCounts {
+			if count == 2 {
+				stalledTools = append(stalledTools, toolName)
+			}
+		}
+		if len(stalledTools) > 0 {
+			sort.Strings(stalledTools)
+			reasoningHistory := append(trimHistory(history), engine.ChatMessage{
+				Role: "user",
+				Content: fmt.Sprintf(
+					"SYSTEM: Tool(s) [%s] have failed twice. Do NOT call any tools right now. "+
+						"Reason step-by-step: why are they failing, and what alternative approach will you take? "+
+						"Just think out loud — tools will be available on your next turn.",
+					strings.Join(stalledTools, ", ")),
+			})
+			if reasonResp, reasonErr := eng.Submit(ctx, engine.TaskRequest{
+				AgentID: agent.ID, AgentName: agent.Name, Model: modelName,
+				History: reasoningHistory,
+			}); reasonErr == nil && strings.TrimSpace(reasonResp.Content) != "" {
+				publishThinking(reasonResp.Content, toolRound)
+				history = append(history,
+					engine.ChatMessage{Role: "user", Content: fmt.Sprintf(
+						"SYSTEM: tool(s) [%s] failed twice — diagnose and use a different approach.",
+						strings.Join(stalledTools, ", "))},
+					engine.ChatMessage{Role: "assistant", Content: reasonResp.Content},
+					engine.ChatMessage{Role: "user", Content: "Good. Now continue your task with the revised approach."},
+				)
 			}
 		}
 
@@ -4131,6 +4242,134 @@ func findLeaderAgent(agents []*models.Agent, leaderID *uuid.UUID) *models.Agent 
 		return agents[0]
 	}
 	return nil
+}
+
+// runReplanningCheckpoint gives the leader a mid-execution look at completed work
+// and asks whether pending subtasks need adjustment. The leader returns either
+// {"continue":true} (keep the plan) or {"adjustments":[{"id":"...","subtask":"..."}]}
+// to patch pending subtask descriptions before the next parallel batch executes.
+func (o *Orchestrator) runReplanningCheckpoint(
+	ctx context.Context,
+	exec *models.Execution,
+	wf *models.WorkForce,
+	agents []*models.Agent,
+	leader *models.Agent,
+	plan []models.ExecutionSubtask,
+) []models.ExecutionSubtask {
+	select {
+	case <-ctx.Done():
+		return plan
+	default:
+	}
+
+	eng, modelName, err := o.resolveConnector(ctx, leader)
+	if err != nil {
+		return plan
+	}
+
+	var doneParts, pendingParts []string
+	for _, st := range plan {
+		switch st.Status {
+		case models.SubtaskDone:
+			summary := st.Output
+			if len(summary) > 300 {
+				summary = summary[:300] + "…"
+			}
+			doneParts = append(doneParts, fmt.Sprintf("- [%s/%s] DONE: %s", st.ID, st.AgentName, summary))
+		case models.SubtaskPending:
+			pendingParts = append(pendingParts, fmt.Sprintf("- [%s/%s] PENDING: %s", st.ID, st.AgentName, st.Subtask))
+		}
+	}
+	if len(pendingParts) == 0 {
+		return plan
+	}
+
+	leaderSysPrompt, _ := engine.InterpolatePrompt(leader.SystemPrompt, leader.Variables, exec.Inputs)
+
+	prompt := fmt.Sprintf(
+		"## Mid-Execution Checkpoint\n\n"+
+			"Objective: %s\n\n"+
+			"**Completed so far:**\n%s\n\n"+
+			"**Still pending:**\n%s\n\n"+
+			"Based on the completed work, are the pending subtasks still the right approach, "+
+			"or do they need adjustments?\n\n"+
+			"Respond with ONLY valid JSON — no prose:\n"+
+			`{"continue":true}`+" — plan is correct as-is\n"+
+			"OR\n"+
+			`{"adjustments":[{"id":"<exact subtask id>","subtask":"<revised description>"}]}`+
+			" — update specific pending subtask descriptions only (IDs must match exactly).",
+		exec.Objective,
+		strings.Join(doneParts, "\n"),
+		strings.Join(pendingParts, "\n"),
+	)
+
+	leaderID := leader.ID
+	o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &leaderID, leader.Name,
+		models.EventTypeAgentThinking,
+		fmt.Sprintf("%s is reviewing completed work and checking the remaining plan...", leader.Name), nil))
+
+	resp, err := eng.Submit(ctx, engine.TaskRequest{
+		AgentID:      leader.ID,
+		AgentName:    leader.Name,
+		SystemPrompt: leaderSysPrompt,
+		Message:      prompt,
+		Model:        modelName,
+	})
+	if err != nil || resp == nil {
+		return plan
+	}
+
+	content := strings.TrimSpace(resp.Content)
+	// Strip markdown code fences if present
+	if idx := strings.Index(content, "```"); idx >= 0 {
+		if start := strings.Index(content[idx:], "\n"); start >= 0 {
+			content = content[idx+start+1:]
+		}
+		if end := strings.LastIndex(content, "```"); end >= 0 {
+			content = content[:end]
+		}
+		content = strings.TrimSpace(content)
+	}
+
+	var checkpoint struct {
+		Continue    bool `json:"continue"`
+		Adjustments []struct {
+			ID      string `json:"id"`
+			Subtask string `json:"subtask"`
+		} `json:"adjustments"`
+	}
+	if err := json.Unmarshal([]byte(content), &checkpoint); err != nil {
+		return plan
+	}
+
+	if checkpoint.Continue || len(checkpoint.Adjustments) == 0 {
+		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &leaderID, leader.Name,
+			models.EventTypeAgentThinking,
+			fmt.Sprintf("%s: plan looks good, continuing as-is.", leader.Name), nil))
+		return plan
+	}
+
+	adjustMap := make(map[string]string, len(checkpoint.Adjustments))
+	for _, adj := range checkpoint.Adjustments {
+		if adj.ID != "" && adj.Subtask != "" {
+			adjustMap[adj.ID] = adj.Subtask
+		}
+	}
+	changed := 0
+	for i := range plan {
+		if plan[i].Status == models.SubtaskPending {
+			if newDesc, ok := adjustMap[plan[i].ID]; ok {
+				plan[i].Subtask = newDesc
+				changed++
+			}
+		}
+	}
+	if changed > 0 {
+		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, &leaderID, leader.Name,
+			models.EventTypeAgentThinking,
+			fmt.Sprintf("%s adjusted %d pending subtask(s) based on completed work.", leader.Name, changed), nil))
+	}
+	return plan
 }
 
 // runDiscussion runs the pre-execution collaborative discussion phase.
