@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	shellexec "os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -921,25 +922,43 @@ func (o *Orchestrator) runPlanning(exec *models.Execution, wf *models.WorkForce,
 		exec.Plan = structuredPlan
 	}
 
-	// Generate a short title before surfacing the approval card.
-	o.generateAndSetTitle(ctx, exec.ID, wf, agents, strategy, exec.Objective, planningBudget)
-	if planningBudget.exhausted() {
-		o.haltExecution(ctx, exec.ID, wf.ID, "Token budget exhausted during planning phase")
-		return
+	// Direct mode: single-agent workforces skip title generation and strategy
+	// summarization (both LLM calls) — the agent goes straight to execution.
+	// Multi-agent workforces still generate title + summary for the approval card.
+	isDirectMode := len(agents) == 1
+
+	var approvalSummary string
+	if isDirectMode {
+		// Derive title from objective without an LLM call.
+		title := exec.Objective
+		if len(title) > 60 {
+			title = title[:60] + "…"
+		}
+		if err := o.store.UpdateExecutionMeta(ctx, exec.ID, models.UpdateExecutionMetaRequest{Title: &title}); err != nil {
+			log.Printf("orchestrator: set direct-mode title: %v", err)
+		}
+		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypeExecutionTitled,
+			fmt.Sprintf("Execution named: %s", title), map[string]any{"title": title}))
+	} else {
+		o.generateAndSetTitle(ctx, exec.ID, wf, agents, strategy, exec.Objective, planningBudget)
+		if planningBudget.exhausted() {
+			o.haltExecution(ctx, exec.ID, wf.ID, "Token budget exhausted during planning phase")
+			return
+		}
+		approvalSummary = o.summarizeStrategy(ctx, exec.ID, wf, agents, strategy, exec.Objective, planningBudget)
+		if planningBudget.exhausted() {
+			o.haltExecution(ctx, exec.ID, wf.ID, "Token budget exhausted during planning phase")
+			return
+		}
 	}
 
-	// Generate a concise summary of the combined strategy for the approval card.
-	// Prefer the workforce leader agent for this task.
-	approvalSummary := o.summarizeStrategy(ctx, exec.ID, wf, agents, strategy, exec.Objective, planningBudget)
-	if planningBudget.exhausted() {
-		o.haltExecution(ctx, exec.ID, wf.ID, "Token budget exhausted during planning phase")
-		return
-	}
-
-	if shouldAutoRunWithoutApproval(exec, wf) {
-		msg := "Single-agent mode selected. Skipping approval and starting execution."
-		if wf.AutonomousMode {
-			msg = "Autonomous mode enabled. Auto-approving strategy and starting execution."
+	if isDirectMode || shouldAutoRunWithoutApproval(exec, wf) {
+		msg := "Direct mode: single agent — skipping approval, starting execution immediately."
+		if !isDirectMode {
+			msg = "Single-agent mode selected. Skipping approval and starting execution."
+			if wf.AutonomousMode {
+				msg = "Autonomous mode enabled. Auto-approving strategy and starting execution."
+			}
 		}
 		o.eventBus.Publish(ctx, models.NewEvent(exec.ID, nil, "", models.EventTypePlanApproved,
 			msg,
@@ -1328,6 +1347,25 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		mcpSession = sess
 	}
 
+	// ── Docker execution environment ──────────────────────────────────────────
+	// If this workforce has a docker_image set, spin up a container for the
+	// entire execution. All agents share the same container — packages installed
+	// by one tool call are visible to subsequent calls. The container is stopped
+	// when the execution completes, halts, or errors.
+	wsPath := workspace.WorkspacePath(wf.Name)
+	if wf.DockerImage != "" {
+		containerName, dockerErr := startExecutionContainer(ctx, exec.ID, wf.DockerImage, wsPath)
+		if dockerErr != nil {
+			log.Printf("orchestrator: docker start for %s: %v", exec.ID, dockerErr)
+			o.eventBus.PublishSystem(ctx, exec.ID,
+				fmt.Sprintf("Docker container failed to start (%s): %v — running without container.", wf.DockerImage, dockerErr))
+		} else {
+			defer stopExecutionContainer(containerName, wsPath)
+			o.eventBus.PublishSystem(ctx, exec.ID,
+				fmt.Sprintf("Docker container started: %s (image: %s)", containerName, wf.DockerImage))
+		}
+	}
+
 	// Safety budgets (no hard max_iterations — budget is the only ceiling)
 	if wf.BudgetTokens <= 0 {
 		wf.BudgetTokens = 2_000_000
@@ -1685,6 +1723,46 @@ func (o *Orchestrator) runExecutionLoop(exec *models.Execution, resume bool) {
 		}
 	}
 	o.completeExecution(ctx, exec.ID, wf.ID, finalResult, execCtx.tokensUsed.Load(), stepCount)
+}
+
+// containerNameForExec returns the deterministic Docker container name for an execution.
+func containerNameForExec(execID uuid.UUID) string {
+	return "aitheros-" + execID.String()
+}
+
+// startExecutionContainer starts a Docker container for the execution and writes
+// the container name to <workspace>/.aither_container so MCP tools can discover it.
+func startExecutionContainer(ctx context.Context, execID uuid.UUID, dockerImage, workspacePath string) (string, error) {
+	name := containerNameForExec(execID)
+	cmd := shellexec.CommandContext(ctx, "docker", "run",
+		"-d",
+		"--name", name,
+		"--network", "host",
+		"-v", workspacePath+":/workspace",
+		"-w", "/workspace",
+		dockerImage,
+		"sleep", "infinity",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docker run %s: %w: %s", dockerImage, err, strings.TrimSpace(string(out)))
+	}
+	containerFile := filepath.Join(workspacePath, ".aither_container")
+	if werr := os.WriteFile(containerFile, []byte(name), 0644); werr != nil {
+		return "", fmt.Errorf("write .aither_container: %w", werr)
+	}
+	return name, nil
+}
+
+// stopExecutionContainer stops and removes the Docker container and cleans up
+// the workspace marker file. Errors are intentionally swallowed — cleanup is
+// best-effort and should not affect the execution result.
+func stopExecutionContainer(containerName, workspacePath string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	shellexec.CommandContext(ctx, "docker", "stop", "-t", "5", containerName).Run() //nolint:errcheck
+	shellexec.CommandContext(ctx, "docker", "rm", "-f", containerName).Run()        //nolint:errcheck
+	os.Remove(filepath.Join(workspacePath, ".aither_container"))                    //nolint:errcheck
 }
 
 // runAgentParams holds everything needed to run a single agent subtask.

@@ -739,7 +739,8 @@ export default function WorkforceDetailPage() {
     budget_tokens: 0,
     budget_time_s: 0,
     agent_ids: [] as string[],
-    leader_agent_id: '' as string
+    leader_agent_id: '' as string,
+    docker_image: '' as string
   });
 
   // MCP state
@@ -1012,7 +1013,8 @@ export default function WorkforceDetailPage() {
       budget_tokens: workforce.budget_tokens,
       budget_time_s: workforce.budget_time_s,
       agent_ids: workforce.agent_ids || [],
-      leader_agent_id: workforce.leader_agent_id || ''
+      leader_agent_id: workforce.leader_agent_id || '',
+      docker_image: workforce.docker_image || ''
     });
     setEditOpen(true);
   }
@@ -3724,6 +3726,17 @@ export default function WorkforceDetailPage() {
               <div className='space-y-2'>
                 <Label>Objective</Label>
                 <Textarea value={editForm.objective} onChange={(e) => setEditForm({ ...editForm, objective: e.target.value })} rows={3} />
+              </div>
+              <div className='space-y-2'>
+                <Label>Execution Environment</Label>
+                <Input
+                  value={editForm.docker_image}
+                  onChange={(e) => setEditForm({ ...editForm, docker_image: e.target.value })}
+                  placeholder='e.g. kalilinux/kali-rolling, python:3.12, ubuntu:22.04'
+                />
+                <p className='text-[10px] text-muted-foreground'>
+                  Optional Docker image. When set, agents run inside a container with this image — packages and state persist across all tool calls.
+                </p>
               </div>
               <div className='space-y-2'>
                 <Label>Agents</Label>

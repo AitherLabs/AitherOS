@@ -57,7 +57,19 @@ function getTacticalStatus(status: string): TacticalStatus {
 
 // ── Workforce Emblem ─────────────────────────────────────────────────────────
 
-function WorkforceEmblem({ icon, color, size = 72 }: { icon: string; color: string; size?: number }) {
+function WorkforceEmblem({
+  icon,
+  color,
+  avatarUrl,
+  name,
+  size = 72
+}: {
+  icon: string;
+  color: string;
+  avatarUrl?: string;
+  name?: string;
+  size?: number;
+}) {
   const half = size / 2;
   const r = half * 0.82;
   const points = Array.from({ length: 6 }, (_, i) => {
@@ -88,8 +100,18 @@ function WorkforceEmblem({ icon, color, size = 72 }: { icon: string; color: stri
         })}
       </svg>
       {/* Icon centered */}
-      <div className='absolute inset-0 flex items-center justify-center' style={{ fontSize: size * 0.38 }}>
-        {icon}
+      <div className='absolute inset-0 flex items-center justify-center'>
+        <div className='relative'>
+          <div className='absolute -inset-1 rounded-xl blur-[6px]' style={{ background: color + '2E' }} />
+          <EntityAvatar
+            icon={icon || 'W'}
+            color={color}
+            avatarUrl={avatarUrl}
+            name={name}
+            size='lg'
+            className='relative h-11 w-11 rounded-xl border border-white/15 shadow-[0_0_0_1px_rgba(255,255,255,0.08)]'
+          />
+        </div>
       </div>
     </div>
   );
@@ -177,6 +199,7 @@ export default function WorkforcesPage() {
   const [formBudgetTime, setFormBudgetTime] = useState(7200);
   const [formAgentIds, setFormAgentIds] = useState<string[]>([]);
   const [formLeaderAgentId, setFormLeaderAgentId] = useState<string>('');
+  const [formDockerImage, setFormDockerImage] = useState('');
 
   const loadData = useCallback(async () => {
     try {
@@ -221,6 +244,7 @@ export default function WorkforcesPage() {
     setFormBudgetTime(7200);
     setFormAgentIds([]);
     setFormLeaderAgentId('');
+    setFormDockerImage('');
     setCreateOpen(true);
   }
 
@@ -242,7 +266,8 @@ export default function WorkforcesPage() {
         budget_tokens: formBudgetTokens,
         budget_time_s: formBudgetTime,
         agent_ids: formAgentIds,
-        leader_agent_id: formLeaderAgentId
+        leader_agent_id: formLeaderAgentId,
+        docker_image: formDockerImage || undefined
       });
       setCreateOpen(false);
       if (res.data?.id) {
@@ -274,25 +299,33 @@ export default function WorkforcesPage() {
       {cumStats.totalMissions > 0 && (
         <div className='grid grid-cols-2 gap-3 md:grid-cols-4'>
           {[
-            { label: 'TOTAL MISSIONS', value: cumStats.totalMissions.toString(), color: '#9A66FF', icon: '⚡' },
-            { label: 'TOKENS MANAGED', value: formatTokens(cumStats.totalTokens), color: '#14FFF7', icon: '🔮' },
-            { label: 'COMPLETED', value: cumStats.completed.toString(), color: '#56D090', icon: '✓' },
-            { label: 'SUCCESS RATE', value: successRate !== null ? `${successRate}%` : '—', color: successRate !== null && successRate >= 80 ? '#56D090' : successRate !== null && successRate >= 50 ? '#FFBF47' : '#EF4444', icon: '📊' }
+            { label: 'TOTAL MISSIONS', value: cumStats.totalMissions.toString(), color: '#9A66FF' },
+            { label: 'TOKENS MANAGED', value: formatTokens(cumStats.totalTokens), color: '#14FFF7' },
+            { label: 'COMPLETED', value: cumStats.completed.toString(), color: '#56D090' },
+            {
+              label: 'SUCCESS RATE',
+              value: successRate !== null ? `${successRate}%` : '—',
+              color:
+                successRate !== null && successRate >= 80
+                  ? '#56D090'
+                  : successRate !== null && successRate >= 50
+                    ? '#FFBF47'
+                    : '#EF4444'
+            }
           ].map((stat) => (
             <div key={stat.label} className='relative overflow-hidden rounded-lg border border-border/30 bg-card/60 px-4 py-3'>
               <div className='pointer-events-none absolute inset-0' style={{ background: `radial-gradient(ellipse at 0% 50%, ${stat.color}08, transparent 70%)` }} />
-              <div className='flex items-center gap-2'>
-                <span className='text-base'>{stat.icon}</span>
-                <div>
-                  <p className='font-mono text-[8px] font-bold uppercase tracking-widest text-muted-foreground/50'>{stat.label}</p>
-                  <p className='font-mono text-lg font-black leading-tight' style={{ color: stat.color }}>{stat.value}</p>
-                </div>
+              <div>
+                <p className='font-mono text-[8px] font-bold uppercase tracking-widest text-muted-foreground/50'>{stat.label}</p>
+                <p className='font-mono text-lg font-black leading-tight tabular-nums' style={{ color: stat.color }}>
+                  {stat.value}
+                </p>
               </div>
             </div>
           ))}
         </div>
       )}
-      {/* Mission Board Header */}
+      {/* Workforces Header */}
       <div className='flex items-start justify-between'>
         <div>
           <div className='mb-1 flex items-center gap-3'>
@@ -300,7 +333,7 @@ export default function WorkforcesPage() {
               <IconTarget className='h-4 w-4 text-[#9A66FF]' />
             </div>
             <h2 className='font-mono text-2xl font-black tracking-tight text-foreground'>
-              MISSION BOARD
+              WORKFORCES
             </h2>
             {activeCount > 0 && (
               <span className='flex items-center gap-1.5 rounded-full border border-[#56D090]/30 bg-[#56D090]/10 px-2.5 py-0.5 font-mono text-[10px] font-bold text-[#56D090]'>
@@ -313,12 +346,12 @@ export default function WorkforcesPage() {
             )}
           </div>
           <p className='pl-11 font-mono text-xs text-muted-foreground/70'>
-            {workforces.length} UNIT{workforces.length !== 1 ? 'S' : ''} REGISTERED · CLICK TO DEPLOY OR INSPECT
+            {workforces.length} WORKFORCE{workforces.length !== 1 ? 'S' : ''} REGISTERED · SELECT A TEAM TO INSPECT OR DEPLOY
           </p>
         </div>
         <Button onClick={openCreate} className='bg-[#9A66FF] font-mono hover:bg-[#9A66FF]/90'>
           <IconPlus className='mr-2 h-4 w-4' />
-          NEW UNIT
+          NEW WORKFORCE
         </Button>
       </div>
 
@@ -345,6 +378,9 @@ export default function WorkforcesPage() {
             const ts = getTacticalStatus(wf.status);
             const accentColor = wf.color || '#9A66FF';
             const wfAgents = (wf.agent_ids || []).map((id) => agentsMap[id]).filter(Boolean) as Agent[];
+            const leaderAgent = wf.leader_agent_id ? agentsMap[wf.leader_agent_id] : undefined;
+            const emblemAvatar = wf.avatar_url || leaderAgent?.avatar_url || wfAgents[0]?.avatar_url;
+            const emblemIcon = wf.icon || leaderAgent?.icon || wfAgents[0]?.icon || 'W';
             const tokenPct = Math.min(100, Math.round((wf.budget_tokens / 2_000_000) * 100));
 
             return (
@@ -383,7 +419,7 @@ export default function WorkforcesPage() {
                 <div className='p-5'>
                   {/* Header row: Emblem + Info + Status */}
                   <div className='mb-4 flex items-start gap-4'>
-                    <WorkforceEmblem icon={wf.icon || '👥'} color={accentColor} size={72} />
+                    <WorkforceEmblem icon={emblemIcon} color={accentColor} avatarUrl={emblemAvatar} name={wf.name} size={72} />
 
                     <div className='min-w-0 flex-1'>
                       <div className='mb-1.5 flex items-start justify-between gap-2'>
@@ -697,6 +733,17 @@ export default function WorkforcesPage() {
                       {formatTime(formBudgetTime)}
                     </p>
                   </div>
+                </div>
+                <div className='space-y-2'>
+                  <Label>Execution Environment</Label>
+                  <Input
+                    value={formDockerImage}
+                    onChange={(e) => setFormDockerImage(e.target.value)}
+                    placeholder='e.g. kalilinux/kali-rolling, python:3.12, ubuntu:22.04'
+                  />
+                  <p className='text-[10px] text-muted-foreground'>
+                    Optional Docker image. When set, agents run inside a container with this image — packages and state persist across all tool calls.
+                  </p>
                 </div>
               </div>
             )}

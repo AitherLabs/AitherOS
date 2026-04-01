@@ -34,6 +34,7 @@ type WorkForce struct {
 	Agents        []*Agent        `json:"agents,omitempty" db:"-"`
 	WorkspacePath      string          `json:"workspace_path,omitempty" db:"-"` // computed, not stored
 	AutonomousMode     bool            `json:"autonomous_mode" db:"autonomous_mode"`
+	DockerImage        string          `json:"docker_image" db:"docker_image"`
 	HeartbeatIntervalM int             `json:"heartbeat_interval_m" db:"heartbeat_interval_m"`
 	CreatedAt          time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt          time.Time       `json:"updated_at" db:"updated_at"`
@@ -70,5 +71,6 @@ type UpdateWorkForceRequest struct {
 	AgentIDs           []string `json:"agent_ids,omitempty"`
 	LeaderAgentID      *string  `json:"leader_agent_id,omitempty"`
 	AutonomousMode     *bool    `json:"autonomous_mode,omitempty"`
+	DockerImage        *string  `json:"docker_image,omitempty"`
 	HeartbeatIntervalM *int     `json:"heartbeat_interval_m,omitempty" validate:"omitempty,min=5,max=1440"`
 }

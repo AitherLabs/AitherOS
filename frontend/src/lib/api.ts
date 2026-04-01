@@ -183,8 +183,9 @@ class ApiClient {
     return this.request<KanbanTask[]>(`/api/v1/workforces/${workforceId}/kanban`);
   }
 
-  async listWorkspaceFiles(workforceId: string) {
-    return this.request<WorkspaceFileEntry[]>(`/api/v1/workforces/${workforceId}/workspace/ls`);
+  async listWorkspaceFiles(workforceId: string, options?: { source?: 'all' | 'agent' }) {
+    const qs = options?.source === 'agent' ? '?source=agent' : '';
+    return this.request<WorkspaceFileEntry[]>(`/api/v1/workforces/${workforceId}/workspace/ls${qs}`);
   }
 
   async createKanbanTask(workforceId: string, data: { title: string; description?: string; priority?: number; assigned_to?: string; created_by?: string; project_id?: string; attachments?: string[]; task_refs?: string[] }) {
@@ -692,6 +693,7 @@ export interface Workforce {
   agent_ids: string[];
   agents?: Agent[];
   workspace_path?: string;
+  docker_image?: string;
   autonomous_mode: boolean;
   heartbeat_interval_m: number;
   created_at: string;

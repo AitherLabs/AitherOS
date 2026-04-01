@@ -1,4 +1,5 @@
-import { exec, execFile }     from 'node:child_process';
+import { exec, execFile, spawn as nodeSpawn } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs                     from 'node:fs/promises';
 import path                   from 'node:path';
 import os                     from 'node:os';
@@ -77,12 +78,41 @@ function assertCommandSafe(command: string): void {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function runInShell(
+type ShellExecResult = {
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  timed_out: boolean;
+  error?: string;
+};
+
+type OutputFormat = 'json' | 'text';
+
+function outputFormat(args: Record<string, unknown>): OutputFormat {
+  const raw = String(args.format ?? '').toLowerCase();
+  return raw === 'text' ? 'text' : 'json';
+}
+
+function respond(format: OutputFormat, payload: unknown, text: string): string {
+  return format === 'json' ? JSON.stringify(payload, null, 2) : text;
+}
+
+function renderShellText(result: ShellExecResult): string {
+  const out: string[] = [];
+  if (result.stdout) out.push(result.stdout.trimEnd());
+  if (result.stderr) out.push(`${out.length ? '' : ''}[stderr]\n${result.stderr.trimEnd()}`);
+  if (result.timed_out) out.push('[timeout]');
+  if (!result.timed_out && result.exit_code !== null && result.exit_code !== 0) out.push(`[exit code ${result.exit_code}]`);
+  if (result.error && out.length === 0) out.push(`[error] ${result.error}`);
+  return out.join('\n').trimEnd() || '(no output)';
+}
+
+async function runInShellDetailed(
   command: string,
   cwd: string,
   timeoutS: number,
   env?: Record<string, string>
-): Promise<string> {
+): Promise<ShellExecResult> {
   assertCommandSafe(command);
   try {
     const { stdout, stderr } = await execAsync(command, {
@@ -92,18 +122,175 @@ async function runInShell(
       env: safeChildEnv(env),
       shell: '/bin/bash',
     });
-    let out = '';
-    if (stdout) out += stdout;
-    if (stderr) out += (out ? '\n[stderr]\n' : '[stderr]\n') + stderr;
-    return out.trimEnd() || '(no output)';
+    return {
+      stdout: stdout || '',
+      stderr: stderr || '',
+      exit_code: 0,
+      timed_out: false,
+    };
   } catch (err: any) {
-    if (err.killed || err.signal === 'SIGTERM') return `[timeout after ${timeoutS}s]`;
-    const out: string[] = [];
-    if (err.stdout) out.push(err.stdout);
-    if (err.stderr) out.push(err.stderr);
-    if (err.code !== undefined) out.push(`[exit code ${err.code}]`);
-    return out.join('\n').trimEnd() || `[error] ${err.message}`;
+    if (err.killed || err.signal === 'SIGTERM') {
+      return {
+        stdout: err.stdout || '',
+        stderr: err.stderr || '',
+        exit_code: null,
+        timed_out: true,
+        error: `timeout after ${timeoutS}s`,
+      };
+    }
+    return {
+      stdout: err.stdout || '',
+      stderr: err.stderr || '',
+      exit_code: typeof err.code === 'number' ? err.code : null,
+      timed_out: false,
+      error: err.message,
+    };
   }
+}
+
+// ── Persistent shell sessions ─────────────────────────────────────────────────
+// One long-running bash process per workspace path. Subsequent run_command
+// calls reuse the same process so cd, exports, and installed packages persist.
+
+interface ShellSession {
+  proc: ChildProcessWithoutNullStreams;
+  lastUsed: number;
+  queue: Array<() => void>;
+  running: boolean;
+  stdoutBuf: string;
+  stderrBuf: string;
+}
+
+const shellSessions = new Map<string, ShellSession>();
+
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [key, s] of shellSessions) {
+    if (s.lastUsed < cutoff) {
+      try { s.proc.kill(); } catch { /* */ }
+      shellSessions.delete(key);
+    }
+  }
+}, 5 * 60 * 1000).unref();
+
+function getOrCreateSession(workspacePath: string): ShellSession {
+  const existing = shellSessions.get(workspacePath);
+  if (existing && existing.proc.exitCode === null) return existing;
+
+  const proc = nodeSpawn('/bin/bash', ['--norc', '--noprofile'], {
+    cwd: workspacePath,
+    env: safeChildEnv(),
+    stdio: 'pipe',
+  });
+
+  const session: ShellSession = {
+    proc,
+    lastUsed: Date.now(),
+    queue: [],
+    running: false,
+    stdoutBuf: '',
+    stderrBuf: '',
+  };
+
+  proc.stdout.on('data', (d: Buffer) => { session.stdoutBuf += d.toString(); });
+  proc.stderr.on('data', (d: Buffer) => { session.stderrBuf += d.toString(); });
+  proc.on('exit', () => { shellSessions.delete(workspacePath); });
+
+  shellSessions.set(workspacePath, session);
+  return session;
+}
+
+function runInSession(session: ShellSession, command: string, timeoutMs: number): Promise<ShellExecResult> {
+  return new Promise<ShellExecResult>((resolve) => {
+    const task = () => {
+      session.lastUsed = Date.now();
+      const sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const sentinel = `__AITHER_${sid}`;
+      const wrapped = `(${command})\n__ec__=$?\nprintf '\\n${sentinel}_%s\\n' "$__ec__"\n`;
+
+      session.stdoutBuf = '';
+      session.stderrBuf = '';
+
+      const sentinelRe = new RegExp(`\n${sentinel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_(\\d+)\n`);
+
+      const timer = setTimeout(() => {
+        try { session.proc.stdin!.write('\x03'); } catch { /* */ }
+        const out = session.stdoutBuf;
+        const err = session.stderrBuf;
+        session.stdoutBuf = '';
+        session.stderrBuf = '';
+        resolve({ stdout: out, stderr: err, exit_code: null, timed_out: true, error: `timeout after ${timeoutMs / 1000}s` });
+        session.running = false;
+        drainQueue(session);
+      }, timeoutMs);
+
+      const poll = setInterval(() => {
+        const match = sentinelRe.exec(session.stdoutBuf);
+        if (!match) return;
+        clearInterval(poll);
+        clearTimeout(timer);
+        const sentinelStart = session.stdoutBuf.indexOf('\n' + sentinel);
+        const stdout = session.stdoutBuf.slice(0, sentinelStart);
+        const exitCode = parseInt(match[1], 10);
+        session.stdoutBuf = session.stdoutBuf.slice(match.index + match[0].length);
+        const stderr = session.stderrBuf;
+        session.stderrBuf = '';
+        resolve({ stdout, stderr, exit_code: exitCode, timed_out: false });
+        session.running = false;
+        drainQueue(session);
+      }, 20);
+
+      session.proc.stdin!.write(wrapped);
+    };
+    session.queue.push(task);
+    if (!session.running) drainQueue(session);
+  });
+}
+
+function drainQueue(session: ShellSession) {
+  const next = session.queue.shift();
+  if (!next) return;
+  session.running = true;
+  next();
+}
+
+// ── Docker exec mode ──────────────────────────────────────────────────────────
+// When <workspace>/.aither_container exists, run commands via docker exec
+// in the persistent container. cwd is tracked via /workspace/.aither_cwd.
+
+async function getDockerContainer(workspacePath: string): Promise<string | null> {
+  try {
+    const content = await fs.readFile(path.join(workspacePath, '.aither_container'), 'utf8');
+    return content.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function runInDocker(
+  container: string,
+  command: string,
+  cwdArg: string | undefined,
+  timeoutMs: number,
+): Promise<ShellExecResult> {
+  let effectiveCwd = '/workspace';
+  if (cwdArg) {
+    effectiveCwd = cwdArg.startsWith('/') ? cwdArg : `/workspace/${cwdArg}`;
+  } else {
+    try {
+      const saved = await fs.readFile(path.join(WORKSPACE, '.aither_cwd'), 'utf8');
+      if (saved.trim()) effectiveCwd = saved.trim();
+    } catch { /* use default */ }
+  }
+
+  const wrapped = [
+    `cd '${effectiveCwd}' 2>/dev/null || cd /workspace`,
+    command,
+    `echo $PWD > /workspace/.aither_cwd`,
+  ].join(' && ');
+
+  const dockerCmd = `docker exec ${container} bash -c ${JSON.stringify(wrapped)}`;
+  return runInShellDetailed(dockerCmd, WORKSPACE, timeoutMs / 1000);
 }
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
@@ -121,6 +308,7 @@ export const tools = [
         cwd:       { type: 'string', description: 'Working directory (defaults to workspace root)' },
         timeout_s: { type: 'number', description: `Timeout in seconds (default: 60, max: ${MAX_TIMEOUT_S})` },
         env:       { type: 'object', description: 'Extra environment variables to set', additionalProperties: { type: 'string' } },
+        format:    { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['command'],
     },
@@ -137,6 +325,7 @@ export const tools = [
         code:      { type: 'string', description: 'Script source code' },
         timeout_s: { type: 'number', description: 'Timeout in seconds (default: 60)' },
         args:      { type: 'array',  description: 'Arguments to pass to the script', items: { type: 'string' } },
+        format:    { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['language', 'code'],
     },
@@ -148,6 +337,7 @@ export const tools = [
       type: 'object' as const,
       properties: {
         name: { type: 'string', description: 'Command name to look up' },
+        format: { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['name'],
     },
@@ -164,6 +354,7 @@ export const tools = [
         command:  { type: 'string', description: 'Command to run in background' },
         log_file: { type: 'string', description: 'Log file name within workspace (default: auto-generated)' },
         cwd:      { type: 'string', description: 'Working directory (defaults to workspace)' },
+        format:   { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['command'],
     },
@@ -185,14 +376,47 @@ const LANG_BIN: Record<string, string> = {
 export const handlers: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
 
   async run_command(args) {
-    const rawCwd   = (args.cwd as string) || WORKSPACE;
-    const cwd      = safeResolve(rawCwd);
+    const format = outputFormat(args);
+    const rawCwd   = args.cwd as string | undefined;
+    const cwd      = rawCwd ? safeResolve(rawCwd) : WORKSPACE;
     const timeout  = Math.min((args.timeout_s as number) || 60, MAX_TIMEOUT_S);
     const env      = (args.env as Record<string, string>) || {};
-    return runInShell(args.command as string, cwd, timeout, env);
+    const command  = args.command as string;
+
+    assertCommandSafe(command);
+
+    const envPrefix = Object.entries(env)
+      .filter(([k]) => !BLOCKED_ENV_KEYS.test(k))
+      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+      .join(' ');
+    const fullCommand = envPrefix ? `${envPrefix} ${command}` : command;
+
+    const container = await getDockerContainer(WORKSPACE);
+    let result: ShellExecResult;
+    if (container) {
+      result = await runInDocker(container, fullCommand, rawCwd, timeout * 1000);
+    } else {
+      const session = getOrCreateSession(WORKSPACE);
+      const cmdWithCwd = rawCwd && cwd !== WORKSPACE ? `cd '${cwd}' && ${fullCommand}` : fullCommand;
+      result = await runInSession(session, cmdWithCwd, timeout * 1000);
+    }
+
+    return respond(
+      format,
+      {
+        ok: !result.timed_out && result.exit_code === 0,
+        action: 'run_command',
+        command: args.command,
+        cwd: rawCwd || '.',
+        timeout_s: timeout,
+        ...result,
+      },
+      renderShellText(result),
+    );
   },
 
   async run_script(args) {
+    const format = outputFormat(args);
     const lang     = args.language as string;
     const ext      = LANG_EXT[lang] || 'sh';
     const bin      = LANG_BIN[lang] || lang;
@@ -207,13 +431,25 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
     try {
       await fs.writeFile(tmpFile, code, 'utf8');
       await fs.chmod(tmpFile, 0o755);
-      return await runInShell(`${bin} ${tmpFile} ${extraArgs}`, WORKSPACE, timeout);
+      const result = await runInShellDetailed(`${bin} ${tmpFile} ${extraArgs}`, WORKSPACE, timeout);
+      return respond(
+        format,
+        {
+          ok: !result.timed_out && result.exit_code === 0,
+          action: 'run_script',
+          language: lang,
+          timeout_s: timeout,
+          ...result,
+        },
+        renderShellText(result),
+      );
     } finally {
       await fs.rm(tmpFile, { force: true });
     }
   },
 
   async which(args) {
+    const format = outputFormat(args);
     const name = args.name as string;
     try {
       const { stdout: binPath } = await execAsync(`which ${name}`);
@@ -227,13 +463,22 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
           if (line) { version = line; break; }
         } catch { /* skip */ }
       }
-      return [`✓ ${name} found at ${location}`, version ? `  version: ${version}` : ''].filter(Boolean).join('\n');
+      return respond(
+        format,
+        { ok: true, action: 'which', name, found: true, path: location, version: version || null },
+        [`${name} found at ${location}`, version ? `version: ${version}` : ''].filter(Boolean).join('\n'),
+      );
     } catch {
-      return `✗ ${name} is not installed or not in PATH`;
+      return respond(
+        format,
+        { ok: false, action: 'which', name, found: false },
+        `${name} is not installed or not in PATH`,
+      );
     }
   },
 
   async run_background(args) {
+    const format = outputFormat(args);
     const { spawn } = await import('node:child_process');
     const rawCwd   = (args.cwd as string) || WORKSPACE;
     const cwd      = safeResolve(rawCwd);
@@ -252,11 +497,22 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
     child.unref();
     await logFd.close();
 
-    return [
-      `Started background process.`,
-      `PID:     ${child.pid}`,
-      `Log:     ${logName}`,
-      `Command: ${args.command}`,
-    ].join('\n');
+    return respond(
+      format,
+      {
+        ok: true,
+        action: 'run_background',
+        pid: child.pid,
+        log_file: logName,
+        cwd: path.relative(WORKSPACE, cwd) || '.',
+        command: args.command,
+      },
+      [
+        `Started background process.`,
+        `PID:     ${child.pid}`,
+        `Log:     ${logName}`,
+        `Command: ${args.command}`,
+      ].join('\n'),
+    );
   },
 };

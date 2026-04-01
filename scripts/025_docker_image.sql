@@ -1,0 +1,1 @@
+ALTER TABLE workforces ADD COLUMN IF NOT EXISTS docker_image TEXT NOT NULL DEFAULT '';

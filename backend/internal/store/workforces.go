@@ -85,13 +85,13 @@ func (s *Store) CreateWorkForce(ctx context.Context, req models.CreateWorkForceR
 func (s *Store) GetWorkForce(ctx context.Context, id uuid.UUID) (*models.WorkForce, error) {
 	wf := &models.WorkForce{}
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, heartbeat_interval_m, created_at, updated_at
+		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, docker_image, heartbeat_interval_m, created_at, updated_at
 		FROM workforces WHERE id = $1`, id,
 	).Scan(
 		&wf.ID, &wf.Name, &wf.Description, &wf.Objective, &wf.Status,
 		&wf.Icon, &wf.Color, &wf.AvatarURL,
 		&wf.BudgetTokens, &wf.BudgetTimeS, &wf.LeaderAgentID,
-		&wf.AutonomousMode, &wf.HeartbeatIntervalM,
+		&wf.AutonomousMode, &wf.DockerImage, &wf.HeartbeatIntervalM,
 		&wf.CreatedAt, &wf.UpdatedAt,
 	)
 	if err != nil {
@@ -190,7 +190,7 @@ func (s *Store) ListWorkForces(ctx context.Context, limit, offset int) ([]*model
 	}
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, heartbeat_interval_m, created_at, updated_at
+		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, docker_image, heartbeat_interval_m, created_at, updated_at
 		FROM workforces ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset,
 	)
 	if err != nil {
@@ -206,7 +206,7 @@ func (s *Store) ListWorkForces(ctx context.Context, limit, offset int) ([]*model
 			&wf.ID, &wf.Name, &wf.Description, &wf.Objective, &wf.Status,
 			&wf.Icon, &wf.Color, &wf.AvatarURL,
 			&wf.BudgetTokens, &wf.BudgetTimeS, &wf.LeaderAgentID,
-			&wf.AutonomousMode, &wf.HeartbeatIntervalM,
+			&wf.AutonomousMode, &wf.DockerImage, &wf.HeartbeatIntervalM,
 			&wf.CreatedAt, &wf.UpdatedAt,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan workforce: %w", err)
@@ -247,7 +247,7 @@ func (s *Store) ListWorkForces(ctx context.Context, limit, offset int) ([]*model
 // Used by the scheduler to determine which workforces should auto-execute.
 func (s *Store) ListAutonomousWorkforces(ctx context.Context) ([]*models.WorkForce, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, heartbeat_interval_m, created_at, updated_at
+		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, docker_image, heartbeat_interval_m, created_at, updated_at
 		FROM workforces WHERE autonomous_mode = true ORDER BY updated_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list autonomous workforces: %w", err)
@@ -261,7 +261,7 @@ func (s *Store) ListAutonomousWorkforces(ctx context.Context) ([]*models.WorkFor
 			&wf.ID, &wf.Name, &wf.Description, &wf.Objective, &wf.Status,
 			&wf.Icon, &wf.Color, &wf.AvatarURL,
 			&wf.BudgetTokens, &wf.BudgetTimeS, &wf.LeaderAgentID,
-			&wf.AutonomousMode, &wf.HeartbeatIntervalM,
+			&wf.AutonomousMode, &wf.DockerImage, &wf.HeartbeatIntervalM,
 			&wf.CreatedAt, &wf.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan workforce: %w", err)
@@ -288,7 +288,7 @@ func (s *Store) TryClaimWorkForceExecutionSlot(ctx context.Context, id uuid.UUID
 
 	wf := &models.WorkForce{}
 	err = tx.QueryRow(ctx, `
-		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, heartbeat_interval_m, created_at, updated_at
+		SELECT id, name, description, objective, status, icon, color, avatar_url, budget_tokens, budget_time_s, leader_agent_id, autonomous_mode, docker_image, heartbeat_interval_m, created_at, updated_at
 		FROM workforces
 		WHERE id = $1
 		FOR UPDATE`, id,
@@ -296,7 +296,7 @@ func (s *Store) TryClaimWorkForceExecutionSlot(ctx context.Context, id uuid.UUID
 		&wf.ID, &wf.Name, &wf.Description, &wf.Objective, &wf.Status,
 		&wf.Icon, &wf.Color, &wf.AvatarURL,
 		&wf.BudgetTokens, &wf.BudgetTimeS, &wf.LeaderAgentID,
-		&wf.AutonomousMode, &wf.HeartbeatIntervalM,
+		&wf.AutonomousMode, &wf.DockerImage, &wf.HeartbeatIntervalM,
 		&wf.CreatedAt, &wf.UpdatedAt,
 	)
 	if err != nil {
@@ -366,6 +366,9 @@ func (s *Store) UpdateWorkForce(ctx context.Context, id uuid.UUID, req models.Up
 	if req.AutonomousMode != nil {
 		wf.AutonomousMode = *req.AutonomousMode
 	}
+	if req.DockerImage != nil {
+		wf.DockerImage = *req.DockerImage
+	}
 	if req.HeartbeatIntervalM != nil {
 		wf.HeartbeatIntervalM = *req.HeartbeatIntervalM
 	}
@@ -392,9 +395,9 @@ func (s *Store) UpdateWorkForce(ctx context.Context, id uuid.UUID, req models.Up
 	}
 
 	_, err = tx.Exec(ctx, `
-		UPDATE workforces SET name=$2, description=$3, objective=$4, icon=$5, color=$6, avatar_url=$7, budget_tokens=$8, budget_time_s=$9, leader_agent_id=$10, autonomous_mode=$11, heartbeat_interval_m=$12, updated_at=$13
+		UPDATE workforces SET name=$2, description=$3, objective=$4, icon=$5, color=$6, avatar_url=$7, budget_tokens=$8, budget_time_s=$9, leader_agent_id=$10, autonomous_mode=$11, docker_image=$12, heartbeat_interval_m=$13, updated_at=$14
 		WHERE id=$1`,
-		wf.ID, wf.Name, wf.Description, wf.Objective, wf.Icon, wf.Color, wf.AvatarURL, wf.BudgetTokens, wf.BudgetTimeS, wf.LeaderAgentID, wf.AutonomousMode, wf.HeartbeatIntervalM, wf.UpdatedAt,
+		wf.ID, wf.Name, wf.Description, wf.Objective, wf.Icon, wf.Color, wf.AvatarURL, wf.BudgetTokens, wf.BudgetTimeS, wf.LeaderAgentID, wf.AutonomousMode, wf.DockerImage, wf.HeartbeatIntervalM, wf.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update workforce: %w", err)
