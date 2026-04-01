@@ -84,6 +84,17 @@ async function grepRecursive(
   return results;
 }
 
+type OutputFormat = 'json' | 'text';
+
+function outputFormat(args: Record<string, unknown>): OutputFormat {
+  const raw = String(args.format ?? '').toLowerCase();
+  return raw === 'text' ? 'text' : 'json';
+}
+
+function respond(format: OutputFormat, payload: unknown, text: string): string {
+  return format === 'json' ? JSON.stringify(payload, null, 2) : text;
+}
+
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 export const tools = [
@@ -97,6 +108,7 @@ export const tools = [
         encoding: { type: 'string', description: 'Encoding: utf8 (default), base64, hex', enum: ['utf8', 'base64', 'hex'] },
         start_line: { type: 'number', description: 'First line to return (1-based, optional)' },
         end_line:   { type: 'number', description: 'Last line to return (1-based, optional)' },
+        format:   { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['path'],
     },
@@ -111,6 +123,7 @@ export const tools = [
         content:     { type: 'string', description: 'Content to write' },
         encoding:    { type: 'string', description: 'Encoding: utf8 (default) or base64', enum: ['utf8', 'base64'] },
         create_dirs: { type: 'boolean', description: 'Create parent directories if missing (default: true)' },
+        format:      { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['path', 'content'],
     },
@@ -124,6 +137,7 @@ export const tools = [
         path:    { type: 'string', description: 'File path' },
         content: { type: 'string', description: 'Content to append' },
         newline: { type: 'boolean', description: 'Prepend a newline before content (default: true)' },
+        format:  { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['path', 'content'],
     },
@@ -138,6 +152,7 @@ export const tools = [
         old_text:  { type: 'string',  description: 'Exact text to find' },
         new_text:  { type: 'string',  description: 'Replacement text' },
         all:       { type: 'boolean', description: 'Replace all occurrences (default: false, replaces first only)' },
+        format:    { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['path', 'old_text', 'new_text'],
     },
@@ -151,6 +166,7 @@ export const tools = [
         path:        { type: 'string',  description: 'Directory path (defaults to workspace root)' },
         show_hidden: { type: 'boolean', description: 'Include hidden files (dot-files)' },
         show_stats:  { type: 'boolean', description: 'Include file size and modification time' },
+        format:      { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: [],
     },
@@ -163,6 +179,7 @@ export const tools = [
       properties: {
         pattern: { type: 'string', description: 'Glob pattern' },
         path:    { type: 'string', description: 'Search root (defaults to workspace root)' },
+        format:  { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['pattern'],
     },
@@ -177,6 +194,7 @@ export const tools = [
         path:             { type: 'string',  description: 'Search root (defaults to workspace)' },
         case_insensitive: { type: 'boolean', description: 'Case-insensitive search (default: false)' },
         max_results:      { type: 'number',  description: 'Maximum results to return (default: 100)' },
+        format:           { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['pattern'],
     },
@@ -188,6 +206,7 @@ export const tools = [
       type: 'object' as const,
       properties: {
         path: { type: 'string', description: 'File or directory path' },
+        format: { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['path'],
     },
@@ -199,6 +218,7 @@ export const tools = [
       type: 'object' as const,
       properties: {
         path: { type: 'string', description: 'Directory path to create' },
+        format: { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['path'],
     },
@@ -211,6 +231,7 @@ export const tools = [
       properties: {
         path:      { type: 'string',  description: 'Path to delete' },
         recursive: { type: 'boolean', description: 'Delete directory and all contents (required for non-empty dirs)' },
+        format:    { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['path'],
     },
@@ -223,6 +244,7 @@ export const tools = [
       properties: {
         src: { type: 'string', description: 'Source path' },
         dst: { type: 'string', description: 'Destination path' },
+        format: { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['src', 'dst'],
     },
@@ -235,6 +257,7 @@ export const tools = [
       properties: {
         src: { type: 'string', description: 'Source path' },
         dst: { type: 'string', description: 'Destination path' },
+        format: { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['src', 'dst'],
     },
@@ -246,93 +269,214 @@ export const tools = [
 export const handlers: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
 
   async read_file(args) {
+    const format = outputFormat(args);
     const resolved  = safeResolve(args.path as string);
     const encoding  = (args.encoding as BufferEncoding) || 'utf8';
     const content   = await fs.readFile(resolved, encoding);
+    const rel = path.relative(WORKSPACE, resolved);
     if (args.start_line !== undefined || args.end_line !== undefined) {
       const lines = (content as string).split('\n');
       const start = (args.start_line as number ?? 1) - 1;
       const end   = args.end_line as number ?? lines.length;
-      return lines.slice(start, end).join('\n');
+      const sliced = lines.slice(start, end).join('\n');
+      return respond(
+        format,
+        {
+          ok: true,
+          action: 'read_file',
+          path: rel,
+          encoding,
+          start_line: start + 1,
+          end_line: end,
+          content: sliced,
+        },
+        sliced,
+      );
     }
-    return content as string;
+    return respond(
+      format,
+      {
+        ok: true,
+        action: 'read_file',
+        path: rel,
+        encoding,
+        content: content as string,
+      },
+      content as string,
+    );
   },
 
   async write_file(args) {
+    const format = outputFormat(args);
     const resolved    = safeResolve(args.path as string);
     const createDirs  = args.create_dirs !== false;
     if (createDirs) await fs.mkdir(path.dirname(resolved), { recursive: true });
     const encoding = (args.encoding as BufferEncoding) || 'utf8';
     await fs.writeFile(resolved, args.content as string, encoding);
     const stat = await fs.stat(resolved);
-    return `Written ${fmtBytes(stat.size)} to ${path.relative(WORKSPACE, resolved)}`;
+    const rel = path.relative(WORKSPACE, resolved);
+    return respond(
+      format,
+      { ok: true, action: 'write_file', path: rel, bytes: stat.size, size_human: fmtBytes(stat.size), encoding },
+      `Written ${fmtBytes(stat.size)} to ${rel}`,
+    );
   },
 
   async append_to_file(args) {
+    const format = outputFormat(args);
     const resolved = safeResolve(args.path as string);
     await fs.mkdir(path.dirname(resolved), { recursive: true });
     const prefix = args.newline !== false ? '\n' : '';
     await fs.appendFile(resolved, prefix + (args.content as string), 'utf8');
-    return `Appended to ${path.relative(WORKSPACE, resolved)}`;
+    const rel = path.relative(WORKSPACE, resolved);
+    return respond(
+      format,
+      { ok: true, action: 'append_to_file', path: rel, prepended_newline: args.newline !== false },
+      `Appended to ${rel}`,
+    );
   },
 
   async patch_file(args) {
+    const format = outputFormat(args);
     const resolved = safeResolve(args.path as string);
     let content    = await fs.readFile(resolved, 'utf8');
     const oldText  = args.old_text as string;
     const newText  = args.new_text as string;
-    if (!content.includes(oldText)) return `ERROR: text not found in ${args.path}`;
+    if (!content.includes(oldText)) {
+      return respond(
+        format,
+        { ok: false, action: 'patch_file', path: path.relative(WORKSPACE, resolved), error: 'text not found' },
+        `ERROR: text not found in ${args.path}`,
+      );
+    }
     content = args.all
       ? content.split(oldText).join(newText)
       : content.replace(oldText, newText);
     await fs.writeFile(resolved, content, 'utf8');
-    return `Patched ${path.relative(WORKSPACE, resolved)}`;
+    const rel = path.relative(WORKSPACE, resolved);
+    return respond(
+      format,
+      { ok: true, action: 'patch_file', path: rel, replace_all: !!args.all },
+      `Patched ${rel}`,
+    );
   },
 
   async list_directory(args) {
+    const format = outputFormat(args);
     const base     = args.path ? safeResolve(args.path as string) : WORKSPACE;
     const entries  = await fs.readdir(base, { withFileTypes: true });
     const filtered = args.show_hidden ? entries : entries.filter(e => !e.name.startsWith('.'));
 
+    const payloadItems: Array<Record<string, unknown>> = [];
     const lines: string[] = [];
     for (const e of filtered) {
       const full  = path.join(base, e.name);
-      const icon  = e.isDirectory() ? '📁' : '📄';
-      let   label = `${icon} ${e.name}`;
+      let label = e.name;
+      const row: Record<string, unknown> = {
+        name: e.name,
+        type: e.isDirectory() ? 'directory' : 'file',
+      };
       if (args.show_stats) {
         try {
           const s = await fs.stat(full);
-          label += e.isDirectory() ? '' : `  (${fmtBytes(s.size)}, ${s.mtime.toISOString().slice(0, 10)})`;
+          row.modified_at = s.mtime.toISOString();
+          if (!e.isDirectory()) {
+            row.bytes = s.size;
+            row.size_human = fmtBytes(s.size);
+            label += `  (${fmtBytes(s.size)}, ${s.mtime.toISOString().slice(0, 10)})`;
+          }
         } catch { /* skip */ }
       }
+      payloadItems.push(row);
       lines.push(label);
     }
-    return lines.length ? lines.join('\n') : '(empty directory)';
+    return respond(
+      format,
+      {
+        ok: true,
+        action: 'list_directory',
+        path: path.relative(WORKSPACE, base) || '.',
+        count: payloadItems.length,
+        entries: payloadItems,
+      },
+      lines.length ? lines.join('\n') : '(empty directory)',
+    );
   },
 
   async search_files(args) {
+    const format = outputFormat(args);
     const base    = args.path ? safeResolve(args.path as string) : WORKSPACE;
     const matches = await globMatch(args.pattern as string, base);
-    if (!matches.length) return 'No files matched.';
-    return matches.map(m => path.relative(WORKSPACE, m)).join('\n');
+    const relMatches = matches.map(m => path.relative(WORKSPACE, m));
+    return respond(
+      format,
+      {
+        ok: true,
+        action: 'search_files',
+        pattern: args.pattern as string,
+        path: path.relative(WORKSPACE, base) || '.',
+        count: relMatches.length,
+        matches: relMatches,
+      },
+      relMatches.length ? relMatches.join('\n') : 'No files matched.',
+    );
   },
 
   async grep_files(args) {
+    const format = outputFormat(args);
     const base       = args.path ? safeResolve(args.path as string) : WORKSPACE;
     const flags      = args.case_insensitive ? 'i' : '';
     const maxResults = (args.max_results as number) || 100;
     const pattern    = new RegExp(args.pattern as string, flags);
     const results    = await grepRecursive(base, pattern, maxResults);
-    if (!results.length) return 'No matches found.';
+    if (!results.length) {
+      return respond(
+        format,
+        {
+          ok: true,
+          action: 'grep_files',
+          pattern: args.pattern as string,
+          path: path.relative(WORKSPACE, base) || '.',
+          count: 0,
+          matches: [],
+        },
+        'No matches found.',
+      );
+    }
+
+    const parsedMatches = results.map((entry) => {
+      const first = entry.indexOf(':');
+      const second = entry.indexOf(':', first + 1);
+      if (first < 0 || second < 0) return { raw: entry };
+      return {
+        file: entry.slice(0, first),
+        line: Number(entry.slice(first + 1, second)),
+        text: entry.slice(second + 2),
+      };
+    });
     const truncated  = results.length >= maxResults ? `\n(truncated at ${maxResults} results)` : '';
-    return results.join('\n') + truncated;
+    return respond(
+      format,
+      {
+        ok: true,
+        action: 'grep_files',
+        pattern: args.pattern as string,
+        path: path.relative(WORKSPACE, base) || '.',
+        count: results.length,
+        max_results: maxResults,
+        truncated: results.length >= maxResults,
+        matches: parsedMatches,
+      },
+      results.join('\n') + truncated,
+    );
   },
 
   async get_file_info(args) {
+    const format = outputFormat(args);
     const resolved = safeResolve(args.path as string);
     const stat     = await fs.stat(resolved);
     const rel      = path.relative(WORKSPACE, resolved);
-    return [
+    const text = [
       `Path:      ${rel}`,
       `Type:      ${stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file'}`,
       `Size:      ${fmtBytes(stat.size)}`,
@@ -340,33 +484,74 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
       `Created:   ${stat.birthtime.toISOString()}`,
       `Mode:      ${(stat.mode & 0o777).toString(8)}`,
     ].join('\n');
+    return respond(
+      format,
+      {
+        ok: true,
+        action: 'get_file_info',
+        path: rel,
+        type: stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file',
+        bytes: stat.size,
+        size_human: fmtBytes(stat.size),
+        modified_at: stat.mtime.toISOString(),
+        created_at: stat.birthtime.toISOString(),
+        mode: (stat.mode & 0o777).toString(8),
+      },
+      text,
+    );
   },
 
   async create_directory(args) {
+    const format = outputFormat(args);
     const resolved = safeResolve(args.path as string);
     await fs.mkdir(resolved, { recursive: true });
-    return `Directory created: ${path.relative(WORKSPACE, resolved)}`;
+    const rel = path.relative(WORKSPACE, resolved);
+    return respond(
+      format,
+      { ok: true, action: 'create_directory', path: rel },
+      `Directory created: ${rel}`,
+    );
   },
 
   async delete_path(args) {
+    const format = outputFormat(args);
     const resolved = safeResolve(args.path as string);
     await fs.rm(resolved, { recursive: !!args.recursive, force: true });
-    return `Deleted: ${path.relative(WORKSPACE, resolved)}`;
+    const rel = path.relative(WORKSPACE, resolved);
+    return respond(
+      format,
+      { ok: true, action: 'delete_path', path: rel, recursive: !!args.recursive },
+      `Deleted: ${rel}`,
+    );
   },
 
   async move_path(args) {
+    const format = outputFormat(args);
     const src = safeResolve(args.src as string);
     const dst = safeResolve(args.dst as string);
     await fs.mkdir(path.dirname(dst), { recursive: true });
     await fs.rename(src, dst);
-    return `Moved: ${path.relative(WORKSPACE, src)} → ${path.relative(WORKSPACE, dst)}`;
+    const srcRel = path.relative(WORKSPACE, src);
+    const dstRel = path.relative(WORKSPACE, dst);
+    return respond(
+      format,
+      { ok: true, action: 'move_path', src: srcRel, dst: dstRel },
+      `Moved: ${srcRel} → ${dstRel}`,
+    );
   },
 
   async copy_path(args) {
+    const format = outputFormat(args);
     const src = safeResolve(args.src as string);
     const dst = safeResolve(args.dst as string);
     await fs.mkdir(path.dirname(dst), { recursive: true });
     await fs.cp(src, dst, { recursive: true });
-    return `Copied: ${path.relative(WORKSPACE, src)} → ${path.relative(WORKSPACE, dst)}`;
+    const srcRel = path.relative(WORKSPACE, src);
+    const dstRel = path.relative(WORKSPACE, dst);
+    return respond(
+      format,
+      { ok: true, action: 'copy_path', src: srcRel, dst: dstRel },
+      `Copied: ${srcRel} → ${dstRel}`,
+    );
   },
 };

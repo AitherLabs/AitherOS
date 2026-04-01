@@ -25,6 +25,17 @@ const IMAGE_BASE_URL = process.env.AITHER_IMAGE_BASE_URL ?? '';
 const IMAGE_MODEL    = process.env.AITHER_IMAGE_MODEL    ?? '';
 const IMAGE_PROVIDER = process.env.AITHER_IMAGE_PROVIDER ?? '';
 
+type OutputFormat = 'json' | 'text';
+
+function outputFormat(args: Record<string, unknown>): OutputFormat {
+  const raw = String(args.format ?? '').toLowerCase();
+  return raw === 'text' ? 'text' : 'json';
+}
+
+function respond(format: OutputFormat, payload: unknown, text: string): string {
+  return format === 'json' ? JSON.stringify(payload, null, 2) : text;
+}
+
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
 function httpPost(url: string, headers: Record<string, string>, body: string, timeoutMs = 60000): Promise<{ status: number; body: string }> {
@@ -169,6 +180,7 @@ export const tools = [
         aspect_ratio: { type: 'string', description: 'Aspect ratio: "1:1" (default), "16:9", "9:16", "4:3", "3:4"' },
         model:        { type: 'string', description: 'Override the default image model' },
         negative_prompt: { type: 'string', description: 'What to exclude from the image (not all providers support this)' },
+        format:       { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
       },
       required: ['prompt', 'output_path'],
     },
@@ -178,7 +190,9 @@ export const tools = [
     description: 'Check whether an image generation provider is configured for this workforce and what model is available.',
     inputSchema: {
       type: 'object' as const,
-      properties: {},
+      properties: {
+        format: { type: 'string', description: 'Output format: json (default) or text', enum: ['json', 'text'] },
+      },
     },
   },
 ];
@@ -198,18 +212,28 @@ function resolveSize(aspectRatio: string): { openaiSize: string; falSize: string
 export const handlers: Record<string, (args: Record<string, unknown>) => Promise<string>> = {
 
   async generate_image(args) {
+    const format = outputFormat(args);
     const apiKey  = IMAGE_API_KEY;
     const baseUrl = IMAGE_BASE_URL;
     const model   = (args.model as string | undefined) || IMAGE_MODEL;
     const provider = IMAGE_PROVIDER;
 
     if (!apiKey || !model) {
-      return [
-        'ERROR: No image provider configured for this workforce.',
-        'The operator must add an image-capable model to a provider and assign it to an agent in this workforce.',
-        '',
-        `Current config: AITHER_IMAGE_PROVIDER="${provider}" AITHER_IMAGE_MODEL="${model}" AITHER_IMAGE_API_KEY="${apiKey ? '***set***' : 'NOT SET'}"`,
-      ].join('\n');
+      return respond(
+        format,
+        {
+          ok: false,
+          action: 'generate_image',
+          error: 'No image provider configured for this workforce.',
+          provider: provider || null,
+          model: model || null,
+          api_key_configured: !!apiKey,
+        },
+        [
+          'ERROR: No image provider configured for this workforce.',
+          'Add an image-capable model to a provider and assign it to an agent in this workforce.',
+        ].join('\n'),
+      );
     }
 
     const prompt      = args.prompt as string;
@@ -239,40 +263,85 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
         result = await generateOpenAI(apiKey, baseUrl || 'https://api.openai.com', model, prompt, openaiSize);
       }
     } catch (err: any) {
-      return `ERROR generating image: ${err.message}`;
+      return respond(
+        format,
+        {
+          ok: false,
+          action: 'generate_image',
+          error: err.message,
+          provider: isGoogle ? 'google' : isFal ? 'fal' : 'openai_compatible',
+          model,
+          output_path: outputPath,
+        },
+        `ERROR generating image: ${err.message}`,
+      );
     }
 
     await fs.writeFile(absPath, result.imageBuffer);
     const stat = await fs.stat(absPath);
     const kb = (stat.size / 1024).toFixed(1);
     const rel = path.relative(WORKSPACE, absPath);
+    const providerName = isGoogle ? 'Google Imagen' : isFal ? 'fal.ai' : 'OpenAI-compatible';
 
-    return [
-      `Image saved successfully.`,
-      `Path: ${rel}`,
-      `Size: ${kb} KB`,
-      `Model: ${model}`,
-      `Provider: ${isGoogle ? 'Google Imagen' : isFal ? 'fal.ai' : 'OpenAI-compatible'}`,
-      `Prompt: ${prompt.slice(0, 120)}${prompt.length > 120 ? '...' : ''}`,
-    ].join('\n');
+    return respond(
+      format,
+      {
+        ok: true,
+        action: 'generate_image',
+        path: rel,
+        bytes: stat.size,
+        size_kb: Number(kb),
+        model,
+        provider: providerName,
+        aspect_ratio: aspectRatio,
+        mime_type: result.mimeType,
+      },
+      [
+        'Image saved successfully.',
+        `Path: ${rel}`,
+        `Size: ${kb} KB`,
+        `Model: ${model}`,
+        `Provider: ${providerName}`,
+      ].join('\n'),
+    );
   },
 
-  async image_provider_status(_args) {
+  async image_provider_status(args) {
+    const format = outputFormat(args);
     if (!IMAGE_API_KEY || !IMAGE_MODEL) {
-      return [
-        'No image provider configured for this workforce.',
-        'To enable image generation:',
-        '  1. In Providers settings, add a model with type "image" to your provider',
-        '  2. Assign that provider to at least one agent in this workforce',
-        '  3. Re-run the execution — the orchestrator will inject image credentials automatically',
-      ].join('\n');
+      return respond(
+        format,
+        {
+          ok: false,
+          action: 'image_provider_status',
+          ready: false,
+          provider_type: IMAGE_PROVIDER || null,
+          base_url: IMAGE_BASE_URL || null,
+          model: IMAGE_MODEL || null,
+          api_key_configured: !!IMAGE_API_KEY,
+        },
+        [
+          'No image provider configured for this workforce.',
+          'Add a provider model with type "image" and assign it to at least one workforce agent.',
+        ].join('\n'),
+      );
     }
-    return [
-      'Image provider: READY',
-      `Provider type: ${IMAGE_PROVIDER || 'unknown'}`,
-      `Base URL: ${IMAGE_BASE_URL || '(default for provider)'}`,
-      `Default model: ${IMAGE_MODEL}`,
-      `API key: configured`,
-    ].join('\n');
+    return respond(
+      format,
+      {
+        ok: true,
+        action: 'image_provider_status',
+        ready: true,
+        provider_type: IMAGE_PROVIDER || 'unknown',
+        base_url: IMAGE_BASE_URL || null,
+        model: IMAGE_MODEL,
+        api_key_configured: true,
+      },
+      [
+        'Image provider: READY',
+        `Provider type: ${IMAGE_PROVIDER || 'unknown'}`,
+        `Default model: ${IMAGE_MODEL}`,
+      ].join('\n'),
+    );
   },
 };

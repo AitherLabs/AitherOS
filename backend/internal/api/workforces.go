@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,50 @@ type WorkspaceFileEntry struct {
 	Path string `json:"path"` // relative to workspace root (e.g. "content/report.md")
 	Size int64  `json:"size"`
 	Ext  string `json:"ext"` // lowercase extension without dot
+}
+
+func normalizeWorkspaceRelativePath(rawPath, workspaceRoot string) string {
+	p := strings.TrimSpace(rawPath)
+	if p == "" {
+		return ""
+	}
+	p = strings.Trim(p, "\"'`")
+	p = strings.ReplaceAll(p, "\\", "/")
+
+	if p == "/workspace" || p == "workspace" {
+		return ""
+	}
+	if strings.HasPrefix(p, "/workspace/") {
+		p = strings.TrimPrefix(p, "/workspace/")
+	} else if strings.HasPrefix(p, "workspace/") {
+		p = strings.TrimPrefix(p, "workspace/")
+	}
+
+	absCandidate := filepath.Clean(p)
+	if filepath.IsAbs(absCandidate) {
+		workspaceAbs := filepath.Clean(workspaceRoot)
+		if absCandidate == workspaceAbs {
+			return ""
+		}
+		prefix := workspaceAbs + string(os.PathSeparator)
+		if !strings.HasPrefix(absCandidate, prefix) {
+			return ""
+		}
+		rel, err := filepath.Rel(workspaceAbs, absCandidate)
+		if err != nil {
+			return ""
+		}
+		p = filepath.ToSlash(rel)
+	}
+
+	p = strings.TrimPrefix(p, "./")
+	p = strings.TrimPrefix(p, "/")
+	p = filepath.ToSlash(filepath.Clean(p))
+	if p == "." || p == "" || strings.HasPrefix(p, "../") {
+		return ""
+	}
+
+	return p
 }
 
 // workspacePathIfProvisioned returns the workspace path only if the directory exists on disk.
@@ -325,6 +370,62 @@ func (h *WorkForceHandler) ListWorkspaceFiles(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	agentOnly := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("source")), "agent")
+	agentWrittenSet := map[string]struct{}{}
+	if agentOnly {
+		rawPaths, listErr := h.store.ListWorkforceAgentWrittenPaths(r.Context(), id)
+		if listErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list agent-written files: "+listErr.Error())
+			return
+		}
+		for _, raw := range rawPaths {
+			normalized := normalizeWorkspaceRelativePath(raw, root)
+			if normalized == "" {
+				continue
+			}
+			agentWrittenSet[normalized] = struct{}{}
+		}
+	}
+
+	isHiddenPath := func(relPath string) bool {
+		for _, part := range strings.Split(filepath.ToSlash(relPath), "/") {
+			if strings.HasPrefix(part, ".") {
+				return true
+			}
+		}
+		return false
+	}
+
+	if agentOnly {
+		files := make([]WorkspaceFileEntry, 0, len(agentWrittenSet))
+		for relPath := range agentWrittenSet {
+			if relPath == "" || isHiddenPath(relPath) {
+				continue
+			}
+			abs := filepath.Join(root, filepath.FromSlash(relPath))
+			info, statErr := os.Stat(abs)
+			if statErr != nil || info.IsDir() {
+				continue
+			}
+			base := info.Name()
+			if strings.HasPrefix(base, ".") {
+				continue
+			}
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(base)), ".")
+			files = append(files, WorkspaceFileEntry{
+				Path: relPath,
+				Size: info.Size(),
+				Ext:  ext,
+			})
+		}
+		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+		if files == nil {
+			files = []WorkspaceFileEntry{}
+		}
+		writeJSON(w, http.StatusOK, files)
+		return
+	}
+
 	var files []WorkspaceFileEntry
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -339,20 +440,19 @@ func (h *WorkForceHandler) ListWorkspaceFiles(w http.ResponseWriter, r *http.Req
 		if relErr != nil {
 			return nil
 		}
-		// Skip hidden path components
-		for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-			if strings.HasPrefix(part, ".") {
-				return nil
-			}
+		if isHiddenPath(rel) {
+			return nil
 		}
+		relPath := filepath.ToSlash(rel)
 		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(base)), ".")
 		files = append(files, WorkspaceFileEntry{
-			Path: filepath.ToSlash(rel),
+			Path: relPath,
 			Size: info.Size(),
 			Ext:  ext,
 		})
 		return nil
 	})
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 
 	if files == nil {
 		files = []WorkspaceFileEntry{}

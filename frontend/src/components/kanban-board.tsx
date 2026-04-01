@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import {
@@ -40,6 +40,9 @@ const COLUMNS: { status: KanbanStatus; label: string; color: string }[] = [
   { status: 'blocked',     label: 'Blocked',     color: '#FFBF47' },
   { status: 'done',        label: 'Done',        color: '#56D090' },
 ];
+
+const MAX_VISIBLE_WORKSPACE_FILES = 200;
+const MAX_VISIBLE_DONE_TASK_REFS = 200;
 
 function priorityLabel(p: number): string {
   if (p >= 3) return 'Urgent';
@@ -164,7 +167,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   useEffect(() => {
     if (!addOpen) return;
     setLoadingWsFiles(true);
-    api.listWorkspaceFiles(workforceId)
+    api.listWorkspaceFiles(workforceId, { source: 'agent' })
       .then(res => setWorkspaceFiles(res.data || []))
       .catch(() => setWorkspaceFiles([]))
       .finally(() => setLoadingWsFiles(false));
@@ -381,6 +384,92 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
   // ── Derived values ─────────────────────────────────────────────────────────
 
   const todoCount = tasks.filter(t => t.status === 'todo').length;
+  const doneTasks = useMemo(() => tasks.filter(t => t.status === 'done'), [tasks]);
+  const doneTasksSearchIndex = useMemo(
+    () => doneTasks.map((t) => ({ task: t, titleLower: t.title.toLowerCase() })),
+    [doneTasks],
+  );
+
+  const workspaceFilesSearchIndex = useMemo(
+    () => workspaceFiles.map((f) => ({ file: f, pathLower: f.path.toLowerCase() })),
+    [workspaceFiles],
+  );
+
+  const deferredFileSearch = useDeferredValue(fileSearch);
+  const normalizedFileSearch = deferredFileSearch.trim().toLowerCase();
+  const visibleWorkspaceFiles = useMemo(() => {
+    const filtered = normalizedFileSearch
+      ? workspaceFilesSearchIndex
+          .filter((entry) => entry.pathLower.includes(normalizedFileSearch))
+          .map((entry) => entry.file)
+      : workspaceFiles;
+    if (normalizedFileSearch || filtered.length <= MAX_VISIBLE_WORKSPACE_FILES) {
+      return filtered;
+    }
+    return filtered.slice(0, MAX_VISIBLE_WORKSPACE_FILES);
+  }, [workspaceFiles, workspaceFilesSearchIndex, normalizedFileSearch]);
+  const hiddenWorkspaceFilesCount =
+    normalizedFileSearch || workspaceFiles.length <= visibleWorkspaceFiles.length
+      ? 0
+      : workspaceFiles.length - visibleWorkspaceFiles.length;
+
+  const deferredTaskRefSearch = useDeferredValue(taskRefSearch);
+  const normalizedTaskRefSearch = deferredTaskRefSearch.trim().toLowerCase();
+  const visibleDoneTasks = useMemo(() => {
+    const filtered = normalizedTaskRefSearch
+      ? doneTasksSearchIndex
+          .filter((entry) => entry.titleLower.includes(normalizedTaskRefSearch))
+          .map((entry) => entry.task)
+      : doneTasks;
+    if (normalizedTaskRefSearch || filtered.length <= MAX_VISIBLE_DONE_TASK_REFS) {
+      return filtered;
+    }
+    return filtered.slice(0, MAX_VISIBLE_DONE_TASK_REFS);
+  }, [doneTasks, doneTasksSearchIndex, normalizedTaskRefSearch]);
+  const hiddenDoneTasksCount =
+    normalizedTaskRefSearch || doneTasks.length <= visibleDoneTasks.length
+      ? 0
+      : doneTasks.length - visibleDoneTasks.length;
+
+  const renderedWorkspaceFileRows = useMemo(() => (
+    visibleWorkspaceFiles.map((f) => {
+      const selected = newAttachments.includes(f.path);
+      return (
+        <button
+          key={f.path}
+          type='button'
+          onClick={() => setNewAttachments(prev => selected ? prev.filter(x => x !== f.path) : [...prev, f.path])}
+          className={`flex w-full items-center gap-2 border-b border-border/20 px-2.5 py-1.5 text-left text-xs transition-colors last:border-0 ${selected ? 'bg-[#9A66FF]/10 text-[#9A66FF]' : 'text-muted-foreground hover:bg-muted/20 hover:text-foreground'}`}
+        >
+          <span className={`h-3.5 w-3.5 flex-shrink-0 rounded border text-center text-[9px] leading-3 ${selected ? 'border-[#9A66FF] bg-[#9A66FF] text-white' : 'border-border/60'}`}>
+            {selected ? '✓' : ''}
+          </span>
+          <span className='flex-1 truncate font-mono'>{f.path}</span>
+          <span className='flex-shrink-0 text-[9px] opacity-40'>{f.ext}</span>
+        </button>
+      );
+    })
+  ), [visibleWorkspaceFiles, newAttachments]);
+
+  const renderedDoneTaskRows = useMemo(() => (
+    visibleDoneTasks.map(t => {
+      const selected = newTaskRefs.includes(t.id);
+      return (
+        <button
+          key={t.id}
+          type='button'
+          onClick={() => setNewTaskRefs(prev => selected ? prev.filter(x => x !== t.id) : [...prev, t.id])}
+          className={`flex w-full items-center gap-2 border-b border-border/20 px-2.5 py-1.5 text-left text-xs transition-colors last:border-0 ${selected ? 'bg-[#14FFF7]/10 text-[#14FFF7]' : 'text-muted-foreground hover:bg-muted/20 hover:text-foreground'}`}
+        >
+          <span className={`h-3.5 w-3.5 flex-shrink-0 rounded border text-center text-[9px] leading-3 ${selected ? 'border-[#14FFF7] bg-[#14FFF7] text-[#0A0D11]' : 'border-border/60'}`}>
+            {selected ? '✓' : ''}
+          </span>
+          <span className='flex-1 truncate'>{t.title}</span>
+          {t.done_at && <span className='flex-shrink-0 text-[9px] opacity-40'>{new Date(t.done_at).toLocaleDateString()}</span>}
+        </button>
+      );
+    })
+  ), [visibleDoneTasks, newTaskRefs]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -469,20 +558,22 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
         </div>
       </div>
 
-      {/* Hint banner */}
-      {tasks.filter(t => t.status === 'open' && t.created_by !== 'human').length > 0 && (
-        <div className='mb-3 rounded-lg border border-[#14FFF7]/20 bg-[#14FFF7]/5 px-3 py-2 text-[10px] text-[#14FFF7]/70'>
-          💡 Drag tasks from <span className='font-semibold'>Open</span> into <span className='font-semibold'>To Do</span> to approve them for execution.
-        </div>
-      )}
+      {!addOpen && (
+        <>
+          {/* Hint banner */}
+          {tasks.filter(t => t.status === 'open' && t.created_by !== 'human').length > 0 && (
+            <div className='mb-3 rounded-lg border border-[#14FFF7]/20 bg-[#14FFF7]/5 px-3 py-2 text-[10px] text-[#14FFF7]/70'>
+              💡 Drag tasks from <span className='font-semibold'>Open</span> into <span className='font-semibold'>To Do</span> to approve them for execution.
+            </div>
+          )}
 
-      {/* Board */}
-      <div className='flex gap-3 overflow-x-auto pb-3'>
-        {COLUMNS.map(col => {
-          const colTasks = tasks.filter(t => t.status === col.status);
-          const isDragTarget = dragOverCol === col.status;
+          {/* Board */}
+          <div className='flex gap-3 overflow-x-auto pb-3'>
+            {COLUMNS.map(col => {
+              const colTasks = tasks.filter(t => t.status === col.status);
+              const isDragTarget = dragOverCol === col.status;
 
-          return (
+              return (
             <div
               key={col.status}
               className='flex w-72 flex-shrink-0 flex-col rounded-xl transition-all'
@@ -728,14 +819,16 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                 )}
               </div>
             </div>
-          );
-        })}
-      </div>
+              );
+            })}
+          </div>
 
-      {loading && (
-        <div className='flex h-32 items-center justify-center'>
-          <IconLoader2 className='h-5 w-5 animate-spin text-muted-foreground' />
-        </div>
+          {loading && (
+            <div className='flex h-32 items-center justify-center'>
+              <IconLoader2 className='h-5 w-5 animate-spin text-muted-foreground' />
+            </div>
+          )}
+        </>
       )}
 
       {/* ── New Project Dialog ─────────────────────────────────────── */}
@@ -1355,30 +1448,19 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                   <div className='flex items-center justify-center py-4'>
                     <IconLoader2 className='h-3.5 w-3.5 animate-spin text-muted-foreground/50' />
                   </div>
-                ) : workspaceFiles.filter(f => !fileSearch || f.path.toLowerCase().includes(fileSearch.toLowerCase())).length === 0 ? (
+                ) : visibleWorkspaceFiles.length === 0 ? (
                   <p className='py-3 text-center text-[11px] text-muted-foreground/40'>
                     {workspaceFiles.length === 0 ? 'No workspace files found' : 'No matches'}
                   </p>
                 ) : (
-                  workspaceFiles
-                    .filter(f => !fileSearch || f.path.toLowerCase().includes(fileSearch.toLowerCase()))
-                    .map(f => {
-                      const selected = newAttachments.includes(f.path);
-                      return (
-                        <button
-                          key={f.path}
-                          type='button'
-                          onClick={() => setNewAttachments(prev => selected ? prev.filter(x => x !== f.path) : [...prev, f.path])}
-                          className={`flex w-full items-center gap-2 border-b border-border/20 px-2.5 py-1.5 text-left text-xs transition-colors last:border-0 ${selected ? 'bg-[#9A66FF]/10 text-[#9A66FF]' : 'text-muted-foreground hover:bg-muted/20 hover:text-foreground'}`}
-                        >
-                          <span className={`h-3.5 w-3.5 flex-shrink-0 rounded border text-center text-[9px] leading-3 ${selected ? 'border-[#9A66FF] bg-[#9A66FF] text-white' : 'border-border/60'}`}>
-                            {selected ? '✓' : ''}
-                          </span>
-                          <span className='flex-1 truncate font-mono'>{f.path}</span>
-                          <span className='flex-shrink-0 text-[9px] opacity-40'>{f.ext}</span>
-                        </button>
-                      );
-                    })
+                  <>
+                    {renderedWorkspaceFileRows}
+                    {hiddenWorkspaceFilesCount > 0 && (
+                      <p className='border-t border-border/20 px-2.5 py-1.5 text-[10px] text-muted-foreground/50'>
+                        Showing first {MAX_VISIBLE_WORKSPACE_FILES} files. Search to narrow and view the rest.
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -1402,8 +1484,7 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                 </div>
               )}
               {(() => {
-                const doneTasks = tasks.filter(t => t.status === 'done' && (!taskRefSearch || t.title.toLowerCase().includes(taskRefSearch.toLowerCase())));
-                const hasDone = tasks.some(t => t.status === 'done');
+                const hasDone = doneTasks.length > 0;
                 if (!hasDone) return (
                   <p className='rounded border border-border/30 bg-background/40 py-3 text-center text-[11px] text-muted-foreground/40'>No completed tasks yet</p>
                 );
@@ -1419,25 +1500,14 @@ export function KanbanBoard({ workforceId, agents, workforce, onWorkforceUpdate 
                       />
                     </div>
                     <div className='max-h-28 overflow-y-auto rounded border border-border/30 bg-background/40'>
-                      {doneTasks.length === 0 ? (
+                      {visibleDoneTasks.length === 0 ? (
                         <p className='py-3 text-center text-[11px] text-muted-foreground/40'>No matches</p>
-                      ) : doneTasks.map(t => {
-                        const selected = newTaskRefs.includes(t.id);
-                        return (
-                          <button
-                            key={t.id}
-                            type='button'
-                            onClick={() => setNewTaskRefs(prev => selected ? prev.filter(x => x !== t.id) : [...prev, t.id])}
-                            className={`flex w-full items-center gap-2 border-b border-border/20 px-2.5 py-1.5 text-left text-xs transition-colors last:border-0 ${selected ? 'bg-[#14FFF7]/10 text-[#14FFF7]' : 'text-muted-foreground hover:bg-muted/20 hover:text-foreground'}`}
-                          >
-                            <span className={`h-3.5 w-3.5 flex-shrink-0 rounded border text-center text-[9px] leading-3 ${selected ? 'border-[#14FFF7] bg-[#14FFF7] text-[#0A0D11]' : 'border-border/60'}`}>
-                              {selected ? '✓' : ''}
-                            </span>
-                            <span className='flex-1 truncate'>{t.title}</span>
-                            {t.done_at && <span className='flex-shrink-0 text-[9px] opacity-40'>{new Date(t.done_at).toLocaleDateString()}</span>}
-                          </button>
-                        );
-                      })}
+                      ) : renderedDoneTaskRows}
+                      {hiddenDoneTasksCount > 0 && (
+                        <p className='border-t border-border/20 px-2.5 py-1.5 text-[10px] text-muted-foreground/50'>
+                          Showing first {MAX_VISIBLE_DONE_TASK_REFS} completed tasks. Search to narrow and view the rest.
+                        </p>
+                      )}
                     </div>
                   </>
                 );
