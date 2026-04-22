@@ -4,7 +4,7 @@ import fs        from 'node:fs/promises';
 import path      from 'node:path';
 import { createWriteStream } from 'node:fs';
 import { load as cheerioLoad } from 'cheerio';
-import { safeResolve, WORKSPACE, BRAVE_API_KEY, SEARXNG_URL, fmtBytes } from '../config.js';
+import { safeResolve, WORKSPACE, BRAVE_API_KEY, SEARXNG_URL, EXA_API_KEY, fmtBytes } from '../config.js';
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -118,6 +118,109 @@ interface SearchResult {
   snippet: string;
 }
 
+interface ExaResult {
+  id?:            string;
+  title?:         string;
+  url?:           string;
+  publishedDate?: string | null;
+  author?:        string | null;
+  text?:          string;
+  highlights?:    string[];
+  summary?:       string;
+}
+
+interface ExaResponse {
+  requestId?: string;
+  results:    ExaResult[];
+}
+
+export interface ExaSearchOptions {
+  type?:               'auto' | 'neural' | 'fast';
+  category?:           string;
+  numResults?:         number;
+  includeDomains?:     string[];
+  excludeDomains?:     string[];
+  startPublishedDate?: string;
+  endPublishedDate?:   string;
+  userLocation?:       string;
+  contents?: {
+    text?:       boolean | { maxCharacters?: number };
+    highlights?: boolean | { numSentences?: number; highlightsPerUrl?: number };
+    summary?:   boolean | { query?: string };
+  };
+}
+
+export function pickExaSnippet(r: ExaResult, maxLen = 300): string {
+  if (r.highlights && r.highlights.length) {
+    const joined = r.highlights.join(' … ').replace(/\s+/g, ' ').trim();
+    return joined.length > maxLen ? joined.slice(0, maxLen) + '…' : joined;
+  }
+  if (r.summary) {
+    const s = r.summary.replace(/\s+/g, ' ').trim();
+    return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+  }
+  if (r.text) {
+    const t = r.text.replace(/\s+/g, ' ').trim();
+    return t.length > maxLen ? t.slice(0, maxLen) + '…' : t;
+  }
+  return '';
+}
+
+export function buildExaRequest(query: string, opts: ExaSearchOptions = {}, apiKey = ''): {
+  headers: Record<string, string>;
+  body:    Record<string, unknown>;
+} {
+  const body: Record<string, unknown> = {
+    query,
+    type:       opts.type       ?? 'auto',
+    numResults: opts.numResults ?? 10,
+  };
+  if (opts.category)           body.category           = opts.category;
+  if (opts.includeDomains)     body.includeDomains     = opts.includeDomains;
+  if (opts.excludeDomains)     body.excludeDomains     = opts.excludeDomains;
+  if (opts.startPublishedDate) body.startPublishedDate = opts.startPublishedDate;
+  if (opts.endPublishedDate)   body.endPublishedDate   = opts.endPublishedDate;
+  if (opts.userLocation)       body.userLocation       = opts.userLocation;
+  body.contents = opts.contents ?? { highlights: true, text: { maxCharacters: 500 } };
+
+  return {
+    headers: {
+      'Content-Type':      'application/json',
+      'Accept':            'application/json',
+      'x-api-key':         apiKey,
+      'x-exa-integration': 'aitheros',
+    },
+    body,
+  };
+}
+
+export async function callExaSearch(
+  query: string,
+  opts: ExaSearchOptions = {},
+  apiKey: string = EXA_API_KEY,
+): Promise<ExaResponse> {
+  const { headers, body } = buildExaRequest(query, opts, apiKey);
+  const res = await httpRaw('POST', 'https://api.exa.ai/search', headers, JSON.stringify(body), 20000);
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`Exa API HTTP ${res.status}: ${res.body.slice(0, 300)}`);
+  }
+  const parsed = JSON.parse(res.body) as ExaResponse;
+  return { requestId: parsed.requestId, results: parsed.results ?? [] };
+}
+
+async function searchExa(query: string, count: number): Promise<SearchResult[]> {
+  const { results } = await callExaSearch(query, {
+    type:       'auto',
+    numResults: count,
+    contents:   { highlights: true, text: { maxCharacters: 500 } },
+  });
+  return results.map((r) => ({
+    title:   r.title || '',
+    url:     r.url   || '',
+    snippet: pickExaSnippet(r),
+  }));
+}
+
 async function searchBrave(query: string, count: number): Promise<SearchResult[]> {
   const res = await httpGet(
     `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`,
@@ -166,7 +269,8 @@ export const tools = [
   {
     name: 'web_search',
     description:
-      'Search the web. Uses Brave Search if AITHER_BRAVE_KEY is set, ' +
+      'Search the web. Uses Exa if AITHER_EXA_KEY is set, ' +
+      'Brave Search if AITHER_BRAVE_KEY is set, ' +
       'SearXNG if AITHER_SEARXNG_URL is set, otherwise DuckDuckGo. ' +
       'Returns titles, URLs and snippets.',
     inputSchema: {
@@ -174,6 +278,33 @@ export const tools = [
       properties: {
         query:       { type: 'string', description: 'Search query' },
         num_results: { type: 'number', description: 'Number of results (default: 10, max: 20)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'exa_search',
+    description:
+      'AI-powered web search via Exa (requires AITHER_EXA_KEY). ' +
+      'Exposes Exa-specific features: neural/auto/fast search types, content modes ' +
+      '(highlights, full text, AI summary), domain filters, date-range filters, ' +
+      'and category search (company, research paper, news, personal site, ' +
+      'financial report, people). Useful when you need semantic retrieval, ' +
+      'site-restricted search, or ranked content snippets rather than raw links.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query:            { type: 'string', description: 'Search query' },
+        type:             { type: 'string', description: 'Search type: auto (default), neural, fast', enum: ['auto', 'neural', 'fast'] },
+        num_results:      { type: 'number', description: 'Number of results (default: 10, max: 25)' },
+        category:         { type: 'string', description: 'Optional Exa category', enum: ['company', 'research paper', 'news', 'personal site', 'financial report', 'people'] },
+        include_domains:  { type: 'array', items: { type: 'string' }, description: 'Restrict results to these domains' },
+        exclude_domains:  { type: 'array', items: { type: 'string' }, description: 'Exclude these domains' },
+        start_published:  { type: 'string', description: 'ISO 8601 earliest publish date (e.g. 2024-01-01)' },
+        end_published:    { type: 'string', description: 'ISO 8601 latest publish date' },
+        user_location:    { type: 'string', description: 'Two-letter ISO country code for geo-relevance' },
+        content:          { type: 'string', description: 'Content mode: highlights (default), text, summary, full (text+highlights+summary)', enum: ['highlights', 'text', 'summary', 'full'] },
+        summary_query:    { type: 'string', description: 'Optional query to focus the AI summary on a specific question' },
       },
       required: ['query'],
     },
@@ -251,7 +382,10 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
     let results: SearchResult[];
     let provider: string;
 
-    if (BRAVE_API_KEY) {
+    if (EXA_API_KEY) {
+      results  = await searchExa(query, count);
+      provider = 'Exa';
+    } else if (BRAVE_API_KEY) {
       results  = await searchBrave(query, count);
       provider = 'Brave Search';
     } else if (SEARXNG_URL) {
@@ -269,6 +403,70 @@ export const handlers: Record<string, (args: Record<string, unknown>) => Promise
       if (r.url)     lines.push(`   ${r.url}`);
       if (r.snippet) lines.push(`   ${r.snippet}`);
     });
+    return lines.join('\n');
+  },
+
+  async exa_search(args) {
+    if (!EXA_API_KEY) {
+      return 'Exa search is not configured. Set AITHER_EXA_KEY to an Exa API key (https://dashboard.exa.ai/api-keys).';
+    }
+
+    const query = args.query as string;
+    const count = Math.min((args.num_results as number) || 10, 25);
+    const mode  = (args.content as string) || 'highlights';
+
+    let contents: ExaSearchOptions['contents'];
+    if (mode === 'text') {
+      contents = { text: { maxCharacters: 1000 } };
+    } else if (mode === 'summary') {
+      contents = args.summary_query
+        ? { summary: { query: args.summary_query as string } }
+        : { summary: true };
+    } else if (mode === 'full') {
+      contents = {
+        text:       { maxCharacters: 1000 },
+        highlights: true,
+        summary:    args.summary_query ? { query: args.summary_query as string } : true,
+      };
+    } else {
+      contents = { highlights: true, text: { maxCharacters: 500 } };
+    }
+
+    const { results, requestId } = await callExaSearch(query, {
+      type:               (args.type as ExaSearchOptions['type']) || 'auto',
+      numResults:         count,
+      category:           args.category as string | undefined,
+      includeDomains:     args.include_domains as string[] | undefined,
+      excludeDomains:     args.exclude_domains as string[] | undefined,
+      startPublishedDate: args.start_published as string | undefined,
+      endPublishedDate:   args.end_published   as string | undefined,
+      userLocation:       args.user_location   as string | undefined,
+      contents,
+    });
+
+    if (!results.length) return `No results found for "${query}".`;
+
+    const header = requestId
+      ? `Exa search: "${query}" (${results.length} results, req ${requestId})\n`
+      : `Exa search: "${query}" (${results.length} results)\n`;
+    const lines: string[] = [header];
+
+    results.forEach((r, i) => {
+      lines.push(`${i + 1}. ${r.title || '(untitled)'}`);
+      if (r.url)           lines.push(`   ${r.url}`);
+      if (r.publishedDate) lines.push(`   Published: ${r.publishedDate}`);
+      if (r.author)        lines.push(`   Author: ${r.author}`);
+
+      if (mode === 'full') {
+        if (r.highlights?.length) lines.push(`   Highlights: ${r.highlights.join(' … ')}`);
+        if (r.summary)            lines.push(`   Summary: ${r.summary.replace(/\s+/g, ' ').trim()}`);
+        if (r.text)               lines.push(`   Text: ${r.text.slice(0, 500).replace(/\s+/g, ' ').trim()}${r.text.length > 500 ? '…' : ''}`);
+      } else {
+        const snippet = pickExaSnippet(r, 500);
+        if (snippet) lines.push(`   ${snippet}`);
+      }
+    });
+
     return lines.join('\n');
   },
 

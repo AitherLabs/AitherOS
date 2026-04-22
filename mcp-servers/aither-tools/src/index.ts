@@ -9,6 +9,7 @@
  *   AITHER_WORKFORCE_NAME  — workforce name (used if WORKSPACE is not set)
  *   AITHER_WORKFORCE_ID    — workforce UUID (required for knowledge tools)
  *   AITHER_API_URL         — AitherOS backend URL (default: http://127.0.0.1:8080)
+ *   AITHER_EXA_KEY         — Exa API key (optional, enables AI-powered web search)
  *   AITHER_BRAVE_KEY       — Brave Search API key (optional, enables web search)
  *   AITHER_SEARXNG_URL     — SearXNG base URL (optional, self-hosted search)
  *   AITHER_MAX_TIMEOUT_S   — max shell command timeout in seconds (default: 300)
